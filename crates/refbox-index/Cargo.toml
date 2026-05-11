@@ -6,4 +6,6 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+globset.workspace = true
 refbox-core = { path = "../refbox-core" }
+sha2.workspace = true

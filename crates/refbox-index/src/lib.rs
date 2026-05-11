@@ -1,13 +1,427 @@
 //! Bibliography discovery, parsing, and indexing.
 
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
+
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use refbox_core::{
-    BibliographyEntry, BibliographyField, BibliographyFile, DateParts, Diagnostic,
-    DiagnosticSeverity, EntryDate, EntryId, NameList, PersonName, RawEntry, ResourceField,
-    SourcePosition, SourceSpan, normalize_lookup_name,
+    BibliographyEntry, BibliographyField, BibliographyFile, DateParts, DerivedBibliographyStore,
+    Diagnostic, DiagnosticSeverity, EntryDate, EntryId, FileParseStatus, IndexStoreCounts,
+    IndexedFileMetadata, NameList, PersonName, RawEntry, ResourceField, SourcePosition, SourceSpan,
+    normalize_lookup_name,
 };
+use sha2::{Digest, Sha256};
 
 pub fn parse_bibliography_file(path: impl Into<String>, input: &str) -> BibliographyFile {
     Parser::new(path.into(), input).parse()
+}
+
+#[derive(Debug, Clone)]
+pub struct DiscoveryPolicy {
+    pub roots: Vec<PathBuf>,
+    pub extensions: BTreeSet<String>,
+    pub include_globs: Vec<String>,
+    pub exclude_globs: Vec<String>,
+    pub include_hidden: bool,
+    pub ignored_directories: BTreeSet<String>,
+}
+
+impl DiscoveryPolicy {
+    #[must_use]
+    pub fn new(roots: Vec<PathBuf>) -> Self {
+        Self {
+            roots,
+            ..Self::default()
+        }
+    }
+
+    pub fn discover_files(&self) -> std::result::Result<Vec<PathBuf>, SyncError<()>> {
+        self.discover_files_inner()
+    }
+
+    fn discover_files_inner<E>(&self) -> std::result::Result<Vec<PathBuf>, SyncError<E>> {
+        let include_globs = build_glob_set::<E>(&self.include_globs)?;
+        let exclude_globs = build_glob_set::<E>(&self.exclude_globs)?;
+        let mut files = Vec::new();
+
+        for root in &self.roots {
+            self.walk_path(root, root, &include_globs, &exclude_globs, &mut files)?;
+        }
+
+        files.sort();
+        files.dedup();
+        Ok(files)
+    }
+
+    fn walk_path<E>(
+        &self,
+        root: &Path,
+        path: &Path,
+        include_globs: &Option<GlobSet>,
+        exclude_globs: &Option<GlobSet>,
+        files: &mut Vec<PathBuf>,
+    ) -> std::result::Result<(), SyncError<E>> {
+        let metadata = fs::metadata(path).map_err(SyncError::Io)?;
+        if metadata.is_file() {
+            if self.is_eligible_file(root, path, include_globs, exclude_globs) {
+                files.push(path.to_path_buf());
+            }
+            return Ok(());
+        }
+        if !metadata.is_dir() {
+            return Ok(());
+        }
+
+        if path != root && self.should_skip_directory(path) {
+            return Ok(());
+        }
+
+        let mut children = fs::read_dir(path)
+            .map_err(SyncError::Io)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(SyncError::Io)?;
+        children.sort_by_key(|entry| entry.path());
+
+        for child in children {
+            self.walk_path(root, &child.path(), include_globs, exclude_globs, files)?;
+        }
+
+        Ok(())
+    }
+
+    fn should_skip_directory(&self, path: &Path) -> bool {
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            return false;
+        };
+
+        (!self.include_hidden && name.starts_with('.')) || self.ignored_directories.contains(name)
+    }
+
+    fn is_eligible_file(
+        &self,
+        root: &Path,
+        path: &Path,
+        include_globs: &Option<GlobSet>,
+        exclude_globs: &Option<GlobSet>,
+    ) -> bool {
+        let relative = path.strip_prefix(root).unwrap_or(path);
+        if !self.include_hidden && path_components_include_hidden(relative) {
+            return false;
+        }
+
+        let extension = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.to_ascii_lowercase());
+        if !extension.is_some_and(|extension| self.extensions.contains(&extension)) {
+            return false;
+        }
+
+        if exclude_globs
+            .as_ref()
+            .is_some_and(|globs| globs.is_match(relative) || globs.is_match(path))
+        {
+            return false;
+        }
+
+        include_globs
+            .as_ref()
+            .is_none_or(|globs| globs.is_match(relative) || globs.is_match(path))
+    }
+}
+
+impl Default for DiscoveryPolicy {
+    fn default() -> Self {
+        Self {
+            roots: Vec::new(),
+            extensions: ["bib", "bibtex"].into_iter().map(str::to_string).collect(),
+            include_globs: Vec::new(),
+            exclude_globs: Vec::new(),
+            include_hidden: false,
+            ignored_directories: ["target", ".git", ".hg", ".svn", "node_modules"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SyncEngine {
+    policy: DiscoveryPolicy,
+}
+
+impl SyncEngine {
+    #[must_use]
+    pub fn new(policy: DiscoveryPolicy) -> Self {
+        Self { policy }
+    }
+
+    pub fn sync_full<S>(
+        &self,
+        store: &mut S,
+    ) -> std::result::Result<SyncStatus, SyncError<S::Error>>
+    where
+        S: DerivedBibliographyStore,
+    {
+        let discovered = self.policy.discover_files_inner::<S::Error>()?;
+        let discovered_paths = discovered
+            .iter()
+            .map(|path| path_string(path.as_path()))
+            .collect::<std::result::Result<BTreeSet<_>, _>>()?;
+        let existing = store
+            .indexed_file_metadata()
+            .map_err(SyncError::Store)?
+            .into_iter()
+            .map(|metadata| (metadata.path.clone(), metadata))
+            .collect::<BTreeMap<_, _>>();
+        let mut status = SyncStatus {
+            discovered_file_count: discovered.len(),
+            ..SyncStatus::default()
+        };
+
+        for path in discovered {
+            let path = path_string(&path)?;
+            let snapshot = read_file_snapshot(&path)?;
+            status.latest_modified_ns =
+                max_optional(status.latest_modified_ns, snapshot.modified_ns);
+
+            if existing
+                .get(&path)
+                .is_some_and(|metadata| same_freshness(metadata, &snapshot))
+            {
+                status.skipped_file_count += 1;
+                continue;
+            }
+
+            let parsed = parse_bibliography_file(path.clone(), snapshot.text.as_str());
+            let metadata = snapshot.into_metadata(&parsed);
+            store
+                .upsert_file(&parsed, &metadata)
+                .map_err(SyncError::Store)?;
+            status.changed_file_count += 1;
+        }
+
+        for path in existing.keys() {
+            if !discovered_paths.contains(path) {
+                store.remove_file(path).map_err(SyncError::Store)?;
+                status.removed_file_count += 1;
+            }
+        }
+
+        apply_counts(store.index_counts().map_err(SyncError::Store)?, &mut status);
+        Ok(status)
+    }
+
+    pub fn sync_file<S>(
+        &self,
+        store: &mut S,
+        path: impl AsRef<Path>,
+    ) -> std::result::Result<SyncStatus, SyncError<S::Error>>
+    where
+        S: DerivedBibliographyStore,
+    {
+        let path = path.as_ref();
+        let mut status = SyncStatus::default();
+
+        if !path.exists()
+            || !self
+                .policy
+                .is_eligible_file(path.parent().unwrap_or(path), path, &None, &None)
+        {
+            store
+                .remove_file(&path_string(path)?)
+                .map_err(SyncError::Store)?;
+            status.removed_file_count = 1;
+            apply_counts(store.index_counts().map_err(SyncError::Store)?, &mut status);
+            return Ok(status);
+        }
+
+        let path = path_string(path)?;
+        let snapshot = read_file_snapshot(&path)?;
+        status.discovered_file_count = 1;
+        status.latest_modified_ns = snapshot.modified_ns;
+        let parsed = parse_bibliography_file(path.clone(), snapshot.text.as_str());
+        let metadata = snapshot.into_metadata(&parsed);
+        store
+            .upsert_file(&parsed, &metadata)
+            .map_err(SyncError::Store)?;
+        status.changed_file_count = 1;
+        apply_counts(store.index_counts().map_err(SyncError::Store)?, &mut status);
+        Ok(status)
+    }
+
+    pub fn remove_file<S>(
+        &self,
+        store: &mut S,
+        path: impl AsRef<Path>,
+    ) -> std::result::Result<SyncStatus, SyncError<S::Error>>
+    where
+        S: DerivedBibliographyStore,
+    {
+        store
+            .remove_file(&path_string(path.as_ref())?)
+            .map_err(SyncError::Store)?;
+        let mut status = SyncStatus {
+            removed_file_count: 1,
+            ..SyncStatus::default()
+        };
+        apply_counts(store.index_counts().map_err(SyncError::Store)?, &mut status);
+        Ok(status)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SyncStatus {
+    pub discovered_file_count: usize,
+    pub changed_file_count: usize,
+    pub skipped_file_count: usize,
+    pub removed_file_count: usize,
+    pub indexed_file_count: usize,
+    pub indexed_entry_count: usize,
+    pub diagnostic_count: usize,
+    pub latest_modified_ns: Option<i64>,
+}
+
+#[derive(Debug)]
+pub enum SyncError<StoreError> {
+    Io(std::io::Error),
+    Glob(globset::Error),
+    Store(StoreError),
+    NonUtf8Path(PathBuf),
+}
+
+impl<StoreError: fmt::Display> fmt::Display for SyncError<StoreError> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => write!(formatter, "{error}"),
+            Self::Glob(error) => write!(formatter, "{error}"),
+            Self::Store(error) => write!(formatter, "{error}"),
+            Self::NonUtf8Path(path) => {
+                write!(formatter, "path is not valid UTF-8: {}", path.display())
+            }
+        }
+    }
+}
+
+impl<StoreError> std::error::Error for SyncError<StoreError> where
+    StoreError: std::error::Error + 'static
+{
+}
+
+struct FileSnapshot {
+    path: String,
+    size_bytes: u64,
+    modified_ns: Option<i64>,
+    content_hash: String,
+    text: String,
+}
+
+impl FileSnapshot {
+    fn into_metadata(self, file: &BibliographyFile) -> IndexedFileMetadata {
+        IndexedFileMetadata {
+            path: self.path,
+            size_bytes: self.size_bytes,
+            modified_ns: self.modified_ns,
+            content_hash: self.content_hash,
+            parse_status: parse_status_for_file(file),
+            entry_count: file.entries.len(),
+            diagnostic_count: diagnostic_count(file),
+        }
+    }
+}
+
+fn build_glob_set<E>(patterns: &[String]) -> std::result::Result<Option<GlobSet>, SyncError<E>> {
+    if patterns.is_empty() {
+        return Ok(None);
+    }
+
+    let mut builder = GlobSetBuilder::new();
+    for pattern in patterns {
+        builder.add(Glob::new(pattern).map_err(SyncError::Glob)?);
+    }
+    Ok(Some(builder.build().map_err(SyncError::Glob)?))
+}
+
+fn path_components_include_hidden(path: &Path) -> bool {
+    path.components().any(|component| {
+        component
+            .as_os_str()
+            .to_str()
+            .is_some_and(|component| component.starts_with('.') && component != ".")
+    })
+}
+
+fn path_string<E>(path: &Path) -> std::result::Result<String, SyncError<E>> {
+    path.to_str()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| SyncError::NonUtf8Path(path.to_path_buf()))
+}
+
+fn read_file_snapshot<E>(path: &str) -> std::result::Result<FileSnapshot, SyncError<E>> {
+    let bytes = fs::read(path).map_err(SyncError::Io)?;
+    let metadata = fs::metadata(path).map_err(SyncError::Io)?;
+    let modified_ns = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .and_then(|duration| i64::try_from(duration.as_nanos()).ok());
+
+    Ok(FileSnapshot {
+        path: path.to_string(),
+        size_bytes: metadata.len(),
+        modified_ns,
+        content_hash: sha256_hex(&bytes),
+        text: String::from_utf8_lossy(&bytes).into_owned(),
+    })
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn same_freshness(metadata: &IndexedFileMetadata, snapshot: &FileSnapshot) -> bool {
+    metadata.size_bytes == snapshot.size_bytes
+        && metadata.modified_ns == snapshot.modified_ns
+        && metadata.content_hash == snapshot.content_hash
+}
+
+fn parse_status_for_file(file: &BibliographyFile) -> FileParseStatus {
+    if file.entries.is_empty() && !file.diagnostics.is_empty() {
+        FileParseStatus::Failed
+    } else if diagnostic_count(file) > 0 {
+        FileParseStatus::Partial
+    } else {
+        FileParseStatus::Ok
+    }
+}
+
+fn diagnostic_count(file: &BibliographyFile) -> usize {
+    file.diagnostics.len()
+        + file
+            .entries
+            .iter()
+            .map(|entry| entry.diagnostics.len())
+            .sum::<usize>()
+}
+
+fn apply_counts(counts: IndexStoreCounts, status: &mut SyncStatus) {
+    status.indexed_file_count = counts.file_count;
+    status.indexed_entry_count = counts.entry_count;
+    status.diagnostic_count = counts.diagnostic_count;
+}
+
+fn max_optional(left: Option<i64>, right: Option<i64>) -> Option<i64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    }
 }
 
 struct Parser<'input> {

@@ -3,13 +3,14 @@
 use std::path::Path;
 
 use refbox_core::{
-    BibliographyEntry, BibliographyFile, Diagnostic, DiagnosticSeverity, DiagnosticTarget,
-    ResourceKind, SourcePosition, SourceSpan,
+    BibliographyEntry, BibliographyFile, DerivedBibliographyStore, Diagnostic, DiagnosticSeverity,
+    DiagnosticTarget, FileParseStatus, IndexStoreCounts, IndexedFileMetadata, ResourceKind,
+    SourcePosition, SourceSpan,
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use thiserror::Error;
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
@@ -23,6 +24,8 @@ pub enum StoreError {
     LimitOutOfRange(usize),
     #[error("row index {0} exceeds SQLite integer range")]
     IndexOutOfRange(usize),
+    #[error("count {0} exceeds SQLite integer range")]
+    CountOutOfRange(usize),
 }
 
 #[derive(Debug)]
@@ -109,10 +112,32 @@ impl RefboxStore {
     }
 
     pub fn insert_file(&mut self, file: &BibliographyFile) -> Result<()> {
+        let metadata = metadata_from_file(file);
+        self.insert_file_with_metadata(file, &metadata)
+    }
+
+    pub fn insert_file_with_metadata(
+        &mut self,
+        file: &BibliographyFile,
+        metadata: &IndexedFileMetadata,
+    ) -> Result<()> {
         let tx = self.connection.transaction()?;
         delete_existing_file(&tx, &file.path)?;
 
-        tx.execute("INSERT INTO files(path) VALUES (?1)", params![file.path])?;
+        tx.execute(
+            "INSERT INTO files(
+                path, size_bytes, modified_ns, content_hash, parse_status, entry_count, diagnostic_count
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                file.path,
+                i64_from_u64(metadata.size_bytes)?,
+                metadata.modified_ns,
+                metadata.content_hash,
+                parse_status_name(metadata.parse_status),
+                i64_from_usize(metadata.entry_count)?,
+                i64_from_usize(metadata.diagnostic_count)?,
+            ],
+        )?;
         let file_id = tx.last_insert_rowid();
 
         for diagnostic in &file.diagnostics {
@@ -126,6 +151,48 @@ impl RefboxStore {
         refresh_duplicate_groups(&tx)?;
         tx.commit()?;
         Ok(())
+    }
+
+    pub fn remove_file(&mut self, path: &str) -> Result<()> {
+        let tx = self.connection.transaction()?;
+        delete_existing_file(&tx, path)?;
+        refresh_duplicate_groups(&tx)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn indexed_file_metadata(&self) -> Result<Vec<IndexedFileMetadata>> {
+        let mut statement = self.connection.prepare(
+            "SELECT path, size_bytes, modified_ns, content_hash, parse_status, entry_count, diagnostic_count
+             FROM files
+             ORDER BY path",
+        )?;
+        let files = statement
+            .query_map([], indexed_file_metadata_from_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(files)
+    }
+
+    pub fn index_counts(&self) -> Result<IndexStoreCounts> {
+        let file_count = self
+            .connection
+            .query_row("SELECT COUNT(*) FROM files", [], |row| row.get::<_, i64>(0))?;
+        let entry_count = self
+            .connection
+            .query_row("SELECT COUNT(*) FROM entries", [], |row| {
+                row.get::<_, i64>(0)
+            })?;
+        let diagnostic_count =
+            self.connection
+                .query_row("SELECT COUNT(*) FROM diagnostics", [], |row| {
+                    row.get::<_, i64>(0)
+                })?;
+
+        Ok(IndexStoreCounts {
+            file_count: usize_from_i64(file_count),
+            entry_count: usize_from_i64(entry_count),
+            diagnostic_count: usize_from_i64(diagnostic_count),
+        })
     }
 
     pub fn entries_by_key(&self, key: &str) -> Result<Vec<StoredEntry>> {
@@ -230,24 +297,26 @@ impl RefboxStore {
             );",
         )?;
 
-        let already_applied = tx
-            .query_row(
-                "SELECT version FROM schema_migrations WHERE version = ?1",
-                params![SCHEMA_VERSION],
-                |row| row.get::<_, i64>(0),
-            )
-            .optional()?
-            .is_some();
+        for (version, migration) in MIGRATIONS {
+            let already_applied = tx
+                .query_row(
+                    "SELECT version FROM schema_migrations WHERE version = ?1",
+                    params![version],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .is_some();
 
-        if !already_applied {
-            tx.execute_batch(MIGRATION_001)?;
-            tx.execute(
-                "INSERT INTO schema_migrations(version) VALUES (?1)",
-                params![SCHEMA_VERSION],
-            )?;
+            if !already_applied {
+                tx.execute_batch(migration)?;
+                tx.execute(
+                    "INSERT INTO schema_migrations(version) VALUES (?1)",
+                    params![version],
+                )?;
+            }
         }
 
-        tx.execute_batch("PRAGMA user_version = 1;")?;
+        tx.execute_batch("PRAGMA user_version = 2;")?;
         tx.commit()?;
         Ok(())
     }
@@ -273,6 +342,32 @@ impl RefboxStore {
         Ok(entries)
     }
 }
+
+impl DerivedBibliographyStore for RefboxStore {
+    type Error = StoreError;
+
+    fn indexed_file_metadata(&self) -> Result<Vec<IndexedFileMetadata>> {
+        RefboxStore::indexed_file_metadata(self)
+    }
+
+    fn upsert_file(
+        &mut self,
+        file: &BibliographyFile,
+        metadata: &IndexedFileMetadata,
+    ) -> Result<()> {
+        self.insert_file_with_metadata(file, metadata)
+    }
+
+    fn remove_file(&mut self, path: &str) -> Result<()> {
+        RefboxStore::remove_file(self, path)
+    }
+
+    fn index_counts(&self) -> Result<IndexStoreCounts> {
+        RefboxStore::index_counts(self)
+    }
+}
+
+const MIGRATIONS: &[(i64, &str)] = &[(1, MIGRATION_001), (2, MIGRATION_002)];
 
 const MIGRATION_001: &str = r#"
 CREATE TABLE IF NOT EXISTS files (
@@ -419,6 +514,17 @@ CREATE INDEX IF NOT EXISTS diagnostics_entry_idx ON diagnostics(entry_id);
 CREATE INDEX IF NOT EXISTS diagnostics_code_idx ON diagnostics(code);
 CREATE INDEX IF NOT EXISTS source_spans_owner_idx ON source_spans(owner_kind, owner_id);
 CREATE INDEX IF NOT EXISTS source_spans_path_idx ON source_spans(file_path, start_line, start_column);
+"#;
+
+const MIGRATION_002: &str = r#"
+ALTER TABLE files ADD COLUMN size_bytes INTEGER;
+ALTER TABLE files ADD COLUMN modified_ns INTEGER;
+ALTER TABLE files ADD COLUMN content_hash TEXT;
+ALTER TABLE files ADD COLUMN parse_status TEXT NOT NULL DEFAULT 'ok';
+ALTER TABLE files ADD COLUMN entry_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE files ADD COLUMN diagnostic_count INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS files_hash_idx ON files(content_hash);
+CREATE INDEX IF NOT EXISTS files_parse_status_idx ON files(parse_status);
 "#;
 
 fn delete_existing_file(tx: &Transaction<'_>, path: &str) -> Result<()> {
@@ -757,6 +863,18 @@ fn stored_diagnostic_from_row(row: &Row<'_>) -> rusqlite::Result<StoredDiagnosti
     })
 }
 
+fn indexed_file_metadata_from_row(row: &Row<'_>) -> rusqlite::Result<IndexedFileMetadata> {
+    Ok(IndexedFileMetadata {
+        path: row.get(0)?,
+        size_bytes: row.get::<_, Option<i64>>(1)?.unwrap_or_default() as u64,
+        modified_ns: row.get(2)?,
+        content_hash: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+        parse_status: parse_status_from_name(&row.get::<_, String>(4)?),
+        entry_count: usize_from_i64(row.get(5)?),
+        diagnostic_count: usize_from_i64(row.get(6)?),
+    })
+}
+
 fn required_span_from_row(row: &Row<'_>, offset: usize) -> rusqlite::Result<SourceSpan> {
     Ok(SourceSpan::new(
         row.get::<_, String>(offset)?,
@@ -858,6 +976,14 @@ fn i64_from_u64(value: u64) -> Result<i64> {
     i64::try_from(value).map_err(|_| StoreError::SourceOffsetOutOfRange(value))
 }
 
+fn i64_from_usize(value: usize) -> Result<i64> {
+    i64::try_from(value).map_err(|_| StoreError::CountOutOfRange(value))
+}
+
+fn usize_from_i64(value: i64) -> usize {
+    usize::try_from(value).unwrap_or_default()
+}
+
 #[derive(Debug, Clone)]
 struct DiagnosticTargetColumns {
     kind: &'static str,
@@ -891,6 +1017,22 @@ fn diagnostic_severity_name(severity: DiagnosticSeverity) -> &'static str {
     }
 }
 
+fn parse_status_name(status: FileParseStatus) -> &'static str {
+    match status {
+        FileParseStatus::Ok => "ok",
+        FileParseStatus::Partial => "partial",
+        FileParseStatus::Failed => "failed",
+    }
+}
+
+fn parse_status_from_name(status: &str) -> FileParseStatus {
+    match status {
+        "partial" => FileParseStatus::Partial,
+        "failed" => FileParseStatus::Failed,
+        _ => FileParseStatus::Ok,
+    }
+}
+
 fn resource_kind_name(kind: ResourceKind) -> &'static str {
     match kind {
         ResourceKind::File => "file",
@@ -910,4 +1052,31 @@ fn field_values(entry: &BibliographyEntry, names: &[&str]) -> String {
         .map(|field| field.value.as_str())
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn metadata_from_file(file: &BibliographyFile) -> IndexedFileMetadata {
+    IndexedFileMetadata {
+        path: file.path.clone(),
+        size_bytes: 0,
+        modified_ns: None,
+        content_hash: String::new(),
+        parse_status: if file.entries.is_empty() && !file.diagnostics.is_empty() {
+            FileParseStatus::Failed
+        } else if diagnostic_count(file) > 0 {
+            FileParseStatus::Partial
+        } else {
+            FileParseStatus::Ok
+        },
+        entry_count: file.entries.len(),
+        diagnostic_count: diagnostic_count(file),
+    }
+}
+
+fn diagnostic_count(file: &BibliographyFile) -> usize {
+    file.diagnostics.len()
+        + file
+            .entries
+            .iter()
+            .map(|entry| entry.diagnostics.len())
+            .sum::<usize>()
 }

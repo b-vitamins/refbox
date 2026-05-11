@@ -45,6 +45,48 @@ impl BibliographyFile {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexedFileMetadata {
+    pub path: String,
+    pub size_bytes: u64,
+    pub modified_ns: Option<i64>,
+    pub content_hash: String,
+    pub parse_status: FileParseStatus,
+    pub entry_count: usize,
+    pub diagnostic_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileParseStatus {
+    Ok,
+    Partial,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexStoreCounts {
+    pub file_count: usize,
+    pub entry_count: usize,
+    pub diagnostic_count: usize,
+}
+
+pub trait DerivedBibliographyStore {
+    type Error;
+
+    fn indexed_file_metadata(&self) -> Result<Vec<IndexedFileMetadata>, Self::Error>;
+
+    fn upsert_file(
+        &mut self,
+        file: &BibliographyFile,
+        metadata: &IndexedFileMetadata,
+    ) -> Result<(), Self::Error>;
+
+    fn remove_file(&mut self, path: &str) -> Result<(), Self::Error>;
+
+    fn index_counts(&self) -> Result<IndexStoreCounts, Self::Error>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BibliographyEntry {
     pub id: EntryId,
     pub entry_type: String,
