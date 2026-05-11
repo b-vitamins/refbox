@@ -11,3 +11,4 @@ The format follows Keep a Changelog, and this project will follow SemVer once it
 - Added a Rust workspace scaffold, JSON-RPC protocol types, stdio daemon, Emacs client, and load tests.
 - Codified the native-API product stance: no compatibility shims or comparative positioning.
 - Documented the `0.1.0` product contract, workflow families, non-goals, and milestone map.
+- Added serializable core records for bibliography files, entries, fields, names, dates, source spans, resource fields, diagnostics, global key lookup, and duplicate-key reporting.
