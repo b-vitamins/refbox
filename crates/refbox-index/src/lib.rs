@@ -907,14 +907,14 @@ fn date_parts_from_value(value: &str) -> DateParts {
 
 fn display_text_from_value(value: &str) -> String {
     let trimmed = value.trim();
-    let unwrapped =
-        if trimmed.starts_with('{') && trimmed.ends_with('}') && outer_braces_wrap(trimmed) {
-            &trimmed[1..trimmed.len() - 1]
-        } else if trimmed.starts_with('"') && trimmed.ends_with('"') {
-            &trimmed[1..trimmed.len() - 1]
-        } else {
-            trimmed
-        };
+    let has_wrapping_braces =
+        trimmed.starts_with('{') && trimmed.ends_with('}') && outer_braces_wrap(trimmed);
+    let has_wrapping_quotes = trimmed.starts_with('"') && trimmed.ends_with('"');
+    let unwrapped = if has_wrapping_braces || has_wrapping_quotes {
+        &trimmed[1..trimmed.len() - 1]
+    } else {
+        trimmed
+    };
 
     unwrapped.trim().to_string()
 }
