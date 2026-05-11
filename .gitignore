@@ -1,0 +1,5 @@
+/target/
+/.dir-locals.el
+/*.elc
+/.DS_Store
+/refbox.sqlite
