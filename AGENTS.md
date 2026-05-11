@@ -21,7 +21,9 @@
 
 ## Release Policy
 - Work under `Unreleased` in `CHANGELOG.md`.
-- Do not tag or claim `v0.1.0` until the project genuinely supports daily bibliography selection, insertion, lookup, resource opening, and indexed refresh workflows.
+- Treat `v0.1.0` as a complete native bibliography workflow, not a protocol or search prototype.
+- Do not tag or claim `v0.1.0` until the project genuinely supports sync and freshness reporting, search and selection, citation insertion and editing for Org/LaTeX/Markdown, resource actions, note actions, source lookup, diagnostics, CAPF, Embark actions, reference formatting, and indexed refresh workflows.
+- Keep the `v0.1.0` contract aligned across `README.md`, `CHANGELOG.md`, milestone issues, and implemented behavior.
 - Use Conventional Commits for every commit message.
 - Keep history readable: commit at coherent milestones after tests pass.
 
