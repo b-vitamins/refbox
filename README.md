@@ -31,3 +31,9 @@ The project will ship as one repository containing:
 
 Use `CHANGELOG.md` for durable change notes and `AGENTS.md` for project
 invariants.
+
+Current checks:
+
+```bash
+make test
+```

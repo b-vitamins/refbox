@@ -8,3 +8,4 @@ The format follows Keep a Changelog, and this project will follow SemVer once it
 
 ### Added
 - Initialized the repository charter, architecture guardrails, release policy, and verification conventions.
+- Added a Rust workspace scaffold, JSON-RPC protocol types, stdio daemon, Emacs client, and load tests.
