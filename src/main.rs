@@ -11,10 +11,11 @@ use refbox_rpc::{
     EntryRefItem, EntrySearchItem, IndexedFilesResponse, JsonRpcError, JsonRpcErrorObject,
     JsonRpcRequest, JsonRpcResponse, LimitRequest, METHOD_DIAGNOSTICS, METHOD_DUPLICATE_GROUPS,
     METHOD_ENTRIES_BY_KEYS, METHOD_ENTRY_BY_KEY, METHOD_INDEXED_FILES, METHOD_PING,
-    METHOD_RAW_ENTRY, METHOD_SEARCH_ENTRIES, METHOD_SOURCE_LOCATION, METHOD_STATUS,
-    METHOD_SYNC_FILE, METHOD_SYNC_FULL, RawEntryRequest, RawEntryResponse, SearchEntriesRequest,
-    SearchEntriesResponse, SourceLocationRequest, SourceLocationResponse, StatusResponse,
-    SyncFileRequest, SyncResponse, clamp_limit,
+    METHOD_RAW_ENTRY, METHOD_RESOURCES_BY_KEY, METHOD_RESOURCES_BY_KEYS, METHOD_SEARCH_ENTRIES,
+    METHOD_SOURCE_LOCATION, METHOD_STATUS, METHOD_SYNC_FILE, METHOD_SYNC_FULL, RawEntryRequest,
+    RawEntryResponse, ResourceItem, ResourcesByKeyRequest, ResourcesByKeysRequest,
+    ResourcesResponse, SearchEntriesRequest, SearchEntriesResponse, SourceLocationRequest,
+    SourceLocationResponse, StatusResponse, SyncFileRequest, SyncResponse, clamp_limit,
 };
 use refbox_store::{RefboxStore, StoredEntry};
 use serde::de::DeserializeOwned;
@@ -163,12 +164,20 @@ impl Daemon {
                             .into_iter()
                             .map(field_item)
                             .collect();
+                        let resources = self
+                            .store
+                            .resources_for_entry(entry.entry_id, &default_crossref_fields())
+                            .map_err(store_error)?
+                            .into_iter()
+                            .map(resource_item)
+                            .collect();
                         Ok(EntrySearchItem {
                             key: entry.key,
                             source_path: entry.file_path,
                             entry_type: entry.entry_type,
                             score: entry.score,
                             fields,
+                            resources,
                         })
                     })
                     .collect::<std::result::Result<Vec<_>, JsonRpcError>>()?;
@@ -194,6 +203,34 @@ impl Daemon {
                     );
                 }
                 self.to_value(EntriesResponse { entries })
+            }
+            METHOD_RESOURCES_BY_KEY => {
+                let request: ResourcesByKeyRequest = parse_params(params)?;
+                let entry = self.resolve_entry(&request.key, request.source_path.as_deref())?;
+                let crossref_fields =
+                    request_crossref_fields(request.include_crossrefs, request.crossref_fields);
+                let resources = self
+                    .store
+                    .resources_for_entry(entry.id, &crossref_fields)
+                    .map_err(store_error)?
+                    .into_iter()
+                    .map(resource_item)
+                    .collect();
+                self.to_value(ResourcesResponse { resources })
+            }
+            METHOD_RESOURCES_BY_KEYS => {
+                let request: ResourcesByKeysRequest = parse_params(params)?;
+                let limit = clamp_limit(request.limit_per_key);
+                let crossref_fields =
+                    request_crossref_fields(request.include_crossrefs, request.crossref_fields);
+                let resources = self
+                    .store
+                    .resources_for_keys(&request.keys, limit, &crossref_fields)
+                    .map_err(store_error)?
+                    .into_iter()
+                    .map(resource_item)
+                    .collect();
+                self.to_value(ResourcesResponse { resources })
             }
             METHOD_RAW_ENTRY => {
                 let request: RawEntryRequest = parse_params(params)?;
@@ -411,6 +448,42 @@ fn field_item(field: refbox_store::StoredField) -> EntryFieldItem {
     }
 }
 
+fn resource_item(resource: refbox_store::StoredResource) -> ResourceItem {
+    ResourceItem {
+        key: resource.key,
+        source_path: resource.source_path,
+        owner_key: resource.owner_key,
+        owner_source_path: resource.owner_source_path,
+        kind: resource.kind,
+        raw_name: resource.raw_name,
+        lookup_name: resource.lookup_name,
+        value: resource.value,
+        inherited_from_key: resource.inherited_from_key,
+        inherited_from_source_path: resource.inherited_from_source_path,
+        source: resource.source,
+    }
+}
+
+fn request_crossref_fields(
+    include_crossrefs: Option<bool>,
+    crossref_fields: Option<Vec<String>>,
+) -> Vec<String> {
+    if !include_crossrefs.unwrap_or(true) {
+        return Vec::new();
+    }
+
+    crossref_fields
+        .unwrap_or_else(default_crossref_fields)
+        .into_iter()
+        .map(|field| field.trim().to_ascii_lowercase())
+        .filter(|field| !field.is_empty())
+        .collect()
+}
+
+fn default_crossref_fields() -> Vec<String> {
+    vec!["crossref".to_string()]
+}
+
 fn store_error(error: refbox_store::StoreError) -> JsonRpcError {
     JsonRpcError::new(JsonRpcErrorObject::internal_error(error.to_string()))
 }
@@ -453,7 +526,10 @@ mod tests {
     #[test]
     fn daemon_sync_search_raw_and_source_workflows() {
         let project = TestProject::new("daemon-workflow");
-        project.write("refs/a.bib", "@article{a2020, title = {Alpha Search}}\n");
+        project.write(
+            "refs/a.bib",
+            "@article{a2020, title = {Alpha Search}, doi = {10.1000/alpha}}\n",
+        );
         let mut daemon = Daemon::new(project.root.clone(), project.path("index.sqlite"))
             .expect("daemon should start");
 
@@ -471,6 +547,18 @@ mod tests {
         assert_eq!(search["entries"][0]["key"], "a2020");
         assert_eq!(search["entries"][0]["entry_type"], "article");
         assert_eq!(search["entries"][0]["fields"][0]["lookup_name"], "title");
+        assert_eq!(search["entries"][0]["resources"][0]["kind"], "doi");
+
+        let resources = result(
+            daemon.handle_request(request(METHOD_RESOURCES_BY_KEY, json!({ "key": "a2020" }))),
+        );
+        assert_eq!(resources["resources"][0]["value"], "{10.1000/alpha}");
+
+        let resources_for_keys = result(daemon.handle_request(request(
+            METHOD_RESOURCES_BY_KEYS,
+            json!({ "keys": ["a2020"], "limit_per_key": 1 }),
+        )));
+        assert_eq!(resources_for_keys["resources"][0]["kind"], "doi");
 
         let raw =
             result(daemon.handle_request(request(METHOD_RAW_ENTRY, json!({ "key": "a2020" }))));

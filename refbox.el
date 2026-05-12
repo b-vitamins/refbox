@@ -31,6 +31,7 @@
 
 ;;; Code:
 
+(require 'browse-url)
 (require 'cl-lib)
 (require 'subr-x)
 (require 'refbox-rpc)
@@ -106,6 +107,81 @@
   :type '(choice (const :tag "Disabled" nil) function)
   :group 'refbox)
 
+(defcustom refbox-resource-library-paths nil
+  "Directories searched for files associated with references."
+  :type '(repeat directory)
+  :group 'refbox)
+
+(defcustom refbox-resource-library-paths-recursive nil
+  "When non-nil, include subdirectories of `refbox-resource-library-paths'."
+  :type 'boolean
+  :group 'refbox)
+
+(defcustom refbox-resource-library-file-extensions nil
+  "File extensions accepted for associated files.
+
+When nil, associated file lookup does not filter by extension."
+  :type '(choice (const :tag "Any extension" nil)
+                 (repeat string))
+  :group 'refbox)
+
+(defcustom refbox-resource-file-field-names '("file")
+  "Indexed field names treated as file-resource fields."
+  :type '(repeat string)
+  :group 'refbox)
+
+(defcustom refbox-resource-file-parser-functions
+  '(refbox-resource-parse-file-field-default
+    refbox-resource-parse-file-field-triplet)
+  "Functions used to parse file-resource field values."
+  :type '(repeat function)
+  :group 'refbox)
+
+(defcustom refbox-resource-additional-file-separator nil
+  "Regexp separating a reference key from additional file-name text."
+  :type '(choice (const :tag "Ignore additional files" nil)
+                 regexp)
+  :group 'refbox)
+
+(defcustom refbox-resource-open-file-function #'find-file
+  "Function used to open file resources."
+  :type 'function
+  :group 'refbox)
+
+(defcustom refbox-resource-open-link-function #'browse-url
+  "Function used to open link resources."
+  :type 'function
+  :group 'refbox)
+
+(defcustom refbox-resource-link-templates
+  '((url . "%s")
+    (doi . "https://doi.org/%s")
+    (pmid . "https://pubmed.ncbi.nlm.nih.gov/%s/")
+    (pmcid . "https://www.ncbi.nlm.nih.gov/pmc/articles/%s/"))
+  "Alist mapping resource kinds to URL format strings."
+  :type '(alist :key-type symbol :value-type string)
+  :group 'refbox)
+
+(defcustom refbox-note-paths nil
+  "Directories searched for per-reference note files."
+  :type '(repeat directory)
+  :group 'refbox)
+
+(defcustom refbox-note-file-extensions '("org" "md")
+  "File extensions used for per-reference notes."
+  :type '(repeat string)
+  :group 'refbox)
+
+(defcustom refbox-note-open-function #'find-file
+  "Function used to open note resources."
+  :type 'function
+  :group 'refbox)
+
+(defcustom refbox-note-content-function #'refbox-note-default-content
+  "Function called with KEY and CANDIDATE to initialize a new note."
+  :type '(choice (const :tag "Empty note" nil) function)
+  :group 'refbox)
+
 (defvar refbox-reference-history nil
   "Minibuffer history for refbox reference selection.")
 
@@ -146,6 +222,32 @@
 (defun refbox--candidate-fields (candidate)
   "Return CANDIDATE bibliography fields as a list."
   (refbox--listify (refbox--candidate-value candidate :fields)))
+
+(defun refbox--candidate-resources (candidate)
+  "Return CANDIDATE resources as a list."
+  (refbox--listify (refbox--candidate-value candidate :resources)))
+
+(defun refbox--resource-value (resource)
+  "Return RESOURCE's raw value."
+  (refbox--plist-get-any resource :value))
+
+(defun refbox--resource-kind (resource)
+  "Return RESOURCE's kind as a string."
+  (let ((kind (refbox--plist-get-any resource :kind)))
+    (cond
+     ((symbolp kind) (symbol-name kind))
+     ((stringp kind) kind)
+     (t nil))))
+
+(defun refbox--resource-lookup-name (resource)
+  "Return RESOURCE's lookup field name."
+  (refbox--plist-get-any resource :lookup_name :lookup-name))
+
+(defun refbox--resource-owner-source-path (resource)
+  "Return the bibliography file that owns RESOURCE."
+  (refbox--plist-get-any resource
+                         :owner_source_path :owner-source-path
+                         :source_path :source-path))
 
 (defun refbox--blank-string-p (value)
   "Return non-nil when VALUE is nil or an empty string."
@@ -195,6 +297,32 @@ computed property such as indicators, or an indexed bibliography field."
              (refbox-reference-has-field-p candidate field))
            fields))
 
+(defun refbox-reference-has-resource-kind-p (candidate kind)
+  "Return non-nil when CANDIDATE has an indexed resource of KIND."
+  (let ((kind (if (symbolp kind) (symbol-name kind) kind)))
+    (cl-some (lambda (resource)
+               (equal (refbox--resource-kind resource) kind))
+             (refbox--candidate-resources candidate))))
+
+(defun refbox-reference-has-any-resource-kind-p (candidate kinds)
+  "Return non-nil when CANDIDATE has an indexed resource from KINDS."
+  (cl-some (lambda (kind)
+             (refbox-reference-has-resource-kind-p candidate kind))
+           kinds))
+
+(defun refbox-reference-has-files-p (candidate)
+  "Return non-nil when CANDIDATE has an indexed file resource."
+  (or (refbox-reference-has-resource-kind-p candidate "file")
+      (refbox-reference-has-any-field-p
+       candidate refbox-reference-resource-field-names)))
+
+(defun refbox-reference-has-links-p (candidate)
+  "Return non-nil when CANDIDATE has an indexed link resource."
+  (or (refbox-reference-has-any-resource-kind-p
+       candidate '("url" "doi" "pmid" "pmcid"))
+      (refbox-reference-has-any-field-p
+       candidate refbox-reference-link-field-names)))
+
 (defun refbox-reference-cited-in-current-buffer-p (candidate)
   "Return non-nil when CANDIDATE's key appears in the current buffer."
   (let ((key (refbox-reference-field candidate "key")))
@@ -220,11 +348,9 @@ computed property such as indicators, or an indexed bibliography field."
   (string-join
    (delq nil
          (list
-          (when (refbox-reference-has-any-field-p
-                 candidate refbox-reference-resource-field-names)
+          (when (refbox-reference-has-files-p candidate)
             refbox-reference-resource-indicator)
-          (when (refbox-reference-has-any-field-p
-                 candidate refbox-reference-link-field-names)
+          (when (refbox-reference-has-links-p candidate)
             refbox-reference-link-indicator)
           (when (refbox--predicate-matches-p
                  refbox-reference-note-predicate candidate)
@@ -390,6 +516,397 @@ computed property such as indicators, or an indexed bibliography field."
                           :limit (refbox-rpc--search-limit limit))))
          (entries (plist-get response :entries)))
     (refbox--listify entries)))
+
+(defun refbox-reference-resources (candidate)
+  "Return indexed resources for CANDIDATE via the daemon."
+  (let ((key (refbox-reference-field candidate "key"))
+        (source-path (refbox-reference-field candidate "source_path")))
+    (unless key
+      (user-error "Reference candidate has no key"))
+    (refbox--listify
+     (plist-get
+      (refbox-rpc-request
+       refbox-rpc-method-resources-by-key
+       (append (list :key key)
+               (unless (refbox--blank-string-p source-path)
+                 (list :source_path source-path))))
+      :resources))))
+
+(defun refbox-resource--clean-value (value)
+  "Return VALUE stripped of simple bibliography wrappers."
+  (let ((text (string-trim (format "%s" (or value "")))))
+    (while (and (> (length text) 1)
+                (or (and (string-prefix-p "{" text)
+                         (string-suffix-p "}" text))
+                    (and (string-prefix-p "\"" text)
+                         (string-suffix-p "\"" text))))
+      (setq text (string-trim (substring text 1 -1))))
+    text))
+
+(defun refbox-resource--split-escaped-string (string sepchar)
+  "Split STRING on SEPCHAR while honoring backslash escapes."
+  (let ((index 0)
+        pieces
+        chars)
+    (while (< index (length string))
+      (let ((char (aref string index)))
+        (cond
+         ((= char ?\\)
+          (if (< (1+ index) (length string))
+              (let ((next (aref string (1+ index))))
+                (if (or (= next sepchar) (= next ?\\))
+                    (progn
+                      (push next chars)
+                      (setq index (1+ index)))
+                  (push char chars)))
+            (push char chars)))
+         ((= char sepchar)
+          (push (apply #'string (nreverse chars)) pieces)
+          (setq chars nil))
+         (t
+          (push char chars))))
+      (setq index (1+ index)))
+    (nreverse (cons (apply #'string (nreverse chars)) pieces))))
+
+(defun refbox-resource-parse-file-field-default (file-field)
+  "Parse FILE-FIELD as a semicolon-separated path list."
+  (let ((text (refbox-resource--clean-value file-field)))
+    (cl-remove-if
+     #'string-empty-p
+     (mapcar #'string-trim
+             (refbox-resource--split-escaped-string text ?\;)))))
+
+(defun refbox-resource-parse-file-field-triplet (file-field)
+  "Parse FILE-FIELD entries shaped as title:path:type triplets."
+  (let ((text (refbox-resource--clean-value file-field))
+        files)
+    (dolist (item (refbox-resource--split-escaped-string text ?,))
+      (let ((parts (refbox-resource--split-escaped-string item ?:)))
+        (when (>= (length parts) 3)
+          (push (string-join (butlast (cdr parts)) ":") files))))
+    (nreverse files)))
+
+(defun refbox-resource--parse-file-field (value)
+  "Return candidate file paths parsed from VALUE."
+  (delete-dups
+   (cl-remove-if
+    #'string-empty-p
+    (apply
+     #'append
+     (mapcar (lambda (parser)
+               (unless (fboundp parser)
+                 (user-error "refbox file parser is not defined: %s" parser))
+               (mapcar #'refbox-resource--clean-value
+                       (or (funcall parser value) nil)))
+             refbox-resource-file-parser-functions)))))
+
+(defun refbox-resource--normalize-extensions (extensions)
+  "Return normalized EXTENSIONS."
+  (mapcar (lambda (extension)
+            (downcase (string-remove-prefix "." extension)))
+          extensions))
+
+(defun refbox-resource--extension-allowed-p (file extensions)
+  "Return non-nil when FILE has an accepted extension."
+  (or (null extensions)
+      (let ((extension (file-name-extension file)))
+        (and extension
+             (member (downcase extension)
+                     (refbox-resource--normalize-extensions extensions))))))
+
+(defun refbox-resource--directory-list (dirs recursive)
+  "Return existing DIRS, optionally including recursive subdirectories."
+  (delete-dups
+   (apply
+    #'append
+    (mapcar
+     (lambda (dir)
+       (let ((dir (file-name-as-directory (expand-file-name dir))))
+         (when (file-directory-p dir)
+           (cons dir
+                 (when recursive
+                   (cl-loop
+                    for child in (directory-files-recursively dir "" t)
+                    when (file-directory-p child)
+                    collect (file-name-as-directory child)))))))
+     dirs))))
+
+(defun refbox-resource--library-dirs ()
+  "Return configured library directories."
+  (refbox-resource--directory-list
+   refbox-resource-library-paths
+   refbox-resource-library-paths-recursive))
+
+(defun refbox-resource--source-dirs (candidate resources)
+  "Return bibliography source directories for CANDIDATE and RESOURCES."
+  (delete-dups
+   (cl-remove
+    nil
+    (append
+     (when-let* ((path (refbox-reference-field candidate "source_path"))
+                 (dir (file-name-directory path)))
+       (list (file-name-as-directory (expand-file-name dir))))
+     (cl-loop
+      for resource in resources
+      for path = (refbox--resource-owner-source-path resource)
+      for dir = (and path (file-name-directory path))
+      when dir
+      collect (file-name-as-directory (expand-file-name dir)))))))
+
+(defun refbox-resource--find-files-in-dirs (files dirs extensions)
+  "Resolve FILES against DIRS while filtering EXTENSIONS."
+  (let (found)
+    (dolist (file files)
+      (let ((file (refbox-resource--clean-value file)))
+        (cond
+         ((file-name-absolute-p file)
+          (when (and (file-exists-p file)
+                     (refbox-resource--extension-allowed-p file extensions))
+            (push (expand-file-name file) found)))
+         (t
+          (cl-loop
+           for dir in dirs
+           for candidate = (expand-file-name file dir)
+           when (and (file-exists-p candidate)
+                     (refbox-resource--extension-allowed-p candidate extensions))
+           do (push candidate found)
+           and return t)))))
+    (nreverse (delete-dups found))))
+
+(defun refbox-resource--files-for-keys (keys dirs extensions additional-sep)
+  "Return files in DIRS associated with KEYS."
+  (let ((keys (cl-remove-if #'string-empty-p
+                            (mapcar (lambda (key)
+                                      (format "%s" (or key "")))
+                                    keys)))
+        found)
+    (when (and keys dirs)
+      (if (and extensions (not additional-sep))
+          (dolist (dir dirs)
+            (dolist (key keys)
+              (dolist (extension (refbox-resource--normalize-extensions extensions))
+                (let ((file (expand-file-name (format "%s.%s" key extension) dir)))
+                  (when (file-exists-p file)
+                    (push file found))))))
+        (dolist (dir dirs)
+          (when (file-directory-p dir)
+            (dolist (file (directory-files dir t directory-files-no-dot-files-regexp))
+              (when (and (file-regular-p file)
+                         (refbox-resource--extension-allowed-p file extensions))
+                (let ((base (file-name-base file)))
+                  (when (cl-some
+                         (lambda (key)
+                           (or (string= base key)
+                               (and additional-sep
+                                    (string-match-p
+                                     (concat "\\`" (regexp-quote key)
+                                             "\\(?:" additional-sep ".*\\)?\\'")
+                                     base))))
+                         keys)
+                    (push file found)))))))))
+    (nreverse (delete-dups found))))
+
+(defun refbox-reference-files (candidate &optional resources)
+  "Return existing file resources for CANDIDATE."
+  (let* ((resources (or resources (refbox-reference-resources candidate)))
+         (key (refbox-reference-field candidate "key"))
+         (extensions refbox-resource-library-file-extensions)
+         (field-files
+          (cl-loop
+           for resource in resources
+           for kind = (refbox--resource-kind resource)
+           for lookup = (refbox--resource-lookup-name resource)
+           when (or (equal kind "file")
+                    (and lookup
+                         (member lookup refbox-resource-file-field-names)))
+           append (refbox-resource--parse-file-field
+                   (refbox--resource-value resource))))
+         (source-dirs (refbox-resource--source-dirs candidate resources))
+         (library-dirs (refbox-resource--library-dirs)))
+    (delete-dups
+     (append
+      (refbox-resource--find-files-in-dirs
+       field-files
+       (append source-dirs library-dirs)
+       extensions)
+      (when key
+        (refbox-resource--files-for-keys
+         (list key)
+         library-dirs
+         extensions
+         refbox-resource-additional-file-separator))))))
+
+(defun refbox-resource-link-url (resource)
+  "Return the URL represented by RESOURCE."
+  (let* ((kind-name (refbox--resource-kind resource))
+         (kind (and (not (refbox--blank-string-p kind-name))
+                    (intern kind-name)))
+         (template (alist-get kind refbox-resource-link-templates))
+         (value (refbox-resource--clean-value (refbox--resource-value resource))))
+    (when (and template (not (string-empty-p value)))
+      (if (or (eq kind 'url)
+              (string-match-p "\\`https?://" value))
+          value
+        (format template value)))))
+
+(defun refbox-reference-links (candidate &optional resources)
+  "Return link URLs for CANDIDATE."
+  (delete-dups
+   (cl-loop
+    for resource in (or resources (refbox-reference-resources candidate))
+    for url = (refbox-resource-link-url resource)
+    when url
+    collect url)))
+
+(defun refbox-note--directories ()
+  "Return configured note directories."
+  (refbox-resource--directory-list refbox-note-paths nil))
+
+(defun refbox-note-files (key)
+  "Return existing note files for KEY."
+  (refbox-resource--files-for-keys
+   (list key)
+   (refbox-note--directories)
+   refbox-note-file-extensions
+   refbox-resource-additional-file-separator))
+
+(defun refbox-note--filename-key (key)
+  "Return KEY transformed for a single file name."
+  (replace-regexp-in-string "[/\\]" "_" key))
+
+(defun refbox-note-filename (key)
+  "Return the existing or default note filename for KEY."
+  (when (refbox--blank-string-p key)
+    (user-error "Reference candidate has no key"))
+  (unless refbox-note-paths
+    (user-error "`refbox-note-paths' must contain at least one directory"))
+  (unless refbox-note-file-extensions
+    (user-error "`refbox-note-file-extensions' must contain at least one extension"))
+  (or (car (refbox-note-files key))
+      (expand-file-name
+       (format "%s.%s"
+               (refbox-note--filename-key key)
+               (string-remove-prefix "." (car refbox-note-file-extensions)))
+       (car refbox-note-paths))))
+
+(defun refbox-note-default-content (key candidate)
+  "Return default note content for KEY and CANDIDATE."
+  (let ((title (string-trim (refbox-reference-format-note candidate))))
+    (if (string-empty-p title)
+        (format "#+title: %s\n\n" key)
+      (format "#+title: %s\n\n" title))))
+
+(defun refbox--read-target (prompt targets)
+  "Read one target from TARGETS using PROMPT."
+  (cond
+   ((null targets)
+    (user-error "No resources found"))
+   ((null (cdr targets))
+    (car targets))
+   (t
+    (let ((table (make-hash-table :test 'equal)))
+      (dolist (target targets)
+        (puthash target target table))
+      (gethash (completing-read prompt targets nil t) table)))))
+
+(defun refbox--open-target (function target)
+  "Open TARGET with FUNCTION and return TARGET."
+  (funcall function target)
+  target)
+
+;;;###autoload
+(defun refbox-open-files (&optional candidate)
+  "Open a file resource for CANDIDATE."
+  (interactive)
+  (let* ((candidate (or candidate (refbox-read-reference)))
+         (file (refbox--read-target
+                "File: "
+                (refbox-reference-files candidate))))
+    (refbox--open-target refbox-resource-open-file-function file)))
+
+;;;###autoload
+(defun refbox-open-links (&optional candidate)
+  "Open a link resource for CANDIDATE."
+  (interactive)
+  (let* ((candidate (or candidate (refbox-read-reference)))
+         (link (refbox--read-target
+                "Link: "
+                (refbox-reference-links candidate))))
+    (refbox--open-target refbox-resource-open-link-function link)))
+
+;;;###autoload
+(defun refbox-open-notes (&optional candidate)
+  "Open an existing note for CANDIDATE."
+  (interactive)
+  (let* ((candidate (or candidate (refbox-read-reference)))
+         (key (refbox-reference-field candidate "key")))
+    (when (refbox--blank-string-p key)
+      (user-error "Reference candidate has no key"))
+    (let ((note (refbox--read-target "Note: " (refbox-note-files key))))
+      (refbox--open-target refbox-note-open-function note))))
+
+;;;###autoload
+(defun refbox-create-note (&optional candidate)
+  "Create or open the note for CANDIDATE."
+  (interactive)
+  (let* ((candidate (or candidate (refbox-read-reference)))
+         (key (refbox-reference-field candidate "key"))
+         (file (refbox-note-filename key))
+         (exists (file-exists-p file)))
+    (make-directory (file-name-directory file) t)
+    (funcall refbox-note-open-function file)
+    (unless exists
+      (when-let* ((content-function refbox-note-content-function)
+                  (content (funcall content-function key candidate)))
+        (when (and (stringp content)
+                   (not (string-empty-p content))
+                   buffer-file-name
+                   (equal (file-truename buffer-file-name)
+                          (file-truename file)))
+          (insert content))))
+    file))
+
+(defun refbox--resource-choice-label (type target)
+  "Return display label for resource TYPE and TARGET."
+  (format "%-5s %s" type target))
+
+;;;###autoload
+(defun refbox-open (&optional candidate)
+  "Open a file, link, or note associated with CANDIDATE."
+  (interactive)
+  (let* ((candidate (or candidate (refbox-read-reference)))
+         (key (refbox-reference-field candidate "key"))
+         (resources (refbox-reference-resources candidate))
+         (choices (append
+                   (mapcar (lambda (file)
+                             (list :type 'file :target file
+                                   :label (refbox--resource-choice-label "file" file)))
+                           (refbox-reference-files candidate resources))
+                   (mapcar (lambda (link)
+                             (list :type 'link :target link
+                                   :label (refbox--resource-choice-label "link" link)))
+                           (refbox-reference-links candidate resources))
+                   (mapcar (lambda (note)
+                             (list :type 'note :target note
+                                   :label (refbox--resource-choice-label "note" note)))
+                           (and key (refbox-note-files key))))))
+    (unless choices
+      (user-error "No resources found"))
+    (let* ((table (make-hash-table :test 'equal))
+           (labels (mapcar (lambda (choice)
+                             (puthash (plist-get choice :label) choice table)
+                             (plist-get choice :label))
+                           choices))
+           (choice (gethash
+                    (if (cdr labels)
+                        (completing-read "Resource: " labels nil t)
+                      (car labels))
+                    table))
+           (target (plist-get choice :target)))
+      (pcase (plist-get choice :type)
+        ('file (refbox--open-target refbox-resource-open-file-function target))
+        ('link (refbox--open-target refbox-resource-open-link-function target))
+        ('note (refbox--open-target refbox-note-open-function target))))))
 
 (defun refbox--completion-state (&optional limit)
   "Return fresh completion state using LIMIT."

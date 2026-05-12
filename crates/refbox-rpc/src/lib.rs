@@ -13,6 +13,8 @@ pub const METHOD_INDEXED_FILES: &str = "refbox/indexedFiles";
 pub const METHOD_SEARCH_ENTRIES: &str = "refbox/searchEntries";
 pub const METHOD_ENTRY_BY_KEY: &str = "refbox/entryByKey";
 pub const METHOD_ENTRIES_BY_KEYS: &str = "refbox/entriesByKeys";
+pub const METHOD_RESOURCES_BY_KEY: &str = "refbox/resourcesByKey";
+pub const METHOD_RESOURCES_BY_KEYS: &str = "refbox/resourcesByKeys";
 pub const METHOD_RAW_ENTRY: &str = "refbox/rawEntry";
 pub const METHOD_SOURCE_LOCATION: &str = "refbox/sourceLocation";
 pub const METHOD_DIAGNOSTICS: &str = "refbox/diagnostics";
@@ -188,6 +190,7 @@ pub struct EntrySearchItem {
     pub entry_type: String,
     pub score: f64,
     pub fields: Vec<EntryFieldItem>,
+    pub resources: Vec<ResourceItem>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -213,6 +216,42 @@ pub struct EntriesByKeysRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntriesResponse {
     pub entries: Vec<EntryItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourcesByKeyRequest {
+    pub key: String,
+    pub source_path: Option<String>,
+    pub include_crossrefs: Option<bool>,
+    pub crossref_fields: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourcesByKeysRequest {
+    pub keys: Vec<String>,
+    pub limit_per_key: Option<usize>,
+    pub include_crossrefs: Option<bool>,
+    pub crossref_fields: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourcesResponse {
+    pub resources: Vec<ResourceItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceItem {
+    pub key: String,
+    pub source_path: String,
+    pub owner_key: String,
+    pub owner_source_path: String,
+    pub kind: String,
+    pub raw_name: String,
+    pub lookup_name: String,
+    pub value: String,
+    pub inherited_from_key: Option<String>,
+    pub inherited_from_source_path: Option<String>,
+    pub source: Option<SourceSpan>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

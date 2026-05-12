@@ -57,6 +57,14 @@ fn inserts_parsed_files_and_queries_records_back() {
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].key, "smith2020");
     assert_eq!(results[0].entry_type, "article");
+
+    let resources = store
+        .resources_for_entry(entries[0].id, &["crossref".to_string()])
+        .expect("resources should query");
+    assert_eq!(resources.len(), 1);
+    assert_eq!(resources[0].kind, "doi");
+    assert_eq!(resources[0].key, "smith2020");
+    assert_eq!(resources[0].owner_key, "smith2020");
 }
 
 #[test]
@@ -167,5 +175,68 @@ fn fts_queries_are_bounded_and_deterministic_for_ties() {
             .map(|result| result.key.as_str())
             .collect::<Vec<_>>(),
         vec!["alpha", "beta"]
+    );
+}
+
+#[test]
+fn resource_queries_inherit_crossref_resources() {
+    let mut store = RefboxStore::open_in_memory().expect("store should open");
+    let file = parse_bibliography_file(
+        "refs/crossref.bib",
+        r#"@proceedings{parent2020,
+  title = {Parent Work},
+  file = {parent.pdf},
+  doi = {10.1000/parent}
+}
+
+@inproceedings{child2020,
+  title = {Child Work},
+  crossref = {parent2020},
+  url = {https://example.test/child}
+}"#,
+    );
+
+    store.insert_file(&file).expect("file should insert");
+
+    let child = store
+        .entries_by_key("child2020")
+        .expect("child should query");
+    assert_eq!(child.len(), 1);
+
+    let resources = store
+        .resources_for_entry(child[0].id, &["crossref".to_string()])
+        .expect("resources should query");
+    assert!(
+        resources
+            .iter()
+            .any(|resource| resource.kind == "url" && resource.inherited_from_key.is_none())
+    );
+    let inherited_file = resources
+        .iter()
+        .find(|resource| resource.kind == "file")
+        .expect("parent file should be inherited");
+    assert_eq!(inherited_file.key, "child2020");
+    assert_eq!(inherited_file.owner_key, "parent2020");
+    assert_eq!(
+        inherited_file.inherited_from_key.as_deref(),
+        Some("parent2020")
+    );
+
+    let direct_only = store
+        .resources_for_entry(child[0].id, &[])
+        .expect("direct resources should query");
+    assert!(
+        direct_only
+            .iter()
+            .all(|resource| resource.owner_key == "child2020")
+    );
+
+    let keyed_resources = store
+        .resources_for_keys(&["child2020".to_string()], 1, &["crossref".to_string()])
+        .expect("keyed resources should query");
+    assert!(
+        keyed_resources
+            .iter()
+            .any(|resource| resource.owner_key == "parent2020")
     );
 }

@@ -107,7 +107,15 @@
              (:raw_name "title" :lookup_name "title" :value "{Alpha Reference Title}")
              (:raw_name "date" :lookup_name "date" :value "{2020-05-12}")
              (:raw_name "file" :lookup_name "file" :value "paper.pdf")
-             (:raw_name "doi" :lookup_name "doi" :value "10.1000/refbox")))
+             (:raw_name "doi" :lookup_name "doi" :value "10.1000/refbox"))
+    :resources ((:key "smith2020" :source_path "refs/main.bib"
+                  :owner_key "smith2020" :owner_source_path "refs/main.bib"
+                  :kind "file" :raw_name "file" :lookup_name "file"
+                  :value "paper.pdf")
+                 (:key "smith2020" :source_path "refs/main.bib"
+                  :owner_key "smith2020" :owner_source_path "refs/main.bib"
+                  :kind "doi" :raw_name "doi" :lookup_name "doi"
+                  :value "10.1000/refbox")))
   "Representative indexed reference candidate used by Elisp tests.")
 
 (ert-deftest refbox-test-template-formatting-supports_field_features ()
@@ -157,6 +165,105 @@
         (should (string-match-p
                  "F@ article main\\.bib"
                  (nth 2 affixation)))))))
+
+(ert-deftest refbox-test-resource-file-parsers-handle-escaped-delimiters ()
+  "File field parsers should handle path lists and triplet values."
+  (should (equal (refbox-resource-parse-file-field-default
+                  "foo\\;bar; baz ; ")
+                 '("foo;bar" "baz")))
+  (should (equal (refbox-resource-parse-file-field-triplet
+                  ":foo.pdf:PDF,:bar.pdf:PDF")
+                 '("foo.pdf" "bar.pdf")))
+  (should (equal (refbox-resource-parse-file-field-triplet
+                  "Title\\: Subtitle:C\\:\\\\title.pdf:PDF")
+                 '("C:\\title.pdf"))))
+
+(ert-deftest refbox-test-reference-files-resolve-fields-library-paths-and_extensions ()
+  "File lookup should combine indexed file fields with configured libraries."
+  (let* ((root (make-temp-file "refbox-resources-" t))
+         (refs (expand-file-name "refs" root))
+         (library (expand-file-name "library" root))
+         (subdir (expand-file-name "nested" library))
+         (candidate (copy-tree refbox-test-reference-candidate)))
+    (unwind-protect
+        (progn
+          (make-directory refs t)
+          (make-directory subdir t)
+          (dolist (file (list (expand-file-name "paper.pdf" refs)
+                              (expand-file-name "smith2020.pdf" library)
+                              (expand-file-name "smith2020-extra.pdf" subdir)
+                              (expand-file-name "smith2020.html" library)))
+            (with-temp-file file))
+          (setq candidate (plist-put candidate :source_path
+                                     (expand-file-name "main.bib" refs)))
+          (let ((refbox-resource-library-paths (list library))
+                (refbox-resource-library-paths-recursive t)
+                (refbox-resource-library-file-extensions '("pdf"))
+                (refbox-resource-additional-file-separator "-"))
+            (should
+             (equal (mapcar #'file-name-nondirectory
+                            (refbox-reference-files
+                             candidate
+                             (refbox--candidate-resources candidate)))
+                    '("paper.pdf" "smith2020.pdf" "smith2020-extra.pdf")))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-note-filename-uses-existing-or-default_path ()
+  "Note filename generation should prefer existing notes and create stable names."
+  (let* ((root (make-temp-file "refbox-notes-" t))
+         (existing (expand-file-name "smith2020.org" root)))
+    (unwind-protect
+        (progn
+          (with-temp-file existing)
+          (let ((refbox-note-paths (list root))
+                (refbox-note-file-extensions '("org" "md")))
+            (should (equal (refbox-note-filename "smith2020") existing))
+            (should (equal (refbox-note-filename "doe/2021")
+                           (expand-file-name "doe_2021.org" root)))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-link-resource-formatting ()
+  "Identifier and URL resources should format into openable links."
+  (should (equal (refbox-resource-link-url '(:kind "doi" :value "{10.1000/refbox}"))
+                 "https://doi.org/10.1000/refbox"))
+  (should (equal (refbox-resource-link-url '(:kind "url" :value "{https://example.test}"))
+                 "https://example.test")))
+
+(ert-deftest refbox-test-open-resource_commands_use_configured_functions ()
+  "Resource open commands should delegate to configured open functions."
+  (let* ((root (make-temp-file "refbox-open-" t))
+         (file (expand-file-name "paper.pdf" root))
+         opened)
+    (unwind-protect
+        (progn
+          (with-temp-file file)
+          (let ((candidate (copy-tree refbox-test-reference-candidate))
+                (refbox-resource-open-file-function
+                 (lambda (target) (push (cons 'file target) opened)))
+                (refbox-resource-open-link-function
+                 (lambda (target) (push (cons 'link target) opened)))
+                (refbox-note-open-function
+                 (lambda (target) (push (cons 'note target) opened)))
+                (refbox-note-paths (list root))
+                (refbox-note-file-extensions '("org")))
+            (setq candidate
+                  (plist-put candidate :resources
+                             (list (list :kind "file" :lookup_name "file"
+                                         :value file
+                                         :owner_source_path
+                                         (expand-file-name "main.bib" root))
+                                   (list :kind "doi" :value "10.1000/refbox"))))
+            (cl-letf (((symbol-function 'refbox-reference-resources)
+                       (lambda (_candidate)
+                         (refbox--candidate-resources candidate))))
+              (refbox-open-files candidate)
+              (refbox-open-links candidate)
+              (refbox-create-note candidate)))
+          (should (member (cons 'file file) opened))
+          (should (member (cons 'link "https://doi.org/10.1000/refbox") opened))
+          (should (member (cons 'note (expand-file-name "smith2020.org" root))
+                          opened)))
+      (delete-directory root t))))
 
 (ert-deftest refbox-test-read-references_repeats_bounded_single_reads ()
   "Multiple selection should be a sequence of bounded single-reference reads."
