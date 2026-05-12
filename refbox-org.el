@@ -34,6 +34,7 @@
 (require 'cl-lib)
 (require 'oc)
 (require 'org)
+(require 'org-element)
 (require 'subr-x)
 (require 'refbox)
 
