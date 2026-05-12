@@ -176,10 +176,22 @@
   (when-let ((citation (refbox-latex-citation-at-point)))
     (let ((point (point)))
       (or (cl-loop
-           for (key begin end) in (refbox-latex--key-spans citation)
-           when (and (<= begin point) (<= point end))
-           return key)
+	   for (key begin end) in (refbox-latex--key-spans citation)
+	   when (and (<= begin point) (<= point end))
+	   return key)
           (car (plist-get citation :keys))))))
+
+(defun refbox-latex-list-keys (&optional buffer)
+  "Return unique LaTeX citation keys in BUFFER."
+  (with-current-buffer (or buffer (current-buffer))
+    (let ((regexp (refbox-latex--command-regexp))
+          keys)
+      (save-excursion
+        (goto-char (point-min))
+        (while (re-search-forward regexp nil t)
+          (when-let ((citation (refbox-latex--parse-citation-at-match)))
+            (setq keys (append keys (plist-get citation :keys))))))
+      (delete-dups keys))))
 
 (defun refbox-latex--read-command ()
   "Read or return the configured LaTeX citation command."

@@ -139,6 +139,11 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                            (list (expand-file-name "refs/main.bib" root))))))
       (delete-directory root t))))
 
+(ert-deftest refbox-org-test-lists-current-buffer-keys ()
+  "Org key listing should deduplicate citation references."
+  (refbox-org-test-with-buffer "[cite:@alpha; @beta]\n[cite:@alpha]\n|"
+    (should (equal (refbox-org-list-keys) '("alpha" "beta")))))
+
 (provide 'test-refbox-org)
 
 ;;; test-refbox-org.el ends here

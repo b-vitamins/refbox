@@ -22,3 +22,4 @@ The format follows Keep a Changelog, and this project will follow SemVer once it
 - Added LaTeX citation detection, insertion, replacement, optional argument handling, and local bibliography discovery.
 - Added Pandoc-style Markdown citation insertion, detection, replacement, affix prompts, and current-buffer key listing.
 - Added indexed resource lookup, cross-reference resource inheritance, file/link/note resource actions, and note filename generation.
+- Added source-entry opening, raw-entry insertion, local bibliography export, and library file add workflows.

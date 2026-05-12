@@ -36,6 +36,10 @@
 (require 'subr-x)
 (require 'refbox-rpc)
 
+(declare-function refbox-org-list-keys "refbox-org" (&optional buffer))
+(declare-function refbox-latex-list-keys "refbox-latex" (&optional buffer))
+(declare-function refbox-markdown-list-keys "refbox-markdown" (&optional buffer))
+
 (defcustom refbox-reference-main-template
   "%{key:24} %{author|editor:28!refbox-template-clean} %{date|year:6!refbox-template-year} %{title:*!refbox-template-clean}"
   "Template used for the main reference completion candidate text."
@@ -180,6 +184,22 @@ When nil, associated file lookup does not filter by extension."
 (defcustom refbox-note-content-function #'refbox-note-default-content
   "Function called with KEY and CANDIDATE to initialize a new note."
   :type '(choice (const :tag "Empty note" nil) function)
+  :group 'refbox)
+
+(defcustom refbox-source-open-function #'find-file
+  "Function used to open bibliography source files."
+  :type 'function
+  :group 'refbox)
+
+(defcustom refbox-export-no-export-fields '("file")
+  "Field names removed when exporting a local bibliography."
+  :type '(repeat string)
+  :group 'refbox)
+
+(defcustom refbox-library-file-name-function
+  #'refbox-library-default-file-name
+  "Function called with KEY and EXTENSION to name added library files."
+  :type 'function
   :group 'refbox)
 
 (defvar refbox-reference-history nil
@@ -907,6 +927,263 @@ computed property such as indicators, or an indexed bibliography field."
         ('file (refbox--open-target refbox-resource-open-file-function target))
         ('link (refbox--open-target refbox-resource-open-link-function target))
         ('note (refbox--open-target refbox-note-open-function target))))))
+
+(defun refbox--reference-key (reference)
+  "Return the key represented by REFERENCE."
+  (cond
+   ((stringp reference) reference)
+   ((and (listp reference) (plist-member reference :key))
+    (plist-get reference :key))
+   (t (user-error "Reference has no key"))))
+
+(defun refbox--reference-source-path (reference)
+  "Return REFERENCE's source path, when available."
+  (when (and (listp reference) (plist-member reference :source_path))
+    (plist-get reference :source_path)))
+
+(defun refbox--reference-rpc-params (reference)
+  "Return key-shaped RPC params for REFERENCE."
+  (let ((key (refbox--reference-key reference))
+        (source-path (refbox--reference-source-path reference)))
+    (append (list :key key)
+            (unless (refbox--blank-string-p source-path)
+              (list :source_path source-path)))))
+
+(defun refbox-source-location (reference)
+  "Return indexed source location for REFERENCE."
+  (refbox-rpc-request
+   refbox-rpc-method-source-location
+   (refbox--reference-rpc-params reference)))
+
+;;;###autoload
+(defun refbox-open-source (&optional reference)
+  "Open REFERENCE's bibliography source at its indexed location."
+  (interactive)
+  (let* ((reference (or reference (refbox-read-reference)))
+         (location (refbox-source-location reference))
+         (path (plist-get location :source_path))
+         (source (plist-get location :source))
+         (start (plist-get source :start))
+         (line (plist-get start :line))
+         (column (plist-get start :column)))
+    (unless (and path source)
+      (user-error "Reference has no indexed source location"))
+    (funcall refbox-source-open-function path)
+    (when (buffer-live-p (current-buffer))
+      (goto-char (point-min))
+      (when line
+        (forward-line (1- line)))
+      (when column
+        (move-to-column column)))
+    location))
+
+(defun refbox-raw-entry (reference)
+  "Return raw bibliography entry text for REFERENCE."
+  (let ((response (refbox-rpc-request
+                   refbox-rpc-method-raw-entry
+                   (refbox--reference-rpc-params reference))))
+    (or (plist-get response :raw)
+        (user-error "Reference has no raw entry text"))))
+
+(defun refbox--reference-list (references)
+  "Return REFERENCES as a list of references."
+  (cond
+   ((null references)
+    (refbox-read-references "References: "))
+   ((and (listp references) (plist-member references :key))
+    (list references))
+   ((listp references) references)
+   (t (list references))))
+
+;;;###autoload
+(defun refbox-insert-raw-entry (&optional references)
+  "Insert raw bibliography entries for REFERENCES."
+  (interactive)
+  (let ((references (refbox--reference-list references)))
+    (unless references
+      (user-error "No references selected"))
+    (insert
+     (string-join
+      (mapcar #'refbox-raw-entry references)
+      "\n\n"))))
+
+(defun refbox--raw-entry-field-end ()
+  "Return the end position of the raw field at point."
+  (let ((depth 0)
+        (in-string nil)
+        (escaped nil)
+        done)
+    (while (and (not done) (not (eobp)))
+      (let ((char (char-after)))
+        (cond
+         (escaped
+          (setq escaped nil))
+         ((and in-string (eq char ?\\))
+          (setq escaped t))
+         ((and in-string (eq char ?\"))
+          (setq in-string nil))
+         (in-string)
+         ((eq char ?\")
+          (setq in-string t))
+         ((eq char ?{)
+          (setq depth (1+ depth)))
+         ((eq char ?})
+          (if (= depth 0)
+              (setq done t)
+            (setq depth (1- depth))))
+         ((and (eq char ?,) (= depth 0))
+          (forward-char 1)
+          (setq done t))))
+      (unless done
+        (forward-char 1)))
+    (point)))
+
+(defun refbox-raw-entry-remove-fields (raw fields)
+  "Return RAW with bibliography FIELDS removed."
+  (let ((fields (mapcar #'refbox--field-name-normalize fields)))
+    (with-temp-buffer
+      (insert raw)
+      (goto-char (point-min))
+      (while (re-search-forward
+              "^[ \t]*\\([[:alnum:]_:-]+\\)[ \t\n]*="
+              nil t)
+        (let ((field (refbox--field-name-normalize
+                      (match-string-no-properties 1)))
+              (begin (line-beginning-position)))
+          (if (member field fields)
+              (let ((end (refbox--raw-entry-field-end)))
+                (delete-region begin end)
+                (goto-char begin))
+            (goto-char (refbox--raw-entry-field-end)))))
+      (string-trim-right (buffer-string)))))
+
+(defun refbox--generic-citation-keys ()
+  "Return unique @KEY-style citation keys in the current buffer."
+  (let (keys)
+    (save-excursion
+      (goto-char (point-min))
+      (while (re-search-forward
+              "\\(?:^\\|[^[:word:]_]\\)@\\([[:alnum:]_:.#$%&/+?<>~^-]+\\)"
+              nil t)
+        (push (match-string-no-properties 1) keys)))
+    (delete-dups (nreverse keys))))
+
+(defun refbox-current-buffer-citation-keys (&optional buffer)
+  "Return unique citation keys in BUFFER."
+  (with-current-buffer (or buffer (current-buffer))
+    (cond
+     ((derived-mode-p 'org-mode)
+      (require 'refbox-org)
+      (refbox-org-list-keys))
+     ((or (derived-mode-p 'latex-mode)
+          (derived-mode-p 'LaTeX-mode)
+          (derived-mode-p 'tex-mode))
+      (require 'refbox-latex)
+      (refbox-latex-list-keys))
+     ((derived-mode-p 'markdown-mode)
+      (require 'refbox-markdown)
+      (refbox-markdown-list-keys))
+     (t
+      (refbox--generic-citation-keys)))))
+
+;;;###autoload
+(defun refbox-export-bibliography (file &optional keys)
+  "Export raw bibliography entries for KEYS to FILE."
+  (interactive
+   (list (read-file-name "Export bibliography to: " nil nil nil "references.bib")))
+  (let ((keys (or keys (refbox-current-buffer-citation-keys))))
+    (unless keys
+      (user-error "Current buffer contains no citation keys"))
+    (with-temp-file file
+      (insert
+       (string-join
+        (mapcar (lambda (key)
+                  (refbox-raw-entry-remove-fields
+                   (refbox-raw-entry key)
+                   refbox-export-no-export-fields))
+                keys)
+        "\n\n"))
+      (insert "\n"))
+    file))
+
+(defun refbox-library--safe-key (key)
+  "Return KEY made safe for a single file name."
+  (replace-regexp-in-string "[/\\]" "_" key))
+
+(defun refbox-library-default-file-name (key extension)
+  "Return default library file name for KEY and EXTENSION."
+  (format "%s.%s"
+          (refbox-library--safe-key key)
+          (string-remove-prefix "." extension)))
+
+(defun refbox-library--primary-directory ()
+  "Return the primary library directory, creating it if needed."
+  (unless refbox-resource-library-paths
+    (user-error "`refbox-resource-library-paths' must contain at least one directory"))
+  (let ((directory (file-name-as-directory
+                    (expand-file-name (car refbox-resource-library-paths)))))
+    (make-directory directory t)
+    directory))
+
+(defun refbox-library-destination-file (reference extension)
+  "Return destination library file for REFERENCE and EXTENSION."
+  (when (refbox--blank-string-p extension)
+    (user-error "Cannot add a library file without an extension"))
+  (expand-file-name
+   (funcall refbox-library-file-name-function
+            (refbox--reference-key reference)
+            extension)
+   (refbox-library--primary-directory)))
+
+(defun refbox-library--check-destination (destination overwrite)
+  "Signal when DESTINATION exists and OVERWRITE is nil."
+  (when (and (file-exists-p destination) (not overwrite))
+    (user-error "Library file already exists: %s" destination)))
+
+(defun refbox-add-buffer-to-library (reference extension &optional overwrite)
+  "Save current buffer contents as REFERENCE's library file with EXTENSION."
+  (let ((destination (refbox-library-destination-file reference extension)))
+    (refbox-library--check-destination destination overwrite)
+    (write-region (point-min) (point-max) destination nil 'silent)
+    destination))
+
+(defun refbox-add-file-to-library-from-file (reference file &optional overwrite)
+  "Copy FILE into the library for REFERENCE."
+  (let* ((extension (file-name-extension file))
+         (destination (refbox-library-destination-file reference extension)))
+    (copy-file file destination overwrite)
+    destination))
+
+(defun refbox-add-file-to-library-from-url
+    (reference url extension &optional overwrite)
+  "Copy URL into the library for REFERENCE using EXTENSION."
+  (let ((destination (refbox-library-destination-file reference extension)))
+    (url-copy-file url destination overwrite)
+    destination))
+
+;;;###autoload
+(defun refbox-add-file-to-library (&optional reference)
+  "Add a buffer, file, or URL resource to REFERENCE's library files."
+  (interactive)
+  (let* ((reference (or reference (refbox-read-reference)))
+         (source (completing-read
+                  "Add from: "
+                  '("buffer" "file" "url")
+                  nil t)))
+    (pcase source
+      ("buffer"
+       (let* ((default (and buffer-file-name
+                            (file-name-extension buffer-file-name)))
+              (extension (read-string "Extension: " default)))
+         (refbox-add-buffer-to-library reference extension)))
+      ("file"
+       (refbox-add-file-to-library-from-file
+        reference
+        (read-file-name "File: ")))
+      ("url"
+       (let ((url (read-string "URL: "))
+             (extension (read-string "Extension: ")))
+         (refbox-add-file-to-library-from-url reference url extension))))))
 
 (defun refbox--completion-state (&optional limit)
   "Return fresh completion state using LIMIT."

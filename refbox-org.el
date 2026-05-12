@@ -41,6 +41,10 @@
 (declare-function org-element-end "org-element" (element))
 (declare-function org-element-contents-begin "org-element" (element))
 (declare-function org-element-contents-end "org-element" (element))
+(declare-function org-element-map "org-element"
+                  (data types fun &optional info first-match no-recursion with-affiliated))
+(declare-function org-element-parse-buffer "org-element" (&optional granularity visible-only))
+(declare-function org-element-property "org-element" (property element))
 
 (defgroup refbox-org nil
   "Org citation integration for refbox."
@@ -332,21 +336,16 @@ DIRECTION is -1 for left and 1 for right."
 
 (defun refbox-org-open-source (key _datum _arg)
   "Open bibliography source for citation KEY."
-  (let* ((location (refbox-rpc-request
-                    refbox-rpc-method-source-location
-                    (list :key key)))
-         (path (plist-get location :source_path))
-         (source (plist-get location :source))
-         (start (plist-get source :start))
-         (line (plist-get start :line))
-         (column (plist-get start :column)))
-    (find-file path)
-    (goto-char (point-min))
-    (when line
-      (forward-line (1- line)))
-    (when column
-      (move-to-column column))
-    location))
+  (refbox-open-source key))
+
+(defun refbox-org-list-keys (&optional buffer)
+  "Return unique Org citation keys in BUFFER."
+  (with-current-buffer (or buffer (current-buffer))
+    (delete-dups
+     (org-element-map (org-element-parse-buffer)
+         'citation-reference
+       (lambda (reference)
+         (org-element-property :key reference))))))
 
 (defun refbox-org-activate (citation)
   "Activate Org CITATION with refbox text properties."

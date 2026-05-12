@@ -123,6 +123,11 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                      (list (expand-file-name "global.bib")
                            (expand-file-name "local.bib")))))))
 
+(ert-deftest refbox-latex-test-lists-current-buffer-keys ()
+  "Key listing should deduplicate LaTeX citation keys."
+  (refbox-latex-test-with-buffer "\\cite{alpha,beta}\n\\parencite{alpha}\n|"
+    (should (equal (refbox-latex-list-keys) '("alpha" "beta")))))
+
 (provide 'test-refbox-latex)
 
 ;;; test-refbox-latex.el ends here

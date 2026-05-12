@@ -265,6 +265,95 @@
                           opened)))
       (delete-directory root t))))
 
+(ert-deftest refbox-test-open-source-jumps-to-indexed-location ()
+  "Source opening should use indexed file, line, and column information."
+  (let* ((root (make-temp-file "refbox-source-" t))
+         (source-file (expand-file-name "refs.bib" root)))
+    (unwind-protect
+        (progn
+          (with-temp-file source-file
+            (insert "@article{alpha,\n  title = {Alpha}\n}\n"))
+          (cl-letf (((symbol-function 'refbox-rpc-request)
+                     (lambda (method params)
+                       (should (equal method refbox-rpc-method-source-location))
+                       (should (equal params (list :key "alpha")))
+                       `(:key "alpha"
+                         :source_path ,source-file
+                         :source (:start (:line 2 :column 2))))))
+            (refbox-open-source "alpha")
+            (should (equal (buffer-file-name) source-file))
+            (should (= (line-number-at-pos) 2))
+            (should (= (current-column) 2))))
+      (when-let ((buffer (find-buffer-visiting source-file)))
+        (kill-buffer buffer))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-raw-entry-insertion-preserves-indexed-text ()
+  "Raw entry insertion should insert daemon-provided entry text unchanged."
+  (let ((raw-alpha "@article{alpha,\n  title = {Alpha}\n}")
+        (raw-beta "@book{beta,\n  title = {Beta}\n}"))
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'refbox-rpc-request)
+                 (lambda (_method params)
+                   (pcase (plist-get params :key)
+                     ("alpha" (list :raw raw-alpha))
+                     ("beta" (list :raw raw-beta))))))
+        (refbox-insert-raw-entry '("alpha" "beta")))
+      (should (equal (buffer-string)
+                     (concat raw-alpha "\n\n" raw-beta))))))
+
+(ert-deftest refbox-test-export-bibliography-removes-configured_fields ()
+  "Local bibliography export should remove configured no-export fields."
+  (let* ((root (make-temp-file "refbox-export-" t))
+         (output (expand-file-name "local.bib" root))
+         (raw "@article{alpha,\n  title = {Alpha},\n  file = {alpha.pdf},\n  doi = {10.1000/alpha}\n}"))
+    (unwind-protect
+        (let ((refbox-export-no-export-fields '("file")))
+          (cl-letf (((symbol-function 'refbox-rpc-request)
+                     (lambda (_method _params)
+                       (list :raw raw))))
+            (should (equal (refbox-export-bibliography output '("alpha"))
+                           output)))
+          (with-temp-buffer
+            (insert-file-contents output)
+            (should (string-match-p "title = {Alpha}" (buffer-string)))
+            (should (string-match-p "doi = {10.1000/alpha}" (buffer-string)))
+            (should-not (string-match-p "file = " (buffer-string)))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-add-file-to-library_sources ()
+  "Library add helpers should cover buffer, file, and URL-style sources."
+  (let* ((root (make-temp-file "refbox-library-" t))
+         (library (expand-file-name "library" root))
+         (source (expand-file-name "source.pdf" root)))
+    (unwind-protect
+        (let ((refbox-resource-library-paths (list library)))
+          (with-temp-buffer
+            (insert "buffer-pdf")
+            (should (equal (refbox-add-buffer-to-library "alpha" "pdf")
+                           (expand-file-name "alpha.pdf" library))))
+          (with-temp-buffer
+            (insert-file-contents (expand-file-name "alpha.pdf" library))
+            (should (equal (buffer-string) "buffer-pdf")))
+          (with-temp-file source
+            (insert "file-pdf"))
+          (should (equal (refbox-add-file-to-library-from-file "beta" source)
+                         (expand-file-name "beta.pdf" library)))
+          (with-temp-buffer
+            (insert-file-contents (expand-file-name "beta.pdf" library))
+            (should (equal (buffer-string) "file-pdf")))
+          (cl-letf (((symbol-function 'url-copy-file)
+                     (lambda (_url destination _overwrite)
+                       (with-temp-file destination
+                         (insert "url-pdf")))))
+            (should (equal (refbox-add-file-to-library-from-url
+                            "gamma" "https://example.test/paper.pdf" "pdf")
+                           (expand-file-name "gamma.pdf" library))))
+          (with-temp-buffer
+            (insert-file-contents (expand-file-name "gamma.pdf" library))
+            (should (equal (buffer-string) "url-pdf"))))
+      (delete-directory root t))))
+
 (ert-deftest refbox-test-read-references_repeats_bounded_single_reads ()
   "Multiple selection should be a sequence of bounded single-reference reads."
   (let ((remaining (list refbox-test-reference-candidate

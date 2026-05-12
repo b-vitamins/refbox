@@ -107,6 +107,7 @@ names."
 (defconst refbox-rpc-method-entry-by-key "refbox/entryByKey")
 (defconst refbox-rpc-method-resources-by-key "refbox/resourcesByKey")
 (defconst refbox-rpc-method-resources-by-keys "refbox/resourcesByKeys")
+(defconst refbox-rpc-method-raw-entry "refbox/rawEntry")
 (defconst refbox-rpc-method-source-location "refbox/sourceLocation")
 
 (defun refbox-rpc-live-p ()

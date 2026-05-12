@@ -249,6 +249,9 @@ impl Daemon {
             METHOD_SOURCE_LOCATION => {
                 let request: SourceLocationRequest = parse_params(params)?;
                 let entry = self.resolve_entry(&request.key, request.source_path.as_deref())?;
+                if !std::path::Path::new(&entry.file_path).is_file() {
+                    return Err(stale_source_file(entry.file_path));
+                }
                 self.to_value(SourceLocationResponse {
                     key: entry.key,
                     source_path: entry.file_path,
@@ -516,6 +519,14 @@ fn ambiguous_key(key: String) -> JsonRpcError {
     ))
 }
 
+fn stale_source_file(path: String) -> JsonRpcError {
+    JsonRpcError::new(JsonRpcErrorObject::domain(
+        -32004,
+        "stale_source_file",
+        format!("indexed source file is not readable: {path}"),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -599,6 +610,16 @@ mod tests {
             json!({ "key": "dup2020", "source_path": first.to_string_lossy() }),
         )));
         assert_eq!(disambiguated["key"], "dup2020");
+
+        fs::remove_file(&first).expect("source fixture should delete");
+        let stale = daemon.handle_request(request(
+            METHOD_SOURCE_LOCATION,
+            json!({ "key": "dup2020", "source_path": first.to_string_lossy() }),
+        ));
+        assert_eq!(
+            stale.error.expect("expected error").data.expect("data")["kind"],
+            "stale_source_file"
+        );
 
         let unknown = daemon.handle_request(request(METHOD_RAW_ENTRY, json!({ "key": "none" })));
         assert_eq!(
