@@ -7,23 +7,13 @@ The format follows Keep a Changelog, and this project will follow SemVer once it
 ## [Unreleased]
 
 ### Added
-- Initialized the repository charter, architecture guardrails, release policy, and verification conventions.
-- Added a Rust workspace scaffold, JSON-RPC protocol types, stdio daemon, Emacs client, and load tests.
-- Codified native public API ownership and documentation guardrails.
-- Documented the `0.1.0` product contract, workflow families, non-goals, and milestone map.
-- Added serializable core records for bibliography files, entries, fields, names, dates, source spans, resource fields, diagnostics, global key lookup, and duplicate-key reporting.
-- Added a recoverable BibTeX/BibLaTeX parser with fixtures for valid, mixed, and malformed bibliography files.
-- Added the first SQLite store schema, migration, parsed-file insertion, duplicate-key queries, diagnostics/source queries, and bounded FTS search.
-- Added bibliography discovery policy, file freshness metadata, full-root sync, single-file sync, stale-file pruning, and file removal.
-- Added typed JSON-RPC contracts and daemon handlers for status, sync, indexed files, search, lookup, raw entries, source locations, diagnostics, and duplicate groups.
-- Added Emacs daemon configuration, executable/database validation, explicit status and sync commands, and lifecycle tests.
-- Added bounded Emacs reference selection, display templates, candidate annotations, and search-result field metadata.
-- Added Org citation insertion, editing, follow dispatch, activation keymap behavior, and local bibliography discovery.
-- Added LaTeX citation detection, insertion, replacement, optional argument handling, and local bibliography discovery.
-- Added Pandoc-style Markdown citation insertion, detection, replacement, affix prompts, and current-buffer key listing.
-- Added indexed resource lookup, cross-reference resource inheritance, file/link/note resource actions, and note filename generation.
-- Added source-entry opening, raw-entry insertion, local bibliography export, and library file add workflows.
-- Added daemon-backed reference formatting, CSL style selection, and formatted insert/copy commands.
-- Added bounded completion-at-point integration for Org, LaTeX, and Markdown citation contexts.
-- Added optional Embark targets and action maps for reference candidates and citations.
+- Added a local-first bibliography workflow where `.bib` files remain the source of truth and a rebuildable SQLite index powers interactive use.
+- Added a Rust daemon with JSON-RPC over stdio for status, full sync, single-file sync, indexed search, key lookup, raw entries, source locations, resources, diagnostics, duplicate keys, and formatted references.
+- Added recoverable BibTeX/BibLaTeX parsing with source spans, normalized fields, names, dates, resources, duplicate-key reporting, and queryable diagnostics for malformed files.
+- Added Emacs commands for daemon lifecycle, status, sync, bounded reference selection, display templates, source opening, raw-entry insertion, local bibliography export, and formatted reference copy/insert workflows.
+- Added Org, LaTeX, and Markdown citation insertion and editing workflows, including local bibliography discovery where the mode exposes it.
+- Added indexed resource workflows for files, links, notes, library-file creation, cross-reference resource inheritance, and configurable open/create functions.
+- Added completion-at-point support for Org, LaTeX, and Markdown citation contexts, backed by bounded daemon queries rather than full-corpus Elisp tables.
+- Added optional Embark targets and action maps for reference candidates and citation keys at point.
+- Added source and binary build targets, CI verification, release archive packaging, checksums, and documentation for installation and daily use.
 - Added deterministic scale benchmark profiles with JSON reports, CI regression thresholds, 100k-entry release coverage, 1M-entry local coverage, real-corpus validation, daemon query timings, and Emacs candidate-rendering timings.

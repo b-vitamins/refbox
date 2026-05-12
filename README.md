@@ -2,108 +2,262 @@
 
 `refbox` is a local-first bibliography engine with an Emacs front-end.
 
-It is designed for large BibTeX and BibLaTeX corpora. Bibliography files remain
-the source of truth, while a derived index supports interactive search,
-citation selection, source lookup, and resource workflows. The Rust side owns
-parsing, normalization, indexing, ranking, and query execution. The Emacs Lisp
-side owns commands, session state, editing integration, and presentation.
+Bibliography files stay as plain `.bib` source files. The daemon builds a
+derived SQLite index from those files and answers bounded JSON-RPC queries over
+stdio. Emacs starts the daemon on demand, keeps session state, and presents
+commands for search, citation editing, resources, notes, source lookup, and
+completion.
 
-## Status
+## Install
 
-This repository is under active development. Work remains under `Unreleased`
-until the project satisfies the `0.1.0` release contract below.
-
-## 0.1.0 Contract
-
-`0.1.0` is the first daily-use release of the native bibliography workflow. A
-user should be able to keep bibliography files as the source of truth, run an
-indexed daemon over those files, and use Emacs commands that request bounded
-results from the daemon instead of materializing the full corpus in Elisp.
-
-The release must cover these first-class workflow families:
-
-- sync and freshness reporting for configured bibliography roots
-- search, selection, lookup, and display of indexed references
-- citation insertion and citation editing in Org, LaTeX, and Markdown buffers
-- resource actions for files, links, and identifier-backed references
-- note actions that are explicit, indexed where appropriate, and testable
-- source lookup for opening the bibliography entry behind a reference
-- parse and index diagnostics that remain queryable from Emacs
-- completion-at-point integration backed by bounded daemon queries
-- Embark integration for contextual reference actions
-- reference formatting with explicit style selection
-
-The public API is native to `refbox`: command names, user options, RPC methods,
-and data contracts are defined by this project.
-
-### Non-Goals For 0.1.0
-
-- alternate command, variable, or package-name aliases
-- full-corpus Elisp completion tables or full-corpus Elisp-side formatting
-- a database as the source of truth for bibliography content
-- citation workflow support outside Org, LaTeX, and Markdown
-
-## 0.1.0 Milestone Map
-
-- Product contract: #1
-- Core records and parsing: #2, #3
-- Store, sync, and RPC: #4, #5, #6
-- Emacs lifecycle and indexed selection: #7, #8
-- Citation workflows: #9, #10, #11
-- Resources, actions, and formatting: #12, #13, #14
-- Completion and contextual actions: #15, #16
-- Contracts, benchmarks, packaging, and release docs: #17, #18, #19, #20
-
-## Architecture
-
-- Source files stay plain `.bib` files.
-- The index is derived and rebuildable.
-- The daemon exposes bounded JSON-RPC queries over stdio.
-- Emacs never receives or formats the full bibliography for completion.
-- Incremental sync keeps changed files fresh without rebuilding unrelated
-  corpus state.
-
-## Development
-
-The project will ship as one repository containing:
-
-- a Rust workspace for the daemon, indexer, query engine, and protocol types
-- root-level Emacs Lisp files for the frontend package
-
-Use `CHANGELOG.md` for durable change notes and `AGENTS.md` for project
-invariants.
-
-`make test` is the local all-checks entry point. It runs Rust formatting checks,
-clippy, Rust tests, Emacs batch tests, byte compilation, and the conservative
-CI benchmark gate:
+Build from source with the system SQLite library:
 
 ```bash
-make test
-```
-
-Source builds use the system SQLite library by default:
-
-```bash
-make build
 make release
 ```
 
-For portable daemon binaries that do not depend on the host SQLite library, use
-the bundled SQLite targets. These compile SQLite from source and require a C
-compiler toolchain:
+The daemon binary is written to `target/release/refbox`. Put that binary on
+`PATH`, or point Emacs at it with `refbox-server-program`.
+
+For a portable daemon binary with SQLite compiled in, use:
 
 ```bash
-make build-bundled-sqlite
 make release-bundled-sqlite
 ```
 
-The release daemon is written to `target/release/refbox`. Keep that binary on
-`PATH`, and keep the root `refbox*.el` files on Emacs' `load-path` or install
-them through your package manager once packaged.
+Bundled SQLite builds require a C compiler toolchain. Tagged release workflows
+publish `refbox-<platform>.tar.gz` archives containing the daemon binary,
+`LICENSE`, and a `.sha256` checksum. The Emacs package files are the root
+`refbox*.el` files in this repository.
 
-Tagged release workflows package platform daemon archives as
-`refbox-<platform>.tar.gz`. Each archive contains the daemon binary and
-`LICENSE`; the workflow also publishes a `.sha256` checksum alongside it.
+Add the repository to Emacs' `load-path`:
+
+```elisp
+(add-to-list 'load-path "/path/to/refbox")
+(require 'refbox)
+```
+
+## Configure
+
+Minimal daemon configuration:
+
+```elisp
+(setq refbox-server-program "refbox")
+(setq refbox-bibliography-roots '("~/bibliography"))
+(setq refbox-database-file
+      (expand-file-name "refbox.sqlite" user-emacs-directory))
+```
+
+The current daemon indexes the first directory in `refbox-bibliography-roots`.
+The SQLite database is derived state. If it is deleted while the daemon is not
+running, `M-x refbox-sync` can rebuild it from the bibliography root.
+
+Useful resource, note, and formatting options:
+
+```elisp
+(setq refbox-resource-library-paths '("~/papers"))
+(setq refbox-resource-library-paths-recursive t)
+(setq refbox-note-paths '("~/notes/references"))
+
+(setq refbox-csl-style-directories '("~/csl/styles"))
+(setq refbox-csl-locale-directories '("~/csl/locales"))
+(setq refbox-csl-style "apa")
+(setq refbox-csl-locale "en-US")
+```
+
+## First Sync
+
+Run:
+
+```text
+M-x refbox-sync
+```
+
+This starts the daemon if needed, discovers bibliography files under the root,
+parses changed files, and updates the derived index. Check index state with:
+
+```text
+M-x refbox-status
+```
+
+After editing a bibliography file, use:
+
+```text
+M-x refbox-sync-current-file
+```
+
+or sync an explicit file with `M-x refbox-sync-file`.
+
+## Daily Use
+
+Reference selection is backed by bounded daemon search:
+
+```text
+M-x refbox-read-reference
+M-x refbox-read-references
+```
+
+Open associated material:
+
+```text
+M-x refbox-open
+M-x refbox-open-files
+M-x refbox-open-links
+M-x refbox-open-notes
+M-x refbox-create-note
+```
+
+Open or insert source data:
+
+```text
+M-x refbox-open-source
+M-x refbox-insert-raw-entry
+M-x refbox-export-bibliography
+```
+
+Formatted references require `refbox-csl-style`, `refbox-csl-locale`, and their
+directories, unless `refbox-format-reference-function` supplies custom
+formatting:
+
+```text
+M-x refbox-select-csl-style
+M-x refbox-insert-reference
+M-x refbox-copy-reference
+```
+
+Add a file, URL, or current buffer to the configured library directory:
+
+```text
+M-x refbox-add-file-to-library
+```
+
+## Org
+
+Load the Org integration and enable completion in Org buffers:
+
+```elisp
+(with-eval-after-load 'org
+  (require 'refbox-org)
+  (refbox-org-register-processor)
+  (add-hook 'org-mode-hook #'refbox-org-setup-capf))
+```
+
+Use:
+
+```text
+M-x refbox-org-insert-citation
+M-x refbox-org-set-reference-prefix
+M-x refbox-org-set-reference-suffix
+M-x refbox-org-shift-reference-left
+M-x refbox-org-shift-reference-right
+M-x refbox-org-delete-at-point
+M-x refbox-org-kill-at-point
+M-x refbox-org-follow-at-point
+```
+
+Org completion is active inside Org citation references and is scoped by Org's
+declared bibliography files when they are present.
+
+## LaTeX
+
+Load the LaTeX integration and enable completion in TeX buffers:
+
+```elisp
+(require 'refbox-latex)
+(add-hook 'latex-mode-hook #'refbox-latex-setup-capf)
+(add-hook 'LaTeX-mode-hook #'refbox-latex-setup-capf)
+(add-hook 'tex-mode-hook #'refbox-latex-setup-capf)
+```
+
+Use:
+
+```text
+M-x refbox-latex-insert-citation
+```
+
+Relevant options:
+
+```elisp
+(setq refbox-latex-default-command "cite")
+(setq refbox-latex-prompt-for-command nil)
+(setq refbox-latex-prompt-for-optional-arguments nil)
+```
+
+LaTeX completion is active inside recognized citation commands. Bibliography
+scoping uses `\bibliography{...}`, `\addbibresource{...}`,
+`reftex-default-bibliography`, `LaTeX-bibliography-list`, and readable
+`TeX-master` files.
+
+## Markdown
+
+Load the Markdown integration and enable completion:
+
+```elisp
+(require 'refbox-markdown)
+(add-hook 'markdown-mode-hook #'refbox-markdown-setup-capf)
+(add-hook 'gfm-mode-hook #'refbox-markdown-setup-capf)
+```
+
+Use:
+
+```text
+M-x refbox-markdown-insert-citation
+M-x refbox-markdown-insert-key
+```
+
+Relevant options:
+
+```elisp
+(setq refbox-markdown-prompt-for-affixes nil)
+(setq refbox-markdown-default-prefix nil)
+(setq refbox-markdown-default-suffix nil)
+```
+
+Markdown insertion uses Pandoc-style `[@key]` citations.
+
+## CAPF And Embark
+
+For a generic completion hook, use:
+
+```elisp
+(add-hook 'completion-at-point-functions #'refbox-completion-at-point)
+```
+
+Mode-specific setup commands are usually better because they install a
+buffer-local completion function:
+
+```text
+M-x refbox-setup-capf
+M-x refbox-org-setup-capf
+M-x refbox-latex-setup-capf
+M-x refbox-markdown-setup-capf
+```
+
+Embark integration is optional:
+
+```elisp
+(with-eval-after-load 'embark
+  (require 'refbox-embark)
+  (refbox-embark-setup))
+```
+
+It adds targets for refbox completion candidates and citation keys at point.
+Actions include opening resources, files, links, notes, source entries, raw
+entries, copying formatted references, and adding library files.
+
+## Diagnostics
+
+Malformed bibliography files do not discard the entire corpus. Sync preserves
+recoverable entries and stores parse diagnostics in the derived index.
+
+`M-x refbox-status` reports the current diagnostic count. After fixing a source
+file, run `M-x refbox-sync-current-file` from that buffer or `M-x refbox-sync`
+for the full root.
+
+## Performance
+
+Interactive paths request bounded result sets from the daemon. Completion and
+reference selection do not send the full bibliography to Emacs.
 
 Benchmark reports are written as JSON under `target/refbox-bench/`:
 
@@ -124,3 +278,57 @@ make bench-real
 
 Set `REFBOX_BENCH_REAL_SOURCE_PATH` as well when the key is duplicated across
 source files.
+
+Benchmark reports distinguish daemon query latency from Emacs candidate
+rendering latency.
+
+## Troubleshooting
+
+`refbox server executable not found`: build the daemon with `make release`, put
+`target/release/refbox` on `PATH`, or set `refbox-server-program` to an
+absolute executable path.
+
+`refbox bibliography root does not exist`: check `refbox-bibliography-roots`.
+The current daemon uses the first configured root.
+
+Stale search results: run `M-x refbox-sync-current-file` after editing one
+bibliography file, or `M-x refbox-sync` after changing many files. If needed,
+shut down Emacs, remove `refbox-database-file`, and run `M-x refbox-sync` to
+rebuild the derived index.
+
+Malformed bibliography files: run `M-x refbox-status` and check the diagnostic
+count. Fix the `.bib` source file and sync again.
+
+Missing file resources: check `file` fields, `refbox-resource-library-paths`,
+`refbox-resource-library-paths-recursive`, and
+`refbox-resource-library-file-extensions`. `M-x refbox-add-file-to-library`
+writes new files into the first configured library path.
+
+Missing links: `refbox-open-links` uses indexed URL and identifier fields such
+as `url`, `doi`, `pmid`, and `pmcid`, plus `refbox-resource-link-templates`.
+
+Missing notes: configure `refbox-note-paths` and
+`refbox-note-file-extensions`. Use `M-x refbox-create-note` to create the
+default note file for a reference.
+
+## Development
+
+Use `CHANGELOG.md` for durable change notes and `AGENTS.md` for project
+invariants.
+
+`make test` is the local all-checks entry point. It runs Rust formatting checks,
+clippy, Rust tests, Emacs batch tests, byte compilation, and the conservative
+CI benchmark gate:
+
+```bash
+make test
+```
+
+Source builds:
+
+```bash
+make build
+make build-bundled-sqlite
+make release
+make release-bundled-sqlite
+```
