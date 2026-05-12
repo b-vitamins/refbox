@@ -103,6 +103,7 @@ names."
 (defconst refbox-rpc-method-status "refbox/status")
 (defconst refbox-rpc-method-sync-full "refbox/syncFull")
 (defconst refbox-rpc-method-sync-file "refbox/syncFile")
+(defconst refbox-rpc-method-search-entries "refbox/searchEntries")
 
 (defun refbox-rpc-live-p ()
   "Return non-nil when the refbox JSON-RPC process is live."
@@ -144,6 +145,16 @@ names."
     (unless (file-writable-p parent)
       (user-error "refbox database directory is not writable: %s" parent))
     db))
+
+(defun refbox-rpc--search-limit (&optional limit)
+  "Return LIMIT clamped to configured refbox search bounds."
+  (let ((limit (or limit refbox-search-default-limit))
+        (maximum refbox-search-maximum-limit))
+    (unless (and (integerp limit) (>= limit 0))
+      (user-error "`refbox-search-default-limit' must be a non-negative integer"))
+    (unless (and (integerp maximum) (> maximum 0))
+      (user-error "`refbox-search-maximum-limit' must be a positive integer"))
+    (min limit maximum)))
 
 (defun refbox-rpc--configuration ()
   "Return the connection-relevant refbox daemon configuration."

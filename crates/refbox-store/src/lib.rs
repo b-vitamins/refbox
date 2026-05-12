@@ -82,6 +82,7 @@ pub struct SearchResult {
     pub entry_id: i64,
     pub file_path: String,
     pub key: String,
+    pub entry_type: String,
     pub score: f64,
 }
 
@@ -278,7 +279,7 @@ impl RefboxStore {
 
         let limit = i64::try_from(limit).map_err(|_| StoreError::LimitOutOfRange(limit))?;
         let mut statement = self.connection.prepare(
-            "SELECT e.id, f.path, e.entry_key, bm25(entry_fts) AS score
+            "SELECT e.id, f.path, e.entry_key, e.entry_type, bm25(entry_fts) AS score
              FROM entry_fts
              JOIN entries e ON e.id = entry_fts.rowid
              JOIN files f ON f.id = e.file_id
@@ -292,7 +293,8 @@ impl RefboxStore {
                     entry_id: row.get(0)?,
                     file_path: row.get(1)?,
                     key: row.get(2)?,
-                    score: row.get(3)?,
+                    entry_type: row.get(3)?,
+                    score: row.get(4)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;

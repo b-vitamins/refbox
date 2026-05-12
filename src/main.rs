@@ -7,9 +7,9 @@ use refbox_core::PingInfo;
 use refbox_index::{DiscoveryPolicy, SyncEngine, SyncStatus};
 use refbox_rpc::{
     DiagnosticItem, DiagnosticsResponse, DuplicateGroupItem, DuplicateGroupsResponse, EmptyParams,
-    EntriesByKeysRequest, EntriesResponse, EntryByKeyRequest, EntryItem, EntryRefItem,
-    EntrySearchItem, IndexedFilesResponse, JsonRpcError, JsonRpcErrorObject, JsonRpcRequest,
-    JsonRpcResponse, LimitRequest, METHOD_DIAGNOSTICS, METHOD_DUPLICATE_GROUPS,
+    EntriesByKeysRequest, EntriesResponse, EntryByKeyRequest, EntryFieldItem, EntryItem,
+    EntryRefItem, EntrySearchItem, IndexedFilesResponse, JsonRpcError, JsonRpcErrorObject,
+    JsonRpcRequest, JsonRpcResponse, LimitRequest, METHOD_DIAGNOSTICS, METHOD_DUPLICATE_GROUPS,
     METHOD_ENTRIES_BY_KEYS, METHOD_ENTRY_BY_KEY, METHOD_INDEXED_FILES, METHOD_PING,
     METHOD_RAW_ENTRY, METHOD_SEARCH_ENTRIES, METHOD_SOURCE_LOCATION, METHOD_STATUS,
     METHOD_SYNC_FILE, METHOD_SYNC_FULL, RawEntryRequest, RawEntryResponse, SearchEntriesRequest,
@@ -149,17 +149,29 @@ impl Daemon {
             METHOD_SEARCH_ENTRIES => {
                 let request: SearchEntriesRequest = parse_params(params)?;
                 let limit = clamp_limit(request.limit);
-                let entries = self
+                let search_results = self
                     .store
                     .search(&request.query, limit)
-                    .map_err(store_error)?
+                    .map_err(store_error)?;
+                let entries = search_results
                     .into_iter()
-                    .map(|entry| EntrySearchItem {
-                        key: entry.key,
-                        source_path: entry.file_path,
-                        score: entry.score,
+                    .map(|entry| {
+                        let fields = self
+                            .store
+                            .fields_for_entry(entry.entry_id)
+                            .map_err(store_error)?
+                            .into_iter()
+                            .map(field_item)
+                            .collect();
+                        Ok(EntrySearchItem {
+                            key: entry.key,
+                            source_path: entry.file_path,
+                            entry_type: entry.entry_type,
+                            score: entry.score,
+                            fields,
+                        })
                     })
-                    .collect();
+                    .collect::<std::result::Result<Vec<_>, JsonRpcError>>()?;
                 self.to_value(SearchEntriesResponse { entries })
             }
             METHOD_ENTRY_BY_KEY => {
@@ -390,6 +402,15 @@ fn entry_item(entry: StoredEntry) -> EntryItem {
     }
 }
 
+fn field_item(field: refbox_store::StoredField) -> EntryFieldItem {
+    EntryFieldItem {
+        raw_name: field.raw_name,
+        lookup_name: field.lookup_name,
+        value: field.value,
+        source: field.source,
+    }
+}
+
 fn store_error(error: refbox_store::StoreError) -> JsonRpcError {
     JsonRpcError::new(JsonRpcErrorObject::internal_error(error.to_string()))
 }
@@ -448,6 +469,8 @@ mod tests {
             1
         );
         assert_eq!(search["entries"][0]["key"], "a2020");
+        assert_eq!(search["entries"][0]["entry_type"], "article");
+        assert_eq!(search["entries"][0]["fields"][0]["lookup_name"], "title");
 
         let raw =
             result(daemon.handle_request(request(METHOD_RAW_ENTRY, json!({ "key": "a2020" }))));

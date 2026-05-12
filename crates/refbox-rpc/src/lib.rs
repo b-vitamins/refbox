@@ -185,7 +185,17 @@ pub struct SearchEntriesResponse {
 pub struct EntrySearchItem {
     pub key: String,
     pub source_path: String,
+    pub entry_type: String,
     pub score: f64,
+    pub fields: Vec<EntryFieldItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntryFieldItem {
+    pub raw_name: String,
+    pub lookup_name: String,
+    pub value: String,
+    pub source: Option<SourceSpan>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

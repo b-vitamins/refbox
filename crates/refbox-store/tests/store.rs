@@ -56,6 +56,7 @@ fn inserts_parsed_files_and_queries_records_back() {
     let results = store.search("scalable", 5).expect("search should work");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].key, "smith2020");
+    assert_eq!(results[0].entry_type, "article");
 }
 
 #[test]
