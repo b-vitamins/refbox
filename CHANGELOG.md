@@ -15,3 +15,4 @@ The format follows Keep a Changelog, and this project will follow SemVer once it
 - Added a recoverable BibTeX/BibLaTeX parser with fixtures for valid, mixed, and malformed bibliography files.
 - Added the first SQLite store schema, migration, parsed-file insertion, duplicate-key queries, diagnostics/source queries, and bounded FTS search.
 - Added bibliography discovery policy, file freshness metadata, full-root sync, single-file sync, stale-file pruning, and file removal.
+- Added typed JSON-RPC contracts and daemon handlers for status, sync, indexed files, search, lookup, raw entries, source locations, diagnostics, and duplicate groups.

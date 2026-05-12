@@ -226,6 +226,17 @@ impl RefboxStore {
         Ok(fields)
     }
 
+    pub fn raw_entry(&self, entry_id: i64) -> Result<Option<String>> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT raw_text FROM entries WHERE id = ?1",
+                params![entry_id],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
     pub fn diagnostics(&self) -> Result<Vec<StoredDiagnostic>> {
         let mut statement = self.connection.prepare(
             "SELECT d.id, f.path, d.entry_id, d.severity, d.code, d.message, d.target_kind,

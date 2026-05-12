@@ -31,6 +31,9 @@ thiserror = "2.0.16"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 refbox-core = { path = "crates/refbox-core" }
+refbox-index = { path = "crates/refbox-index" }
 refbox-rpc = { path = "crates/refbox-rpc" }
+refbox-store = { path = "crates/refbox-store" }

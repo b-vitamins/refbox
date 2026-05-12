@@ -359,7 +359,10 @@ dependencies = [
  "anyhow",
  "clap",
  "refbox-core",
+ "refbox-index",
  "refbox-rpc",
+ "refbox-store",
+ "serde",
  "serde_json",
 ]
 
@@ -384,6 +387,7 @@ dependencies = [
 name = "refbox-rpc"
 version = "0.0.0"
 dependencies = [
+ "refbox-core",
  "serde",
  "serde_json",
  "thiserror",
