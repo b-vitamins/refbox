@@ -166,6 +166,23 @@
                  "F@ article main\\.bib"
                  (nth 2 affixation)))))))
 
+(ert-deftest refbox-test-read-reference-contract-returns_candidate_payload ()
+  "The chooser should return candidate metadata, not display strings."
+  (let ((refbox-reference-main-template "%{key} %{title!refbox-template-clean}")
+        calls)
+    (cl-letf (((symbol-function 'refbox-rpc-request)
+               (lambda (method params)
+                 (push (list method params) calls)
+                 (should (equal method refbox-rpc-method-search-entries))
+                 (list :entries (list refbox-test-reference-candidate))))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _args)
+                 (car (all-completions "smith" collection)))))
+      (let ((selected (refbox-read-reference "Reference: " "smith" 3)))
+        (should (equal (plist-get selected :key) "smith2020"))
+        (should (equal (plist-get selected :source_path) "refs/main.bib"))
+        (should (equal (cadar calls) (list :query "smith" :limit 3)))))))
+
 (ert-deftest refbox-test-resource-file-parsers-handle-escaped-delimiters ()
   "File field parsers should handle path lists and triplet values."
   (should (equal (refbox-resource-parse-file-field-default
