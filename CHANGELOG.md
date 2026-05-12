@@ -19,3 +19,4 @@ The format follows Keep a Changelog, and this project will follow SemVer once it
 - Added Emacs daemon configuration, executable/database validation, explicit status and sync commands, and lifecycle tests.
 - Added bounded Emacs reference selection, display templates, candidate annotations, and search-result field metadata.
 - Added Org citation insertion, editing, follow dispatch, activation keymap behavior, and local bibliography discovery.
+- Added LaTeX citation detection, insertion, replacement, optional argument handling, and local bibliography discovery.

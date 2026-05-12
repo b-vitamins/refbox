@@ -213,6 +213,12 @@
   (when (file-exists-p org-tests)
     (load org-tests nil t)))
 
+(let ((latex-tests (expand-file-name
+                    "test-refbox-latex.el"
+                    (file-name-directory (or load-file-name buffer-file-name)))))
+  (when (file-exists-p latex-tests)
+    (load latex-tests nil t)))
+
 (provide 'test-refbox)
 
 ;;; test-refbox.el ends here
