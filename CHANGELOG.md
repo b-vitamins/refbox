@@ -6,6 +6,8 @@ The format follows Keep a Changelog, and this project will follow SemVer once it
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-05-12
+
 ### Added
 - Added a local-first bibliography workflow where `.bib` files remain the source of truth and a rebuildable SQLite index powers interactive use.
 - Added a Rust daemon with JSON-RPC over stdio for status, full sync, single-file sync, indexed search, key lookup, raw entries, source locations, resources, diagnostics, duplicate keys, and formatted references.

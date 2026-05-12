@@ -355,7 +355,7 @@ dependencies = [
 
 [[package]]
 name = "refbox"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -369,7 +369,7 @@ dependencies = [
 
 [[package]]
 name = "refbox-bench"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -380,7 +380,7 @@ dependencies = [
 
 [[package]]
 name = "refbox-core"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -388,7 +388,7 @@ dependencies = [
 
 [[package]]
 name = "refbox-index"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "globset",
  "refbox-core",
@@ -397,7 +397,7 @@ dependencies = [
 
 [[package]]
 name = "refbox-rpc"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "refbox-core",
  "serde",
@@ -407,7 +407,7 @@ dependencies = [
 
 [[package]]
 name = "refbox-store"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "refbox-core",
  "refbox-index",

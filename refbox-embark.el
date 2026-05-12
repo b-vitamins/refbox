@@ -4,7 +4,7 @@
 
 ;; Author: refbox contributors <maintainers@example.invalid>
 ;; Maintainer: refbox contributors <maintainers@example.invalid>
-;; Version: 0.0.0
+;; Version: 0.1.0
 ;; Package-Requires: ((emacs "29.1") (jsonrpc "1.0.27"))
 ;; Keywords: bib, convenience
 
