@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  daemon:
+    name: Build daemon (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux-x86_64
+          - os: macos-latest
+            name: macos
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release daemon with bundled SQLite
+        run: make release-bundled-sqlite
+
+      - name: Package daemon
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="refbox-${{ matrix.name }}"
+          mkdir -p "dist/${package}"
+          cp "target/release/refbox" "dist/${package}/"
+          cp LICENSE "dist/${package}/"
+          tar -C dist -czf "dist/${package}.tar.gz" "${package}"
+          shasum -a 256 "dist/${package}.tar.gz" > "dist/${package}.tar.gz.sha256"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: refbox-${{ matrix.name }}
+          path: |
+            dist/refbox-${{ matrix.name }}.tar.gz
+            dist/refbox-${{ matrix.name }}.tar.gz.sha256
+
+  publish:
+    name: Publish release assets
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: daemon
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download daemon artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Upload GitHub release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          gh release view "${tag}" >/dev/null 2>&1 || \
+            gh release create "${tag}" --title "${tag}" --notes "refbox ${tag}"
+          gh release upload "${tag}" \
+            release-assets/refbox-*.tar.gz \
+            release-assets/refbox-*.tar.gz.sha256 \
+            --clobber

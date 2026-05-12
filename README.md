@@ -73,8 +73,33 @@ The project will ship as one repository containing:
 Use `CHANGELOG.md` for durable change notes and `AGENTS.md` for project
 invariants.
 
-Current checks:
+`make test` is the local all-checks entry point. It runs Rust formatting checks,
+clippy, Rust tests, Emacs batch tests, and byte compilation:
 
 ```bash
 make test
 ```
+
+Source builds use the system SQLite library by default:
+
+```bash
+make build
+make release
+```
+
+For portable daemon binaries that do not depend on the host SQLite library, use
+the bundled SQLite targets. These compile SQLite from source and require a C
+compiler toolchain:
+
+```bash
+make build-bundled-sqlite
+make release-bundled-sqlite
+```
+
+The release daemon is written to `target/release/refbox`. Keep that binary on
+`PATH`, and keep the root `refbox*.el` files on Emacs' `load-path` or install
+them through your package manager once packaged.
+
+Tagged release workflows package platform daemon archives as
+`refbox-<platform>.tar.gz`. Each archive contains the daemon binary and
+`LICENSE`; the workflow also publishes a `.sha256` checksum alongside it.
