@@ -34,6 +34,7 @@
 (require 'browse-url)
 (require 'cl-lib)
 (require 'subr-x)
+(require 'xml)
 (require 'refbox-rpc)
 
 (declare-function refbox-org-list-keys "refbox-org" (&optional buffer))
@@ -194,6 +195,31 @@ When nil, associated file lookup does not filter by extension."
 (defcustom refbox-export-no-export-fields '("file")
   "Field names removed when exporting a local bibliography."
   :type '(repeat string)
+  :group 'refbox)
+
+(defcustom refbox-csl-style-directories nil
+  "Directories containing CSL style files."
+  :type '(repeat directory)
+  :group 'refbox)
+
+(defcustom refbox-csl-locale-directories nil
+  "Directories containing CSL locale files."
+  :type '(repeat directory)
+  :group 'refbox)
+
+(defcustom refbox-csl-style nil
+  "Selected CSL style file or style id."
+  :type '(choice (const :tag "Unset" nil) string)
+  :group 'refbox)
+
+(defcustom refbox-csl-locale nil
+  "Selected CSL locale file or locale id."
+  :type '(choice (const :tag "Unset" nil) string)
+  :group 'refbox)
+
+(defcustom refbox-format-reference-function nil
+  "Optional function used instead of daemon reference formatting."
+  :type '(choice (const :tag "Use daemon formatter" nil) function)
   :group 'refbox)
 
 (defcustom refbox-library-file-name-function
@@ -1105,6 +1131,182 @@ computed property such as indicators, or an indexed bibliography field."
         "\n\n"))
       (insert "\n"))
     file))
+
+(defun refbox-csl--directories (dirs)
+  "Return existing CSL DIRS."
+  (refbox-resource--directory-list dirs nil))
+
+(defun refbox-csl--readable-file-p (file)
+  "Return non-nil when FILE is a readable regular file."
+  (and (file-regular-p file)
+       (file-readable-p file)))
+
+(defun refbox-csl-style-files ()
+  "Return configured CSL style files."
+  (apply
+   #'append
+   (mapcar (lambda (dir)
+             (cl-remove-if-not
+              #'refbox-csl--readable-file-p
+              (directory-files dir t "\\.csl\\'")))
+           (refbox-csl--directories refbox-csl-style-directories))))
+
+(defun refbox-csl-locale-files ()
+  "Return configured CSL locale files."
+  (apply
+   #'append
+   (mapcar (lambda (dir)
+             (cl-remove-if-not
+              #'refbox-csl--readable-file-p
+              (directory-files dir t "\\.xml\\'")))
+           (refbox-csl--directories refbox-csl-locale-directories))))
+
+(defun refbox-csl--node-children (node)
+  "Return XML NODE children."
+  (cddr node))
+
+(defun refbox-csl--child-node (node name)
+  "Return the first direct XML child named NAME under NODE."
+  (cl-find-if (lambda (child)
+                (and (listp child)
+                     (eq (car child) name)))
+              (refbox-csl--node-children node)))
+
+(defun refbox-csl--node-text (node)
+  "Return text content from XML NODE."
+  (string-trim
+   (mapconcat (lambda (child)
+                (if (stringp child) child ""))
+              (refbox-csl--node-children node)
+              "")))
+
+(defun refbox-csl-style-metadata (file)
+  "Return metadata plist for CSL style FILE."
+  (let* ((root (car (xml-parse-file file)))
+         (info-node (and root (refbox-csl--child-node root 'info)))
+         (title-node (and info-node (refbox-csl--child-node info-node 'title)))
+         (id-node (and info-node (refbox-csl--child-node info-node 'id)))
+         (title (and title-node (refbox-csl--node-text title-node)))
+         (id (and id-node (refbox-csl--node-text id-node))))
+    (list :file file
+          :id (unless (refbox--blank-string-p id) id)
+          :title (if (refbox--blank-string-p title)
+                     (file-name-base file)
+                   title))))
+
+(defun refbox-csl--name-match-p (file value extension)
+  "Return non-nil when FILE name matches VALUE with EXTENSION."
+  (let ((name (if (string-suffix-p extension value)
+                  value
+                (concat value extension))))
+    (or (string= (file-name-nondirectory file) name)
+        (string= (file-name-base file) value))))
+
+(defun refbox-csl--style-match-p (file value)
+  "Return non-nil when CSL style FILE matches VALUE."
+  (or (refbox-csl--name-match-p file value ".csl")
+      (equal (plist-get (ignore-errors (refbox-csl-style-metadata file)) :id)
+             value)))
+
+(defun refbox-csl--locale-match-p (file value)
+  "Return non-nil when CSL locale FILE matches VALUE."
+  (or (refbox-csl--name-match-p file value ".xml")
+      (refbox-csl--name-match-p file (concat "locales-" value) ".xml")))
+
+(defun refbox-csl--resolve-file (value files kind match-function)
+  "Resolve VALUE against FILES for KIND using MATCH-FUNCTION."
+  (cond
+   ((refbox--blank-string-p value)
+    (user-error "`refbox-csl-%s' is not configured" kind))
+   (t
+    (let ((match (cl-find-if
+                  (lambda (file)
+                    (funcall match-function file value))
+                  files)))
+      (cond
+       (match match)
+       ((or (file-name-absolute-p value) (file-name-directory value))
+        (let ((file (expand-file-name value)))
+          (unless (refbox-csl--readable-file-p file)
+            (user-error "refbox CSL %s file is not readable: %s" kind file))
+          file))
+       (t
+        (user-error "refbox CSL %s not found in configured directories: %s"
+                    kind value)))))))
+
+(defun refbox-csl-style-file ()
+  "Return the selected CSL style file or signal an actionable error."
+  (refbox-csl--resolve-file
+   refbox-csl-style
+   (refbox-csl-style-files)
+   "style"
+   #'refbox-csl--style-match-p))
+
+(defun refbox-csl-locale-file ()
+  "Return the selected CSL locale file or signal an actionable error."
+  (refbox-csl--resolve-file
+   refbox-csl-locale
+   (refbox-csl-locale-files)
+   "locale"
+   #'refbox-csl--locale-match-p))
+
+;;;###autoload
+(defun refbox-select-csl-style ()
+  "Select a CSL style from `refbox-csl-style-directories'."
+  (interactive)
+  (let ((metadata (mapcar #'refbox-csl-style-metadata
+                          (refbox-csl-style-files))))
+    (unless metadata
+      (user-error "`refbox-csl-style-directories' contains no readable CSL styles"))
+    (let ((table (make-hash-table :test 'equal)))
+      (dolist (item metadata)
+        (let* ((title (plist-get item :title))
+               (id (plist-get item :id))
+               (label (if id
+                          (format "%s <%s>" title id)
+                        title)))
+          (puthash label item table)))
+      (let* ((choice (completing-read "CSL style: " table nil t))
+             (item (gethash choice table)))
+        (setq refbox-csl-style (plist-get item :file))
+        (message "refbox CSL style: %s" (plist-get item :title))
+        refbox-csl-style))))
+
+(defun refbox-format-references (references)
+  "Return formatted reference strings for REFERENCES."
+  (let ((references (refbox--reference-list references)))
+    (unless references
+      (user-error "No references selected"))
+    (if refbox-format-reference-function
+        (funcall refbox-format-reference-function references)
+      (let* ((style-path (refbox-csl-style-file))
+             (locale-path (refbox-csl-locale-file))
+             (response
+              (refbox-rpc-request
+               refbox-rpc-method-format-references
+               (list :keys (mapcar #'refbox--reference-key references)
+                     :style_path style-path
+                     :locale_path locale-path))))
+        (mapcar (lambda (item)
+                  (plist-get item :text))
+                (refbox--listify (plist-get response :references)))))))
+
+;;;###autoload
+(defun refbox-insert-reference (&optional references)
+  "Insert formatted references for REFERENCES."
+  (interactive)
+  (insert (string-join (refbox-format-references references) "\n\n")))
+
+;;;###autoload
+(defun refbox-copy-reference (&optional references)
+  "Copy formatted references for REFERENCES to the kill ring."
+  (interactive)
+  (let ((text (string-join (refbox-format-references references) "\n\n")))
+    (kill-new text)
+    (when (called-interactively-p 'interactive)
+      (message "refbox: copied formatted reference%s"
+               (if (string-match-p "\n\n" text) "s" "")))
+    text))
 
 (defun refbox-library--safe-key (key)
   "Return KEY made safe for a single file name."

@@ -8,16 +8,18 @@ use refbox_index::{DiscoveryPolicy, SyncEngine, SyncStatus};
 use refbox_rpc::{
     DiagnosticItem, DiagnosticsResponse, DuplicateGroupItem, DuplicateGroupsResponse, EmptyParams,
     EntriesByKeysRequest, EntriesResponse, EntryByKeyRequest, EntryFieldItem, EntryItem,
-    EntryRefItem, EntrySearchItem, IndexedFilesResponse, JsonRpcError, JsonRpcErrorObject,
-    JsonRpcRequest, JsonRpcResponse, LimitRequest, METHOD_DIAGNOSTICS, METHOD_DUPLICATE_GROUPS,
-    METHOD_ENTRIES_BY_KEYS, METHOD_ENTRY_BY_KEY, METHOD_INDEXED_FILES, METHOD_PING,
-    METHOD_RAW_ENTRY, METHOD_RESOURCES_BY_KEY, METHOD_RESOURCES_BY_KEYS, METHOD_SEARCH_ENTRIES,
-    METHOD_SOURCE_LOCATION, METHOD_STATUS, METHOD_SYNC_FILE, METHOD_SYNC_FULL, RawEntryRequest,
-    RawEntryResponse, ResourceItem, ResourcesByKeyRequest, ResourcesByKeysRequest,
-    ResourcesResponse, SearchEntriesRequest, SearchEntriesResponse, SourceLocationRequest,
-    SourceLocationResponse, StatusResponse, SyncFileRequest, SyncResponse, clamp_limit,
+    EntryRefItem, EntrySearchItem, FormatReferencesRequest, FormatReferencesResponse,
+    FormattedReferenceItem, IndexedFilesResponse, JsonRpcError, JsonRpcErrorObject, JsonRpcRequest,
+    JsonRpcResponse, LimitRequest, METHOD_DIAGNOSTICS, METHOD_DUPLICATE_GROUPS,
+    METHOD_ENTRIES_BY_KEYS, METHOD_ENTRY_BY_KEY, METHOD_FORMAT_REFERENCES, METHOD_INDEXED_FILES,
+    METHOD_PING, METHOD_RAW_ENTRY, METHOD_RESOURCES_BY_KEY, METHOD_RESOURCES_BY_KEYS,
+    METHOD_SEARCH_ENTRIES, METHOD_SOURCE_LOCATION, METHOD_STATUS, METHOD_SYNC_FILE,
+    METHOD_SYNC_FULL, RawEntryRequest, RawEntryResponse, ResourceItem, ResourcesByKeyRequest,
+    ResourcesByKeysRequest, ResourcesResponse, SearchEntriesRequest, SearchEntriesResponse,
+    SourceLocationRequest, SourceLocationResponse, StatusResponse, SyncFileRequest, SyncResponse,
+    clamp_limit,
 };
-use refbox_store::{RefboxStore, StoredEntry};
+use refbox_store::{RefboxStore, StoredEntry, StoredField};
 use serde::de::DeserializeOwned;
 
 #[derive(Debug, Parser)]
@@ -258,6 +260,26 @@ impl Daemon {
                     source: entry.source,
                 })
             }
+            METHOD_FORMAT_REFERENCES => {
+                let request: FormatReferencesRequest = parse_params(params)?;
+                validate_required_file(
+                    request.style_path.as_deref(),
+                    missing_style_configuration,
+                    missing_style_file,
+                )?;
+                validate_required_file(
+                    request.locale_path.as_deref(),
+                    missing_locale_configuration,
+                    missing_locale_file,
+                )?;
+                let mut references = Vec::new();
+                for key in request.keys {
+                    let entry = self.resolve_entry(&key, None)?;
+                    let fields = self.store.fields_for_entry(entry.id).map_err(store_error)?;
+                    references.push(format_reference(entry, &fields));
+                }
+                self.to_value(FormatReferencesResponse { references })
+            }
             METHOD_DIAGNOSTICS => {
                 let request: LimitRequest = parse_params(params)?;
                 let limit = clamp_limit(request.limit);
@@ -442,6 +464,80 @@ fn entry_item(entry: StoredEntry) -> EntryItem {
     }
 }
 
+fn format_reference(entry: StoredEntry, fields: &[StoredField]) -> FormattedReferenceItem {
+    let author = first_clean_field(fields, &["author", "editor"]);
+    let year = first_clean_field(fields, &["date", "year"]).and_then(|value| first_year(&value));
+    let title = first_clean_field(fields, &["title", "shorttitle"]);
+    let venue = first_clean_field(
+        fields,
+        &[
+            "journaltitle",
+            "journal",
+            "booktitle",
+            "container-title",
+            "venue",
+            "publisher",
+        ],
+    );
+
+    let mut parts = Vec::new();
+    match (author, year) {
+        (Some(author), Some(year)) => parts.push(format!("{author} ({year}).")),
+        (Some(author), None) => parts.push(format!("{author}.")),
+        (None, Some(year)) => parts.push(format!("({year}).")),
+        (None, None) => {}
+    }
+    if let Some(title) = title {
+        parts.push(format!("{title}."));
+    }
+    if let Some(venue) = venue {
+        parts.push(format!("{venue}."));
+    }
+
+    FormattedReferenceItem {
+        key: entry.key.clone(),
+        source_path: entry.file_path,
+        text: if parts.is_empty() {
+            entry.key
+        } else {
+            parts.join(" ")
+        },
+    }
+}
+
+fn first_clean_field(fields: &[StoredField], names: &[&str]) -> Option<String> {
+    fields
+        .iter()
+        .find(|field| names.contains(&field.lookup_name.as_str()))
+        .and_then(|field| clean_bibliography_value(&field.value))
+}
+
+fn clean_bibliography_value(value: &str) -> Option<String> {
+    let mut text = value.trim();
+    loop {
+        let bytes = text.as_bytes();
+        if bytes.len() >= 2
+            && ((bytes[0] == b'{' && bytes[bytes.len() - 1] == b'}')
+                || (bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"'))
+        {
+            text = text[1..text.len() - 1].trim();
+        } else {
+            break;
+        }
+    }
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() { None } else { Some(text) }
+}
+
+fn first_year(value: &str) -> Option<String> {
+    value
+        .as_bytes()
+        .windows(4)
+        .find(|window| window.iter().all(|byte| byte.is_ascii_digit()))
+        .and_then(|window| std::str::from_utf8(window).ok())
+        .map(ToOwned::to_owned)
+}
+
 fn field_item(field: refbox_store::StoredField) -> EntryFieldItem {
     EntryFieldItem {
         raw_name: field.raw_name,
@@ -495,6 +591,24 @@ fn sync_error(error: refbox_index::SyncError<refbox_store::StoreError>) -> JsonR
     JsonRpcError::new(JsonRpcErrorObject::internal_error(error.to_string()))
 }
 
+fn validate_required_file(
+    path: Option<&str>,
+    missing_error: fn() -> JsonRpcError,
+    unreadable_error: fn(String) -> JsonRpcError,
+) -> std::result::Result<(), JsonRpcError> {
+    match path {
+        Some(path) if is_readable_file(path) => Ok(()),
+        Some(path) => Err(unreadable_error(path.to_string())),
+        None => Err(missing_error()),
+    }
+}
+
+fn is_readable_file(path: &str) -> bool {
+    let path = std::path::Path::new(path);
+    std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file())
+        && std::fs::File::open(path).is_ok()
+}
+
 fn invalid_path(path: String) -> JsonRpcError {
     JsonRpcError::new(JsonRpcErrorObject::domain(
         -32001,
@@ -524,6 +638,38 @@ fn stale_source_file(path: String) -> JsonRpcError {
         -32004,
         "stale_source_file",
         format!("indexed source file is not readable: {path}"),
+    ))
+}
+
+fn missing_style_file(path: String) -> JsonRpcError {
+    JsonRpcError::new(JsonRpcErrorObject::domain(
+        -32005,
+        "missing_style_file",
+        format!("CSL style file is not readable: {path}"),
+    ))
+}
+
+fn missing_style_configuration() -> JsonRpcError {
+    JsonRpcError::new(JsonRpcErrorObject::domain(
+        -32005,
+        "missing_style_file",
+        "`style_path` is required for reference formatting".to_string(),
+    ))
+}
+
+fn missing_locale_file(path: String) -> JsonRpcError {
+    JsonRpcError::new(JsonRpcErrorObject::domain(
+        -32006,
+        "missing_locale_file",
+        format!("CSL locale file is not readable: {path}"),
+    ))
+}
+
+fn missing_locale_configuration() -> JsonRpcError {
+    JsonRpcError::new(JsonRpcErrorObject::domain(
+        -32006,
+        "missing_locale_file",
+        "`locale_path` is required for reference formatting".to_string(),
     ))
 }
 
@@ -585,6 +731,22 @@ mod tests {
         );
         assert_eq!(source["source"]["start"]["line"], 1);
 
+        let style = project.write(
+            "styles/test.csl",
+            "<style><info><title>Test</title></info></style>",
+        );
+        let locale = project.write("locales/locales-en-US.xml", "<locale></locale>");
+        let formatted = result(daemon.handle_request(request(
+            METHOD_FORMAT_REFERENCES,
+            json!({
+                "keys": ["a2020"],
+                "style_path": style.to_string_lossy(),
+                "locale_path": locale.to_string_lossy(),
+            }),
+        )));
+        assert_eq!(formatted["references"][0]["key"], "a2020");
+        assert_eq!(formatted["references"][0]["text"], "Alpha Search.");
+
         let status = result(daemon.handle_request(request(METHOD_STATUS, json!({}))));
         assert_eq!(status["counts"]["entry_count"], 1);
     }
@@ -619,6 +781,33 @@ mod tests {
         assert_eq!(
             stale.error.expect("expected error").data.expect("data")["kind"],
             "stale_source_file"
+        );
+
+        let missing_style = daemon.handle_request(request(
+            METHOD_FORMAT_REFERENCES,
+            json!({ "keys": ["dup2020"], "style_path": project.path("missing.csl") }),
+        ));
+        assert_eq!(
+            missing_style
+                .error
+                .expect("expected error")
+                .data
+                .expect("data")["kind"],
+            "missing_style_file"
+        );
+
+        let readable_style = project.write("styles/valid.csl", "<style></style>");
+        let missing_locale = daemon.handle_request(request(
+            METHOD_FORMAT_REFERENCES,
+            json!({ "keys": ["dup2020"], "style_path": readable_style }),
+        ));
+        assert_eq!(
+            missing_locale
+                .error
+                .expect("expected error")
+                .data
+                .expect("data")["kind"],
+            "missing_locale_file"
         );
 
         let unknown = daemon.handle_request(request(METHOD_RAW_ENTRY, json!({ "key": "none" })));

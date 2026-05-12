@@ -17,6 +17,7 @@ pub const METHOD_RESOURCES_BY_KEY: &str = "refbox/resourcesByKey";
 pub const METHOD_RESOURCES_BY_KEYS: &str = "refbox/resourcesByKeys";
 pub const METHOD_RAW_ENTRY: &str = "refbox/rawEntry";
 pub const METHOD_SOURCE_LOCATION: &str = "refbox/sourceLocation";
+pub const METHOD_FORMAT_REFERENCES: &str = "refbox/formatReferences";
 pub const METHOD_DIAGNOSTICS: &str = "refbox/diagnostics";
 pub const METHOD_DUPLICATE_GROUPS: &str = "refbox/duplicateGroups";
 
@@ -287,6 +288,25 @@ pub struct SourceLocationResponse {
     pub key: String,
     pub source_path: String,
     pub source: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FormatReferencesRequest {
+    pub keys: Vec<String>,
+    pub style_path: Option<String>,
+    pub locale_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FormatReferencesResponse {
+    pub references: Vec<FormattedReferenceItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FormattedReferenceItem {
+    pub key: String,
+    pub source_path: String,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

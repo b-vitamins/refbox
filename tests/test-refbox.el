@@ -354,6 +354,116 @@
             (should (equal (buffer-string) "url-pdf"))))
       (delete-directory root t))))
 
+(ert-deftest refbox-test-csl-style-metadata-and-selection ()
+  "CSL style selection should present metadata-backed choices."
+  (let* ((root (make-temp-file "refbox-csl-" t))
+         (style-dir (expand-file-name "styles" root))
+         (style-file (expand-file-name "apa.csl" style-dir)))
+    (unwind-protect
+        (progn
+          (make-directory style-dir t)
+          (with-temp-file style-file
+            (insert "<style><info><title>APA Test</title>"
+                    "<id>http://www.zotero.org/styles/apa-test</id>"
+                    "</info></style>"))
+          (should (equal (refbox-csl-style-metadata style-file)
+                         (list :file style-file
+                               :id "http://www.zotero.org/styles/apa-test"
+                               :title "APA Test")))
+          (let ((refbox-csl-style-directories (list style-dir))
+                refbox-csl-style)
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (_prompt collection &rest _args)
+                         (car (all-completions "" collection)))))
+              (should (equal (refbox-select-csl-style) style-file))
+              (should (equal refbox-csl-style style-file))))
+          (let ((refbox-csl-style-directories (list style-dir))
+                (refbox-csl-style "http://www.zotero.org/styles/apa-test"))
+            (should (equal (refbox-csl-style-file) style-file))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-format-references-uses-daemon-and-csl_configuration ()
+  "Reference formatting should call the daemon with selected style and locale."
+  (let* ((root (make-temp-file "refbox-format-" t))
+         (style (expand-file-name "style.csl" root))
+         (locale (expand-file-name "locales-en-US.xml" root))
+         calls)
+    (unwind-protect
+        (progn
+          (with-temp-file style)
+          (with-temp-file locale)
+          (let ((refbox-csl-style style)
+                (refbox-csl-locale locale))
+            (cl-letf (((symbol-function 'refbox-rpc-request)
+                       (lambda (method params)
+                         (push (list method params) calls)
+                         (list :references
+                               (list (list :key "alpha"
+                                           :text "Formatted Alpha")
+                                     (list :key "beta"
+                                           :text "Formatted Beta"))))))
+              (should (equal (refbox-format-references '("alpha" "beta"))
+                             '("Formatted Alpha" "Formatted Beta")))))
+          (should (equal (caar calls) refbox-rpc-method-format-references))
+          (should (equal (cadar calls)
+                         (list :keys '("alpha" "beta")
+                               :style_path style
+                               :locale_path locale))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-insert-and-copy-formatted_references ()
+  "Insert and copy commands should use formatted reference text."
+  (let ((formatted '("Alpha Reference" "Beta Reference")))
+    (cl-letf (((symbol-function 'refbox-format-references)
+               (lambda (_references) formatted)))
+      (with-temp-buffer
+        (refbox-insert-reference '("alpha" "beta"))
+        (should (equal (buffer-string)
+                       "Alpha Reference\n\nBeta Reference")))
+      (should (equal (refbox-copy-reference '("alpha" "beta"))
+                     "Alpha Reference\n\nBeta Reference"))
+      (should (equal (current-kill 0) "Alpha Reference\n\nBeta Reference")))))
+
+(ert-deftest refbox-test-formatting_configuration_errors_are_actionable ()
+  "Missing style and locale configuration should fail directly."
+  (should
+   (string-match-p
+    "refbox-csl-style"
+    (error-message-string
+     (should-error (let ((refbox-csl-style nil))
+                     (refbox-csl-style-file))
+                   :type 'user-error))))
+  (should
+   (string-match-p
+    "locale not found"
+    (error-message-string
+     (should-error (let ((refbox-csl-locale "missing")
+                         (refbox-csl-locale-directories nil))
+                     (refbox-csl-locale-file))
+                   :type 'user-error))))
+  (should
+   (string-match-p
+    "refbox-csl-locale"
+    (error-message-string
+     (should-error (let ((refbox-csl-locale nil))
+                     (refbox-csl-locale-file))
+                   :type 'user-error)))))
+
+(ert-deftest refbox-test-csl-locale-resolution_accepts_locale_ids ()
+  "CSL locale lookup should accept common locale ids."
+  (let* ((root (make-temp-file "refbox-locale-" t))
+         (locale-dir (expand-file-name "locales" root))
+         (locale-file (expand-file-name "locales-en-US.xml" locale-dir)))
+    (unwind-protect
+        (progn
+          (make-directory locale-dir t)
+          (with-temp-file locale-file
+            (insert "<locale></locale>"))
+          (let ((refbox-csl-locale-directories (list locale-dir))
+                (refbox-csl-locale "en-US"))
+            (should (equal (refbox-csl-locale-file) locale-file))))
+      (delete-directory root t))))
+
 (ert-deftest refbox-test-read-references_repeats_bounded_single_reads ()
   "Multiple selection should be a sequence of bounded single-reference reads."
   (let ((remaining (list refbox-test-reference-candidate

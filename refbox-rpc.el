@@ -109,6 +109,7 @@ names."
 (defconst refbox-rpc-method-resources-by-keys "refbox/resourcesByKeys")
 (defconst refbox-rpc-method-raw-entry "refbox/rawEntry")
 (defconst refbox-rpc-method-source-location "refbox/sourceLocation")
+(defconst refbox-rpc-method-format-references "refbox/formatReferences")
 
 (defun refbox-rpc-live-p ()
   "Return non-nil when the refbox JSON-RPC process is live."
