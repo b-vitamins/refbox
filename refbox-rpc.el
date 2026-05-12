@@ -104,6 +104,8 @@ names."
 (defconst refbox-rpc-method-sync-full "refbox/syncFull")
 (defconst refbox-rpc-method-sync-file "refbox/syncFile")
 (defconst refbox-rpc-method-search-entries "refbox/searchEntries")
+(defconst refbox-rpc-method-entry-by-key "refbox/entryByKey")
+(defconst refbox-rpc-method-source-location "refbox/sourceLocation")
 
 (defun refbox-rpc-live-p ()
   "Return non-nil when the refbox JSON-RPC process is live."

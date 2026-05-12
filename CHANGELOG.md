@@ -18,3 +18,4 @@ The format follows Keep a Changelog, and this project will follow SemVer once it
 - Added typed JSON-RPC contracts and daemon handlers for status, sync, indexed files, search, lookup, raw entries, source locations, diagnostics, and duplicate groups.
 - Added Emacs daemon configuration, executable/database validation, explicit status and sync commands, and lifecycle tests.
 - Added bounded Emacs reference selection, display templates, candidate annotations, and search-result field metadata.
+- Added Org citation insertion, editing, follow dispatch, activation keymap behavior, and local bibliography discovery.

@@ -1,0 +1,144 @@
+;;; test-refbox-org.el --- Tests for refbox Org integration -*- lexical-binding: t; -*-
+
+;;; Commentary:
+
+;; Buffer-level checks for Org citation workflows.
+
+;;; Code:
+
+(require 'ert)
+(require 'cl-lib)
+(require 'refbox-org)
+
+(defmacro refbox-org-test-with-buffer (contents &rest body)
+  "Create an Org buffer from CONTENTS and evaluate BODY.
+
+A single `|' in CONTENTS marks point and is removed before BODY runs."
+  (declare (indent 1))
+  `(with-temp-buffer
+     (let* ((text ,contents)
+            (point-index (string-match-p "|" text)))
+       (org-mode)
+       (insert (replace-regexp-in-string "|" "" text nil t))
+       (when point-index
+         (goto-char (1+ point-index)))
+       ,@body)))
+
+(defun refbox-org-test-candidate (key)
+  "Return a minimal refbox candidate for KEY."
+  (list :key key))
+
+(ert-deftest refbox-org-test-inserts-new-citation ()
+  "Org insertion should create a citation from selected references."
+  (refbox-org-test-with-buffer "Alpha |omega"
+    (cl-letf (((symbol-function 'refbox-read-references)
+               (lambda (&rest _args)
+                 (list (refbox-org-test-candidate "alpha")
+                       (refbox-org-test-candidate "beta")))))
+      (refbox-org-insert-citation)
+      (should (equal (buffer-string)
+                     "Alpha [cite:@alpha; @beta]omega")))))
+
+(ert-deftest refbox-org-test-replaces-existing-reference ()
+  "Org insertion on a reference key should replace that one reference."
+  (refbox-org-test-with-buffer "[cite:@al|pha; @beta]"
+    (cl-letf (((symbol-function 'refbox-read-reference)
+               (lambda (&rest _args)
+                 (refbox-org-test-candidate "gamma"))))
+      (refbox-org-insert-citation)
+      (should (equal (buffer-string)
+                     "[cite:@gamma; @beta]")))))
+
+(ert-deftest refbox-org-test-adds-reference-around-existing-citation ()
+  "Org insertion around an existing reference should add without full rewrites."
+  (refbox-org-test-with-buffer "[cite:|@alpha; @beta]"
+    (cl-letf (((symbol-function 'refbox-read-reference)
+               (lambda (&rest _args)
+                 (refbox-org-test-candidate "gamma"))))
+      (refbox-org-insert-citation)
+      (should (equal (buffer-string)
+                     "[cite:@gamma;@alpha; @beta]")))))
+
+(ert-deftest refbox-org-test-edits-existing-citation-style ()
+  "Org insertion on the style area should update the citation style."
+  (refbox-org-test-with-buffer "[cite/au|thor:@alpha]"
+    (cl-letf (((symbol-function 'refbox-org--select-style)
+               (lambda (_citation) "text")))
+      (refbox-org-insert-citation)
+      (should (equal (buffer-string)
+                     "[cite/text:@alpha]")))))
+
+(ert-deftest refbox-org-test-delete-and-kill-citation-elements ()
+  "Deletion and kill commands should use Org citation boundaries."
+  (refbox-org-test-with-buffer "A [cite:@al|pha; @beta] Z"
+    (refbox-org-delete-at-point)
+    (should (equal (buffer-string) "A [cite:@beta] Z")))
+  (refbox-org-test-with-buffer "A [cite:@al|pha] Z"
+    (refbox-org-kill-at-point)
+    (should (equal (current-kill 0 t) "[cite:@alpha]"))
+    (should (equal (buffer-string) "A Z"))))
+
+(ert-deftest refbox-org-test-shifts-references ()
+  "Reference shifting should be deterministic within one citation."
+  (refbox-org-test-with-buffer "[cite:@alpha; @be|ta; @gamma]"
+    (refbox-org-shift-reference-left)
+    (should (equal (buffer-string)
+                   "[cite:@beta; @alpha; @gamma]")))
+  (refbox-org-test-with-buffer "[cite:@alpha; @be|ta; @gamma]"
+    (refbox-org-shift-reference-right)
+    (should (equal (buffer-string)
+                   "[cite:@alpha; @gamma; @beta]"))))
+
+(ert-deftest refbox-org-test-prefix-and-suffix-updates ()
+  "Prefix and suffix commands should edit citation-reference affixes."
+  (refbox-org-test-with-buffer "[cite:|@alpha]"
+    (refbox-org-set-reference-prefix "see")
+    (goto-char (point-min))
+    (search-forward "@alpha")
+    (refbox-org-set-reference-suffix "p. 12")
+    (should (equal (buffer-string)
+                   "[cite:see @alpha p. 12]"))))
+
+(ert-deftest refbox-org-test-key-and-citation-at-point ()
+  "Helpers should find citation and key locations."
+  (refbox-org-test-with-buffer "[cite:@al|pha]"
+    (should (equal (refbox-org-key-at-point) "alpha"))
+    (should (eq (org-element-type (refbox-org-citation-at-point)) 'citation))
+    (should (eq (org-element-type (refbox-org-reference-at-point))
+                'citation-reference))))
+
+(ert-deftest refbox-org-test-follow-at-citation-and-reference-locations ()
+  "Follow should dispatch the key through the configured action."
+  (dolist (fixture '("[ci|te:@alpha]" "[cite:@al|pha]"))
+    (refbox-org-test-with-buffer fixture
+      (let (calls)
+        (let ((refbox-org-follow-action
+               (lambda (key datum arg)
+                 (push (list key (org-element-type datum) arg) calls))))
+          (refbox-org-follow-at-point :arg)
+          (should (equal (caar calls) "alpha")))))))
+
+(ert-deftest refbox-org-test-activation-installs-keymap ()
+  "Activation should install the refbox citation keymap on citation text."
+  (refbox-org-test-with-buffer "[cite:|@alpha]"
+    (let ((citation (refbox-org-citation-at-point)))
+      (refbox-org-activate citation)
+      (should (eq (get-text-property (point) 'keymap)
+                  refbox-org-citation-map)))))
+
+(ert-deftest refbox-org-test-local-bibliography-discovery ()
+  "Local Org bibliography declarations should resolve from fixture buffers."
+  (let ((root (make-temp-file "refbox-org-bib-" t)))
+    (unwind-protect
+        (let ((default-directory root)
+              (org-cite-global-bibliography nil))
+          (make-directory (expand-file-name "refs" root))
+          (write-region "" nil (expand-file-name "refs/main.bib" root))
+          (refbox-org-test-with-buffer "#+bibliography: refs/main.bib\n\n|Body"
+            (should (equal (refbox-org-bibliography-files)
+                           (list (expand-file-name "refs/main.bib" root))))))
+      (delete-directory root t))))
+
+(provide 'test-refbox-org)
+
+;;; test-refbox-org.el ends here
