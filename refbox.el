@@ -577,7 +577,7 @@ bibliography source files."
                      (list :query (or query "")
                            :limit (refbox-rpc--search-limit limit))
                      (when source-paths
-                       (list :source_paths source-paths)))))
+                       (list :source_paths (vconcat source-paths))))))
          (entries (plist-get response :entries)))
     (refbox--listify entries)))
 
@@ -1415,7 +1415,7 @@ bibliography source files."
              (response
               (refbox-rpc-request
                refbox-rpc-method-format-references
-               (list :keys (mapcar #'refbox--reference-key references)
+               (list :keys (vconcat (mapcar #'refbox--reference-key references))
                      :style_path style-path
                      :locale_path locale-path))))
         (mapcar (lambda (item)

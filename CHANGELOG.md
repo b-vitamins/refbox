@@ -6,6 +6,10 @@ The format follows Keep a Changelog, and this project will follow SemVer once it
 
 ## [Unreleased]
 
+### Fixed
+- Reduced index storage growth for large collaboration papers by storing compact per-person name text instead of duplicating full author lists for every parsed name.
+- Fixed scoped Emacs RPC requests so Org and LaTeX citation completion send JSON arrays for source-path filters.
+
 ## [0.1.0] - 2026-05-12
 
 ### Added

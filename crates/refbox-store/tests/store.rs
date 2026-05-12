@@ -1,5 +1,9 @@
 use refbox_index::parse_bibliography_file;
 use refbox_store::{RefboxStore, SCHEMA_VERSION};
+use rusqlite::Connection;
+use std::fs;
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
 fn migrations_are_versioned_from_first_schema() {
@@ -219,7 +223,6 @@ fn resource_queries_inherit_crossref_resources() {
   file = {parent.pdf},
   doi = {10.1000/parent}
 }
-
 @inproceedings{child2020,
   title = {Child Work},
   crossref = {parent2020},
@@ -270,4 +273,55 @@ fn resource_queries_inherit_crossref_resources() {
             .iter()
             .any(|resource| resource.owner_key == "parent2020")
     );
+}
+
+#[test]
+fn large_author_lists_do_not_duplicate_full_name_lists_per_person() {
+    let db_path = unique_db_path("refbox-large-authors");
+    let author_count = 512;
+    let authors = (0..author_count)
+        .map(|index| format!("Family{index}, Given{index}"))
+        .collect::<Vec<_>>()
+        .join(" and ");
+    let input = format!(
+        "@article{{atlas2020,\n  author = {{{authors}}},\n  title = {{Large Collaboration Paper}}\n}}"
+    );
+
+    {
+        let mut store = RefboxStore::open(&db_path).expect("store should open");
+        let file = parse_bibliography_file("refs/large-authors.bib", &input);
+        store.insert_file(&file).expect("file should insert");
+    }
+
+    let connection = Connection::open(&db_path).expect("database should open");
+    let (stored_names, max_raw_len, total_raw_len): (i64, i64, i64) = connection
+        .query_row(
+            "SELECT COUNT(*), MAX(length(raw)), SUM(length(raw)) FROM names",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("name storage should query");
+    let name_source_spans: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM source_spans WHERE owner_kind = 'name'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("source spans should query");
+
+    assert_eq!(stored_names, i64::from(author_count));
+    assert!(max_raw_len < 32);
+    assert!(total_raw_len < 12_000);
+    assert_eq!(name_source_spans, 0);
+
+    drop(connection);
+    let _ = fs::remove_file(db_path);
+}
+
+fn unique_db_path(name: &str) -> PathBuf {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time should be after UNIX_EPOCH")
+        .as_nanos();
+    std::env::temp_dir().join(format!("{name}-{}-{unique}.sqlite", std::process::id()))
 }

@@ -168,7 +168,7 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                 (should (equal (car calls)
                                (list :query "al"
                                      :limit 9
-                                     :source_paths (list bib))))))))
+                                     :source_paths (vector bib))))))))
       (delete-directory root t))))
 
 (ert-deftest refbox-latex-test-capf-setup-is-buffer-local ()

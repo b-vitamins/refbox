@@ -423,7 +423,7 @@
                              '("Formatted Alpha" "Formatted Beta")))))
           (should (equal (caar calls) refbox-rpc-method-format-references))
           (should (equal (cadar calls)
-                         (list :keys '("alpha" "beta")
+                         (list :keys ["alpha" "beta"]
                                :style_path style
                                :locale_path locale))))
       (delete-directory root t))))

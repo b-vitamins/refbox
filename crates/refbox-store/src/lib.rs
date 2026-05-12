@@ -5,13 +5,13 @@ use std::path::Path;
 
 use refbox_core::{
     BibliographyEntry, BibliographyFile, DerivedBibliographyStore, Diagnostic, DiagnosticSeverity,
-    DiagnosticTarget, FileParseStatus, IndexStoreCounts, IndexedFileMetadata, ResourceKind,
-    SourcePosition, SourceSpan,
+    DiagnosticTarget, FileParseStatus, IndexStoreCounts, IndexedFileMetadata, PersonName,
+    ResourceKind, SourcePosition, SourceSpan,
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params, params_from_iter};
 use thiserror::Error;
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
@@ -650,7 +650,7 @@ impl DerivedBibliographyStore for RefboxStore {
     }
 }
 
-const MIGRATIONS: &[(i64, &str)] = &[(1, MIGRATION_001), (2, MIGRATION_002)];
+const MIGRATIONS: &[(i64, &str)] = &[(1, MIGRATION_001), (2, MIGRATION_002), (3, MIGRATION_003)];
 
 const MIGRATION_001: &str = r#"
 CREATE TABLE IF NOT EXISTS files (
@@ -810,6 +810,22 @@ CREATE INDEX IF NOT EXISTS files_hash_idx ON files(content_hash);
 CREATE INDEX IF NOT EXISTS files_parse_status_idx ON files(parse_status);
 "#;
 
+const MIGRATION_003: &str = r#"
+UPDATE names
+SET raw =
+    CASE
+        WHEN literal IS NOT NULL AND literal <> '' THEN literal
+        ELSE trim(
+            CASE WHEN prefix <> '' THEN prefix || ' ' ELSE '' END ||
+            CASE WHEN given <> '' THEN given || ' ' ELSE '' END ||
+            family ||
+            CASE WHEN suffix <> '' THEN ', ' || suffix ELSE '' END
+        )
+    END;
+
+DELETE FROM source_spans WHERE owner_kind = 'name';
+"#;
+
 fn delete_existing_file(tx: &Transaction<'_>, path: &str) -> Result<()> {
     let entry_ids = {
         let mut statement = tx.prepare(
@@ -897,6 +913,7 @@ fn insert_entry(
         for (index, name) in name_list.names.iter().enumerate() {
             let name_index =
                 i64::try_from(index).map_err(|_| StoreError::IndexOutOfRange(index))?;
+            let raw_name = person_name_storage_text(name);
             tx.execute(
                 "INSERT INTO names(
                     entry_id, raw_role, lookup_role, raw, name_index,
@@ -908,7 +925,7 @@ fn insert_entry(
                     entry_id,
                     name_list.raw_role,
                     name_list.lookup_role,
-                    name_list.raw,
+                    raw_name,
                     name_index,
                     name.given.join(" "),
                     name.family.join(" "),
@@ -924,9 +941,6 @@ fn insert_entry(
                     source.end_column,
                 ],
             )?;
-            if let Some(span) = &name_list.source {
-                insert_source_span(tx, file_path, "name", tx.last_insert_rowid(), span)?;
-            }
         }
     }
 
@@ -1110,6 +1124,29 @@ fn insert_source_span(
         ],
     )?;
     Ok(())
+}
+
+fn person_name_storage_text(name: &PersonName) -> String {
+    if let Some(literal) = name
+        .literal
+        .as_deref()
+        .filter(|literal| !literal.is_empty())
+    {
+        return literal.to_string();
+    }
+
+    let mut text = Vec::new();
+    text.extend(name.prefix.iter().map(String::as_str));
+    text.extend(name.given.iter().map(String::as_str));
+    text.extend(name.family.iter().map(String::as_str));
+    let mut text = text.join(" ");
+    if !name.suffix.is_empty() {
+        if !text.is_empty() {
+            text.push_str(", ");
+        }
+        text.push_str(&name.suffix.join(" "));
+    }
+    text
 }
 
 fn stored_entry_from_row(row: &Row<'_>) -> rusqlite::Result<StoredEntry> {
