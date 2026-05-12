@@ -1,8 +1,9 @@
 EMACS ?= emacs
 BENCH_REPORT_DIR ?= target/refbox-bench
 ELISP_FILES := refbox-rpc.el refbox.el refbox-org.el refbox-latex.el refbox-markdown.el refbox-embark.el
-ELISP_TEST_FILES := tests/test-refbox.el tests/test-refbox-org.el tests/test-refbox-latex.el tests/test-refbox-markdown.el tests/test-refbox-embark.el
+ELISP_TEST_FILES := tests/test-init.el tests/test-refbox.el tests/test-refbox-org.el tests/test-refbox-latex.el tests/test-refbox-markdown.el tests/test-refbox-embark.el
 ELISP_ELC_FILES := $(ELISP_FILES:.el=.elc) $(ELISP_TEST_FILES:.el=.elc)
+ELISP_BATCH_ARGS := -Q --batch -L . -l tests/test-init.el
 
 .PHONY: fmt
 fmt:
@@ -18,11 +19,11 @@ test-rust:
 
 .PHONY: test-elisp
 test-elisp:
-	$(EMACS) -Q --batch -L . -l refbox.el -l tests/test-refbox.el -f ert-run-tests-batch-and-exit
+	$(EMACS) $(ELISP_BATCH_ARGS) -l refbox.el -l tests/test-refbox.el -f ert-run-tests-batch-and-exit
 
 .PHONY: byte-compile
 byte-compile:
-	$(EMACS) -Q --batch -L . -f batch-byte-compile $(ELISP_FILES) $(ELISP_TEST_FILES)
+	$(EMACS) $(ELISP_BATCH_ARGS) -f batch-byte-compile $(ELISP_FILES) $(ELISP_TEST_FILES)
 	@rm -f $(ELISP_ELC_FILES)
 
 .PHONY: test

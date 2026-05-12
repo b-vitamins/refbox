@@ -24,6 +24,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential emacs-nox libsqlite3-dev pkg-config
 
+      - name: Install Emacs package dependencies
+        run: emacs -Q --batch -l .github/install-emacs-packages.el
+
       - name: Run local verification gate
         run: make test
 
