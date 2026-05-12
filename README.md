@@ -38,7 +38,7 @@ and data contracts are defined by this project.
 
 ### Non-Goals For 0.1.0
 
-- command, variable, or package-name compatibility shims
+- alternate command, variable, or package-name aliases
 - full-corpus Elisp completion tables or full-corpus Elisp-side formatting
 - a database as the source of truth for bibliography content
 - citation workflow support outside Org, LaTeX, and Markdown

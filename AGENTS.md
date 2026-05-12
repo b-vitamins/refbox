@@ -12,7 +12,7 @@
 - Use dedicated incremental index updates for changed bibliography files. Do not route file-level sync through full-root rebuild logic.
 - Treat duplicate keys, duplicate works, parse diagnostics, source locations, files, links, notes, and citation editing as first-class product surfaces.
 - Do not silently discard malformed entries. Indexing may preserve partial records, but diagnostics must stay queryable and visible.
-- Do not add command, variable, or package-name compatibility layers for other bibliography packages. `refbox` owns its own public API.
+- Do not add command, variable, or package-name aliases for other bibliography packages. `refbox` owns its own public API.
 - Do not introduce circular crate or feature dependencies. Domain types stay in `refbox-core`; transport types stay in `refbox-rpc`.
 - Avoid load-time side effects in Elisp. User-facing commands may start the daemon, but simply loading the package must not mutate user state.
 - Keep expensive discovery off redisplay and completion hot paths. Background sync, explicit refresh, and indexed queries are the only scalable paths.
