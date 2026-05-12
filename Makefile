@@ -1,4 +1,5 @@
 EMACS ?= emacs
+BENCH_REPORT_DIR ?= target/refbox-bench
 ELISP_FILES := refbox-rpc.el refbox.el refbox-org.el refbox-latex.el refbox-markdown.el refbox-embark.el
 ELISP_TEST_FILES := tests/test-refbox.el tests/test-refbox-org.el tests/test-refbox-latex.el tests/test-refbox-markdown.el tests/test-refbox-embark.el
 ELISP_ELC_FILES := $(ELISP_FILES:.el=.elc) $(ELISP_TEST_FILES:.el=.elc)
@@ -31,6 +32,7 @@ test:
 	$(MAKE) test-rust
 	$(MAKE) test-elisp
 	$(MAKE) byte-compile
+	$(MAKE) bench-ci
 
 .PHONY: clippy
 clippy:
@@ -55,3 +57,30 @@ release:
 .PHONY: release-bundled-sqlite
 release-bundled-sqlite:
 	cargo build --release -p refbox --features bundled-sqlite
+
+.PHONY: bench-ci
+bench-ci:
+	mkdir -p "$(BENCH_REPORT_DIR)"
+	cargo build -p refbox
+	cargo run -p refbox-bench -- --profile ci --emacs "$(EMACS)" --report "$(BENCH_REPORT_DIR)/ci.json"
+
+.PHONY: bench-release
+bench-release:
+	mkdir -p "$(BENCH_REPORT_DIR)"
+	cargo build -p refbox
+	cargo run -p refbox-bench -- --profile release --emacs "$(EMACS)" --report "$(BENCH_REPORT_DIR)/release.json"
+
+.PHONY: bench-local
+bench-local:
+	mkdir -p "$(BENCH_REPORT_DIR)"
+	cargo build -p refbox
+	cargo run -p refbox-bench -- --profile local --emacs "$(EMACS)" --report "$(BENCH_REPORT_DIR)/local.json"
+
+.PHONY: bench-real
+bench-real:
+	: "$${REFBOX_BENCH_REAL_ROOT:?set REFBOX_BENCH_REAL_ROOT}"
+	: "$${REFBOX_BENCH_REAL_QUERY:?set REFBOX_BENCH_REAL_QUERY}"
+	: "$${REFBOX_BENCH_REAL_KEY:?set REFBOX_BENCH_REAL_KEY}"
+	mkdir -p "$(BENCH_REPORT_DIR)"
+	cargo build -p refbox
+	cargo run -p refbox-bench -- --profile real --emacs "$(EMACS)" --report "$(BENCH_REPORT_DIR)/real.json"

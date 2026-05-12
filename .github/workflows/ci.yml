@@ -27,5 +27,8 @@ jobs:
       - name: Run local verification gate
         run: make test
 
+      - name: Check benchmark gate report
+        run: test -s target/refbox-bench/ci.json
+
       - name: Check bundled SQLite build
         run: make build-bundled-sqlite

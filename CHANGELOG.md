@@ -26,3 +26,4 @@ The format follows Keep a Changelog, and this project will follow SemVer once it
 - Added daemon-backed reference formatting, CSL style selection, and formatted insert/copy commands.
 - Added bounded completion-at-point integration for Org, LaTeX, and Markdown citation contexts.
 - Added optional Embark targets and action maps for reference candidates and citations.
+- Added deterministic scale benchmark profiles with JSON reports, CI regression thresholds, 100k-entry release coverage, 1M-entry local coverage, real-corpus validation, daemon query timings, and Emacs candidate-rendering timings.

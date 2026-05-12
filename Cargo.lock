@@ -368,6 +368,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "refbox-bench"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "refbox-rpc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "refbox-core"
 version = "0.0.0"
 dependencies = [

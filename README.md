@@ -74,7 +74,8 @@ Use `CHANGELOG.md` for durable change notes and `AGENTS.md` for project
 invariants.
 
 `make test` is the local all-checks entry point. It runs Rust formatting checks,
-clippy, Rust tests, Emacs batch tests, and byte compilation:
+clippy, Rust tests, Emacs batch tests, byte compilation, and the conservative
+CI benchmark gate:
 
 ```bash
 make test
@@ -103,3 +104,23 @@ them through your package manager once packaged.
 Tagged release workflows package platform daemon archives as
 `refbox-<platform>.tar.gz`. Each archive contains the daemon binary and
 `LICENSE`; the workflow also publishes a `.sha256` checksum alongside it.
+
+Benchmark reports are written as JSON under `target/refbox-bench/`:
+
+```bash
+make bench-ci       # 2k generated entries, CI p95 gates
+make bench-release  # 100k generated entries
+make bench-local    # 1M generated entries
+```
+
+For a real corpus, provide the root, query, and a key with resources:
+
+```bash
+REFBOX_BENCH_REAL_ROOT=/path/to/bibliography \
+REFBOX_BENCH_REAL_QUERY=searchterm \
+REFBOX_BENCH_REAL_KEY=key-with-files \
+make bench-real
+```
+
+Set `REFBOX_BENCH_REAL_SOURCE_PATH` as well when the key is duplicated across
+source files.
