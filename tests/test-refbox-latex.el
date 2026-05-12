@@ -30,6 +30,15 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
   "Return a minimal refbox candidate for KEY."
   (list :key key))
 
+(defun refbox-latex-test-search-candidate (key source-path)
+  "Return a search candidate for KEY from SOURCE-PATH."
+  (list :key key
+        :source_path source-path
+        :entry_type "article"
+        :score 0.0
+        :fields nil
+        :resources nil))
+
 (ert-deftest refbox-latex-test-detects-plain-cite ()
   "Plain \\cite commands should expose citation and key metadata."
   (refbox-latex-test-with-buffer "Text \\cite{al|pha}."
@@ -127,6 +136,49 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
   "Key listing should deduplicate LaTeX citation keys."
   (refbox-latex-test-with-buffer "\\cite{alpha,beta}\n\\parencite{alpha}\n|"
     (should (equal (refbox-latex-list-keys) '("alpha" "beta")))))
+
+(ert-deftest refbox-latex-test-capf-completes-scoped-citation-keys ()
+  "LaTeX CAPF should complete citation keys through bounded scoped search."
+  (let* ((root (make-temp-file "refbox-latex-capf-" t))
+         (bib (expand-file-name "refs/main.bib" root))
+         calls)
+    (unwind-protect
+        (let ((default-directory root)
+              (refbox-capf-limit 9))
+          (make-directory (file-name-directory bib) t)
+          (write-region "" nil bib)
+          (refbox-latex-test-with-buffer "\\bibliography{refs/main}\n\\cite{al|}"
+            (cl-letf (((symbol-function 'refbox-rpc-request)
+                       (lambda (method params)
+                         (should (equal method refbox-rpc-method-search-entries))
+                         (push params calls)
+                         (list :entries
+                               (list (refbox-latex-test-search-candidate
+                                      "alpha"
+                                      bib))))))
+              (let* ((capf (refbox-latex-completion-at-point))
+                     (start (nth 0 capf))
+                     (end (nth 1 capf))
+                     (table (nth 2 capf))
+                     (candidate (car (all-completions
+                                      (buffer-substring-no-properties start end)
+                                      table))))
+                (should (equal (buffer-substring-no-properties start end) "al"))
+                (should (equal (substring-no-properties candidate) "alpha"))
+                (should (equal (car calls)
+                               (list :query "al"
+                                     :limit 9
+                                     :source_paths (list bib))))))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-latex-test-capf-setup-is-buffer-local ()
+  "LaTeX CAPF setup should install a buffer-local completion function."
+  (refbox-latex-test-with-buffer "|"
+    (setq-local completion-at-point-functions nil)
+    (refbox-latex-setup-capf)
+    (should (memq #'refbox-latex-completion-at-point
+                  completion-at-point-functions))
+    (should (local-variable-p 'completion-at-point-functions))))
 
 (provide 'test-refbox-latex)
 

@@ -158,6 +158,30 @@
                      (match-string-no-properties 0))))))
         nil))))
 
+(defun refbox-markdown--completion-bounds ()
+  "Return Markdown citation key bounds for completion at point."
+  (if-let ((citation (refbox-markdown-citation-at-point)))
+      (refbox-capf-key-bounds-after-at
+       (plist-get citation :body-begin)
+       (plist-get citation :body-end))
+    (refbox-capf-key-bounds-after-at
+     (line-beginning-position)
+     (line-end-position))))
+
+;;;###autoload
+(defun refbox-markdown-completion-at-point ()
+  "Return CAPF data for Markdown citation keys at point."
+  (refbox-capf-at-bounds (refbox-markdown--completion-bounds)))
+
+;;;###autoload
+(defun refbox-markdown-setup-capf ()
+  "Enable refbox completion at point in the current Markdown buffer."
+  (interactive)
+  (add-hook 'completion-at-point-functions
+            #'refbox-markdown-completion-at-point
+            nil
+            t))
+
 ;;;###autoload
 (defun refbox-markdown-insert-key ()
   "Insert a bare Pandoc Markdown citation key at point."

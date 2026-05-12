@@ -177,6 +177,7 @@ pub struct LimitRequest {
 pub struct SearchEntriesRequest {
     pub query: String,
     pub limit: Option<usize>,
+    pub source_paths: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

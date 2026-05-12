@@ -8,7 +8,7 @@ use refbox_core::{
     DiagnosticTarget, FileParseStatus, IndexStoreCounts, IndexedFileMetadata, ResourceKind,
     SourcePosition, SourceSpan,
 };
-use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Row, Transaction, params, params_from_iter};
 use thiserror::Error;
 
 pub const SCHEMA_VERSION: i64 = 2;
@@ -382,23 +382,50 @@ impl RefboxStore {
             .collect()
     }
 
-    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+    pub fn search(
+        &self,
+        query: &str,
+        limit: usize,
+        source_paths: &[String],
+    ) -> Result<Vec<SearchResult>> {
         if query.trim().is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
 
         let limit = i64::try_from(limit).map_err(|_| StoreError::LimitOutOfRange(limit))?;
-        let mut statement = self.connection.prepare(
+        let source_paths = source_paths
+            .iter()
+            .map(|path| path.trim())
+            .filter(|path| !path.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        let mut sql = String::from(
             "SELECT e.id, f.path, e.entry_key, e.entry_type, bm25(entry_fts) AS score
              FROM entry_fts
              JOIN entries e ON e.id = entry_fts.rowid
              JOIN files f ON f.id = e.file_id
-             WHERE entry_fts MATCH ?1
-             ORDER BY score, e.entry_key, f.path, e.id
+             WHERE entry_fts MATCH ?1",
+        );
+        if !source_paths.is_empty() {
+            let placeholders = (0..source_paths.len())
+                .map(|index| format!("?{}", index + 3))
+                .collect::<Vec<_>>()
+                .join(", ");
+            sql.push_str(" AND f.path IN (");
+            sql.push_str(&placeholders);
+            sql.push(')');
+        }
+        sql.push_str(
+            " ORDER BY score, e.entry_key, f.path, e.id
              LIMIT ?2",
-        )?;
+        );
+        let mut statement = self.connection.prepare(&sql)?;
+        let mut parameters: Vec<&dyn rusqlite::ToSql> = vec![&query, &limit];
+        for path in &source_paths {
+            parameters.push(path);
+        }
         let results = statement
-            .query_map(params![query, limit], |row| {
+            .query_map(params_from_iter(parameters), |row| {
                 Ok(SearchResult {
                     entry_id: row.get(0)?,
                     file_path: row.get(1)?,

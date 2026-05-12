@@ -347,6 +347,28 @@ DIRECTION is -1 for left and 1 for right."
        (lambda (reference)
          (org-element-property :key reference))))))
 
+(defun refbox-org--completion-bounds ()
+  "Return Org citation key bounds for completion at point."
+  (when-let ((citation (refbox-org-citation-at-point)))
+    (refbox-capf-key-bounds-after-at
+     (org-element-contents-begin citation)
+     (org-element-contents-end citation))))
+
+;;;###autoload
+(defun refbox-org-completion-at-point ()
+  "Return CAPF data for Org citation references at point."
+  (when-let ((bounds (refbox-org--completion-bounds)))
+    (refbox-capf-at-bounds bounds (refbox-org-bibliography-files))))
+
+;;;###autoload
+(defun refbox-org-setup-capf ()
+  "Enable refbox completion at point in the current Org buffer."
+  (interactive)
+  (add-hook 'completion-at-point-functions
+            #'refbox-org-completion-at-point
+            nil
+            t))
+
 (defun refbox-org-activate (citation)
   "Activate Org CITATION with refbox text properties."
   (pcase-let ((`(,begin . ,end) (org-cite-boundaries citation)))

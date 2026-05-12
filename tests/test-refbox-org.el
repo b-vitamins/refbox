@@ -28,6 +28,15 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
   "Return a minimal refbox candidate for KEY."
   (list :key key))
 
+(defun refbox-org-test-search-candidate (key source-path)
+  "Return a search candidate for KEY from SOURCE-PATH."
+  (list :key key
+        :source_path source-path
+        :entry_type "article"
+        :score 0.0
+        :fields nil
+        :resources nil))
+
 (ert-deftest refbox-org-test-inserts-new-citation ()
   "Org insertion should create a citation from selected references."
   (refbox-org-test-with-buffer "Alpha |omega"
@@ -143,6 +152,54 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
   "Org key listing should deduplicate citation references."
   (refbox-org-test-with-buffer "[cite:@alpha; @beta]\n[cite:@alpha]\n|"
     (should (equal (refbox-org-list-keys) '("alpha" "beta")))))
+
+(ert-deftest refbox-org-test-capf-completes-scoped-citation-keys ()
+  "Org CAPF should complete citation keys through bounded scoped search."
+  (let* ((root (make-temp-file "refbox-org-capf-" t))
+         (bib (expand-file-name "refs/main.bib" root))
+         calls)
+    (unwind-protect
+        (let ((default-directory root)
+              (refbox-capf-limit 7))
+          (make-directory (file-name-directory bib) t)
+          (write-region "" nil bib)
+          (refbox-org-test-with-buffer "#+bibliography: refs/main.bib\n\n[cite:@al|]"
+            (cl-letf (((symbol-function 'refbox-rpc-request)
+                       (lambda (method params)
+                         (should (equal method refbox-rpc-method-search-entries))
+                         (push params calls)
+                         (list :entries
+                               (list (refbox-org-test-search-candidate
+                                      "alpha"
+                                      bib))))))
+              (let* ((capf (refbox-org-completion-at-point))
+                     (start (nth 0 capf))
+                     (end (nth 1 capf))
+                     (table (nth 2 capf))
+                     (candidate (car (all-completions
+                                      (buffer-substring-no-properties start end)
+                                      table)))
+                     (metadata (funcall table "" nil 'metadata))
+                     (annotation-function
+                      (cdr (assq 'annotation-function (cdr metadata)))))
+                (should (equal (buffer-substring-no-properties start end) "al"))
+                (should (equal (substring-no-properties candidate) "alpha"))
+                (should (string-match-p "article"
+                                        (funcall annotation-function candidate)))
+                (should (equal (car calls)
+                               (list :query "al"
+                                     :limit 7
+                                     :source_paths (list bib))))))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-org-test-capf-setup-is-buffer-local ()
+  "Org CAPF setup should install a buffer-local completion function."
+  (refbox-org-test-with-buffer "|"
+    (setq-local completion-at-point-functions nil)
+    (refbox-org-setup-capf)
+    (should (memq #'refbox-org-completion-at-point
+                  completion-at-point-functions))
+    (should (local-variable-p 'completion-at-point-functions))))
 
 (provide 'test-refbox-org)
 

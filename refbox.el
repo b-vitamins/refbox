@@ -38,8 +38,11 @@
 (require 'refbox-rpc)
 
 (declare-function refbox-org-list-keys "refbox-org" (&optional buffer))
+(declare-function refbox-org-completion-at-point "refbox-org" ())
 (declare-function refbox-latex-list-keys "refbox-latex" (&optional buffer))
+(declare-function refbox-latex-completion-at-point "refbox-latex" ())
 (declare-function refbox-markdown-list-keys "refbox-markdown" (&optional buffer))
+(declare-function refbox-markdown-completion-at-point "refbox-markdown" ())
 
 (defcustom refbox-reference-main-template
   "%{key:24} %{author|editor:28!refbox-template-clean} %{date|year:6!refbox-template-year} %{title:*!refbox-template-clean}"
@@ -67,6 +70,11 @@
 
 (defcustom refbox-reference-display-width 100
   "Display width used when formatting star-width reference templates."
+  :type 'natnum
+  :group 'refbox)
+
+(defcustom refbox-capf-limit 50
+  "Maximum number of reference candidates requested for CAPF completion."
   :type 'natnum
   :group 'refbox)
 
@@ -554,14 +562,137 @@ computed property such as indicators, or an indexed bibliography field."
   "Return note-oriented display text for CANDIDATE."
   (refbox-template-format refbox-reference-note-template candidate width))
 
-(defun refbox-search-references (query &optional limit)
-  "Search indexed references for QUERY using bounded LIMIT."
-  (let* ((response (refbox-rpc-request
+(defun refbox-search-references (query &optional limit source-paths)
+  "Search indexed references for QUERY using bounded LIMIT.
+
+When SOURCE-PATHS is non-nil, restrict results to those
+bibliography source files."
+  (let* ((source-paths
+          (cl-remove-if
+           #'refbox--blank-string-p
+           (mapcar #'expand-file-name source-paths)))
+         (response (refbox-rpc-request
                     refbox-rpc-method-search-entries
-                    (list :query (or query "")
-                          :limit (refbox-rpc--search-limit limit))))
+                    (append
+                     (list :query (or query "")
+                           :limit (refbox-rpc--search-limit limit))
+                     (when source-paths
+                       (list :source_paths source-paths)))))
          (entries (plist-get response :entries)))
     (refbox--listify entries)))
+
+(defconst refbox-capf--key-chars "[:alnum:]_:.#$%&+?<>~/=-"
+  "Characters treated as part of citation keys during CAPF detection.")
+
+(defun refbox-capf-key-bounds (&optional begin end)
+  "Return citation key bounds around point between BEGIN and END."
+  (let ((begin (or begin (point-min)))
+        (end (or end (point-max))))
+    (when (and (<= begin (point))
+               (<= (point) end))
+      (save-excursion
+        (skip-chars-backward refbox-capf--key-chars begin)
+        (let ((start (point)))
+          (skip-chars-forward refbox-capf--key-chars end)
+          (cons start (point)))))))
+
+(defun refbox-capf-key-bounds-after-at (&optional begin end)
+  "Return citation key bounds after an @ marker between BEGIN and END."
+  (when-let ((bounds (refbox-capf-key-bounds begin end)))
+    (when (and (> (car bounds) (or begin (point-min)))
+               (eq (char-before (car bounds)) ?@))
+      bounds)))
+
+(defun refbox-capf--state (&optional limit source-paths)
+  "Return CAPF completion state using LIMIT and SOURCE-PATHS."
+  (list :limit (refbox-rpc--search-limit limit)
+        :source-paths source-paths
+        :input nil
+        :candidates nil))
+
+(defun refbox-capf--candidate (candidate seen)
+  "Return a key completion candidate from CANDIDATE using SEEN."
+  (let ((key (refbox-reference-field candidate "key")))
+    (unless (or (refbox--blank-string-p key)
+                (gethash key seen))
+      (puthash key t seen)
+      (propertize key 'refbox-candidate candidate))))
+
+(defun refbox-capf--state-candidates (state input)
+  "Return bounded key candidates for INPUT using STATE."
+  (setq input (substring-no-properties input))
+  (unless (equal input (plist-get state :input))
+    (let ((seen (make-hash-table :test 'equal)))
+      (setf (plist-get state :input) input)
+      (setf (plist-get state :candidates)
+            (delq
+             nil
+             (mapcar (lambda (candidate)
+                       (refbox-capf--candidate candidate seen))
+                     (refbox-search-references
+                      input
+                      (plist-get state :limit)
+                      (plist-get state :source-paths)))))))
+  (plist-get state :candidates))
+
+(defun refbox-capf--completion-table (state)
+  "Return a CAPF completion table backed by bounded daemon search STATE."
+  (lambda (string predicate action)
+    (cond
+     ((eq action 'metadata)
+      '(metadata
+        (category . refbox-reference)
+        (annotation-function . refbox--completion-annotation)
+        (affixation-function . refbox--completion-affixation)))
+     (t
+      (let ((candidates (refbox--completion-filter
+                         (refbox-capf--state-candidates state string)
+                         predicate)))
+        (cond
+         ((eq action t) candidates)
+         ((eq action 'lambda)
+          (cl-some (lambda (candidate)
+                     (string= string (substring-no-properties candidate)))
+                   candidates))
+         ((cl-some (lambda (candidate)
+                     (string= string (substring-no-properties candidate)))
+                   candidates)
+          t)
+         ((null candidates) nil)
+         ((null (cdr candidates)) (car candidates))
+         (t string)))))))
+
+(defun refbox-capf-at-bounds (bounds &optional source-paths)
+  "Return CAPF data for BOUNDS using optional SOURCE-PATHS."
+  (when bounds
+    (list (car bounds)
+          (cdr bounds)
+          (refbox-capf--completion-table
+           (refbox-capf--state refbox-capf-limit source-paths))
+          :exclusive 'no)))
+
+;;;###autoload
+(defun refbox-completion-at-point ()
+  "Return reference completion data at supported citation contexts."
+  (cond
+   ((and (derived-mode-p 'org-mode)
+         (fboundp 'refbox-org-completion-at-point))
+    (refbox-org-completion-at-point))
+   ((and (derived-mode-p 'latex-mode 'LaTeX-mode 'tex-mode)
+         (fboundp 'refbox-latex-completion-at-point))
+    (refbox-latex-completion-at-point))
+   ((and (derived-mode-p 'markdown-mode 'gfm-mode)
+         (fboundp 'refbox-markdown-completion-at-point))
+    (refbox-markdown-completion-at-point))))
+
+;;;###autoload
+(defun refbox-setup-capf ()
+  "Enable refbox completion at point in the current buffer."
+  (interactive)
+  (add-hook 'completion-at-point-functions
+            #'refbox-completion-at-point
+            nil
+            t))
 
 (defun refbox-reference-resources (candidate)
   "Return indexed resources for CANDIDATE via the daemon."

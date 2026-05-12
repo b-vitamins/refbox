@@ -27,6 +27,15 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
   "Return a minimal refbox candidate for KEY."
   (list :key key))
 
+(defun refbox-markdown-test-search-candidate (key source-path)
+  "Return a search candidate for KEY from SOURCE-PATH."
+  (list :key key
+        :source_path source-path
+        :entry_type "article"
+        :score 0.0
+        :fields nil
+        :resources nil))
+
 (ert-deftest refbox-markdown-test-inserts-one-key ()
   "Bare key insertion should insert one Pandoc key."
   (refbox-markdown-test-with-buffer "Alpha |omega"
@@ -92,6 +101,40 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
   (refbox-markdown-test-with-buffer "[@alpha; @beta]\nText @alpha and [-@gamma]."
     (should (equal (refbox-markdown-list-keys)
                    '("alpha" "beta" "gamma")))))
+
+(ert-deftest refbox-markdown-test-capf-completes-citation-keys ()
+  "Markdown CAPF should complete citation keys through bounded search."
+  (let ((calls nil)
+        (refbox-capf-limit 11))
+    (refbox-markdown-test-with-buffer "See [@al|]."
+      (cl-letf (((symbol-function 'refbox-rpc-request)
+                 (lambda (method params)
+                   (should (equal method refbox-rpc-method-search-entries))
+                   (push params calls)
+                   (list :entries
+                         (list (refbox-markdown-test-search-candidate
+                                "alpha"
+                                "/tmp/refs.bib"))))))
+        (let* ((capf (refbox-markdown-completion-at-point))
+               (start (nth 0 capf))
+               (end (nth 1 capf))
+               (table (nth 2 capf))
+               (candidate (car (all-completions
+                                (buffer-substring-no-properties start end)
+                                table))))
+          (should (equal (buffer-substring-no-properties start end) "al"))
+          (should (equal (substring-no-properties candidate) "alpha"))
+          (should (equal (car calls)
+                         (list :query "al" :limit 11))))))))
+
+(ert-deftest refbox-markdown-test-capf-setup-is-buffer-local ()
+  "Markdown CAPF setup should install a buffer-local completion function."
+  (refbox-markdown-test-with-buffer "|"
+    (setq-local completion-at-point-functions nil)
+    (refbox-markdown-setup-capf)
+    (should (memq #'refbox-markdown-completion-at-point
+                  completion-at-point-functions))
+    (should (local-variable-p 'completion-at-point-functions))))
 
 (provide 'test-refbox-markdown)
 

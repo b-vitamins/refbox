@@ -53,7 +53,9 @@ fn inserts_parsed_files_and_queries_records_back() {
         3
     );
 
-    let results = store.search("scalable", 5).expect("search should work");
+    let results = store
+        .search("scalable", 5, &[])
+        .expect("search should work");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].key, "smith2020");
     assert_eq!(results[0].entry_type, "article");
@@ -168,7 +170,7 @@ fn fts_queries_are_bounded_and_deterministic_for_ties() {
 
     store.insert_file(&file).expect("file should insert");
 
-    let results = store.search("shared", 2).expect("search should work");
+    let results = store.search("shared", 2, &[]).expect("search should work");
     assert_eq!(
         results
             .iter()
@@ -176,6 +178,35 @@ fn fts_queries_are_bounded_and_deterministic_for_ties() {
             .collect::<Vec<_>>(),
         vec!["alpha", "beta"]
     );
+}
+
+#[test]
+fn fts_queries_can_be_scoped_to_source_paths() {
+    let mut store = RefboxStore::open_in_memory().expect("store should open");
+    let first = parse_bibliography_file(
+        "refs/first.bib",
+        r#"@article{first,
+  title = {Shared Scope Signal}
+}"#,
+    );
+    let second = parse_bibliography_file(
+        "refs/second.bib",
+        r#"@article{second,
+  title = {Shared Scope Signal}
+}"#,
+    );
+
+    store.insert_file(&first).expect("first file should insert");
+    store
+        .insert_file(&second)
+        .expect("second file should insert");
+
+    let results = store
+        .search("shared", 5, &["refs/second.bib".to_string()])
+        .expect("search should work");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].key, "second");
+    assert_eq!(results[0].file_path, "refs/second.bib");
 }
 
 #[test]

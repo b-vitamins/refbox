@@ -193,6 +193,32 @@
             (setq keys (append keys (plist-get citation :keys))))))
       (delete-dups keys))))
 
+(defun refbox-latex--completion-bounds ()
+  "Return LaTeX citation key bounds for completion at point."
+  (when-let ((citation (refbox-latex-citation-at-point)))
+    (let ((bounds (refbox-capf-key-bounds
+                   (plist-get citation :key-begin)
+                   (plist-get citation :key-end))))
+      (when (and bounds
+                 (<= (plist-get citation :key-begin) (car bounds))
+                 (<= (cdr bounds) (plist-get citation :key-end)))
+        bounds))))
+
+;;;###autoload
+(defun refbox-latex-completion-at-point ()
+  "Return CAPF data for LaTeX citation keys at point."
+  (when-let ((bounds (refbox-latex--completion-bounds)))
+    (refbox-capf-at-bounds bounds (refbox-latex-bibliography-files))))
+
+;;;###autoload
+(defun refbox-latex-setup-capf ()
+  "Enable refbox completion at point in the current LaTeX buffer."
+  (interactive)
+  (add-hook 'completion-at-point-functions
+            #'refbox-latex-completion-at-point
+            nil
+            t))
+
 (defun refbox-latex--read-command ()
   "Read or return the configured LaTeX citation command."
   (if refbox-latex-prompt-for-command
