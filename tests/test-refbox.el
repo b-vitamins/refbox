@@ -219,6 +219,12 @@
   (when (file-exists-p latex-tests)
     (load latex-tests nil t)))
 
+(let ((markdown-tests (expand-file-name
+                       "test-refbox-markdown.el"
+                       (file-name-directory (or load-file-name buffer-file-name)))))
+  (when (file-exists-p markdown-tests)
+    (load markdown-tests nil t)))
+
 (provide 'test-refbox)
 
 ;;; test-refbox.el ends here

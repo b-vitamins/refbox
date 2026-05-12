@@ -20,3 +20,4 @@ The format follows Keep a Changelog, and this project will follow SemVer once it
 - Added bounded Emacs reference selection, display templates, candidate annotations, and search-result field metadata.
 - Added Org citation insertion, editing, follow dispatch, activation keymap behavior, and local bibliography discovery.
 - Added LaTeX citation detection, insertion, replacement, optional argument handling, and local bibliography discovery.
+- Added Pandoc-style Markdown citation insertion, detection, replacement, affix prompts, and current-buffer key listing.
