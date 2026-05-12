@@ -11,7 +11,7 @@ use refbox_core::{
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params, params_from_iter};
 use thiserror::Error;
 
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 5;
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
@@ -32,6 +32,8 @@ pub enum StoreError {
 #[derive(Debug)]
 pub struct RefboxStore {
     connection: Connection,
+    bulk_update_depth: usize,
+    duplicate_groups_dirty: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,7 +158,11 @@ impl RefboxStore {
 
     fn from_connection(connection: Connection) -> Result<Self> {
         connection.execute_batch("PRAGMA foreign_keys = ON;")?;
-        let mut store = Self { connection };
+        let mut store = Self {
+            connection,
+            bulk_update_depth: 0,
+            duplicate_groups_dirty: false,
+        };
         store.migrate()?;
         Ok(store)
     }
@@ -179,6 +185,7 @@ impl RefboxStore {
         file: &BibliographyFile,
         metadata: &IndexedFileMetadata,
     ) -> Result<()> {
+        let defer_duplicate_groups = self.bulk_update_depth > 0;
         let tx = self.connection.transaction()?;
         delete_existing_file(&tx, &file.path)?;
 
@@ -199,23 +206,52 @@ impl RefboxStore {
         let file_id = tx.last_insert_rowid();
 
         for diagnostic in &file.diagnostics {
-            insert_diagnostic(&tx, file_id, None, &file.path, diagnostic)?;
+            insert_diagnostic(&tx, file_id, None, diagnostic)?;
         }
 
         for entry in &file.entries {
-            insert_entry(&tx, file_id, &file.path, entry)?;
+            insert_entry(&tx, file_id, entry)?;
         }
 
-        refresh_duplicate_groups(&tx)?;
+        if !defer_duplicate_groups {
+            refresh_duplicate_groups(&tx)?;
+        }
         tx.commit()?;
+        if defer_duplicate_groups {
+            self.duplicate_groups_dirty = true;
+        }
         Ok(())
     }
 
     pub fn remove_file(&mut self, path: &str) -> Result<()> {
+        let defer_duplicate_groups = self.bulk_update_depth > 0;
         let tx = self.connection.transaction()?;
         delete_existing_file(&tx, path)?;
-        refresh_duplicate_groups(&tx)?;
+        if !defer_duplicate_groups {
+            refresh_duplicate_groups(&tx)?;
+        }
         tx.commit()?;
+        if defer_duplicate_groups {
+            self.duplicate_groups_dirty = true;
+        }
+        Ok(())
+    }
+
+    pub fn begin_bulk_update(&mut self) -> Result<()> {
+        self.bulk_update_depth = self.bulk_update_depth.saturating_add(1);
+        Ok(())
+    }
+
+    pub fn finish_bulk_update(&mut self) -> Result<()> {
+        if self.bulk_update_depth > 0 {
+            self.bulk_update_depth -= 1;
+        }
+        if self.bulk_update_depth == 0 && self.duplicate_groups_dirty {
+            let tx = self.connection.transaction()?;
+            refresh_duplicate_groups(&tx)?;
+            tx.commit()?;
+            self.duplicate_groups_dirty = false;
+        }
         Ok(())
     }
 
@@ -393,6 +429,9 @@ impl RefboxStore {
         }
 
         let limit = i64::try_from(limit).map_err(|_| StoreError::LimitOutOfRange(limit))?;
+        let Some(fts_query) = fts_query_from_user_input(query) else {
+            return Ok(Vec::new());
+        };
         let source_paths = source_paths
             .iter()
             .map(|path| path.trim())
@@ -420,7 +459,7 @@ impl RefboxStore {
              LIMIT ?2",
         );
         let mut statement = self.connection.prepare(&sql)?;
-        let mut parameters: Vec<&dyn rusqlite::ToSql> = vec![&query, &limit];
+        let mut parameters: Vec<&dyn rusqlite::ToSql> = vec![&fts_query, &limit];
         for path in &source_paths {
             parameters.push(path);
         }
@@ -599,7 +638,7 @@ impl RefboxStore {
             }
         }
 
-        tx.execute_batch("PRAGMA user_version = 2;")?;
+        tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
         tx.commit()?;
         Ok(())
     }
@@ -629,6 +668,14 @@ impl RefboxStore {
 impl DerivedBibliographyStore for RefboxStore {
     type Error = StoreError;
 
+    fn begin_bulk_update(&mut self) -> Result<()> {
+        RefboxStore::begin_bulk_update(self)
+    }
+
+    fn finish_bulk_update(&mut self) -> Result<()> {
+        RefboxStore::finish_bulk_update(self)
+    }
+
     fn indexed_file_metadata(&self) -> Result<Vec<IndexedFileMetadata>> {
         RefboxStore::indexed_file_metadata(self)
     }
@@ -650,7 +697,13 @@ impl DerivedBibliographyStore for RefboxStore {
     }
 }
 
-const MIGRATIONS: &[(i64, &str)] = &[(1, MIGRATION_001), (2, MIGRATION_002), (3, MIGRATION_003)];
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, MIGRATION_001),
+    (2, MIGRATION_002),
+    (3, MIGRATION_003),
+    (4, MIGRATION_004),
+    (5, MIGRATION_005),
+];
 
 const MIGRATION_001: &str = r#"
 CREATE TABLE IF NOT EXISTS files (
@@ -826,6 +879,34 @@ SET raw =
 DELETE FROM source_spans WHERE owner_kind = 'name';
 "#;
 
+const MIGRATION_004: &str = r#"
+DROP INDEX IF EXISTS fields_lookup_value_idx;
+DROP INDEX IF EXISTS source_spans_owner_idx;
+DROP INDEX IF EXISTS source_spans_path_idx;
+DROP TABLE IF EXISTS source_spans;
+"#;
+
+const MIGRATION_005: &str = r#"
+CREATE VIRTUAL TABLE IF NOT EXISTS entry_fts_v5 USING fts5(
+    entry_key,
+    title,
+    names,
+    date,
+    venue,
+    abstract,
+    keywords,
+    identifiers,
+    prefix='2 3 4'
+);
+
+INSERT INTO entry_fts_v5(rowid, entry_key, title, names, date, venue, abstract, keywords, identifiers)
+SELECT rowid, entry_key, title, names, date, venue, abstract, keywords, identifiers
+FROM entry_fts;
+
+DROP TABLE entry_fts;
+ALTER TABLE entry_fts_v5 RENAME TO entry_fts;
+"#;
+
 fn delete_existing_file(tx: &Transaction<'_>, path: &str) -> Result<()> {
     let entry_ids = {
         let mut statement = tx.prepare(
@@ -843,20 +924,11 @@ fn delete_existing_file(tx: &Transaction<'_>, path: &str) -> Result<()> {
         tx.execute("DELETE FROM entry_fts WHERE rowid = ?1", params![entry_id])?;
     }
 
-    tx.execute(
-        "DELETE FROM source_spans WHERE file_path = ?1",
-        params![path],
-    )?;
     tx.execute("DELETE FROM files WHERE path = ?1", params![path])?;
     Ok(())
 }
 
-fn insert_entry(
-    tx: &Transaction<'_>,
-    file_id: i64,
-    file_path: &str,
-    entry: &BibliographyEntry,
-) -> Result<i64> {
+fn insert_entry(tx: &Transaction<'_>, file_id: i64, entry: &BibliographyEntry) -> Result<i64> {
     let source = db_span(&entry.raw.source)?;
     tx.execute(
         "INSERT INTO entries(
@@ -879,7 +951,6 @@ fn insert_entry(
         ],
     )?;
     let entry_id = tx.last_insert_rowid();
-    insert_source_span(tx, file_path, "entry", entry_id, &entry.raw.source)?;
 
     for field in &entry.fields {
         let source = nullable_span(field.source.as_ref())?;
@@ -903,9 +974,6 @@ fn insert_entry(
                 source.end_column,
             ],
         )?;
-        if let Some(span) = &field.source {
-            insert_source_span(tx, file_path, "field", tx.last_insert_rowid(), span)?;
-        }
     }
 
     for name_list in &entry.names {
@@ -967,13 +1035,10 @@ fn insert_entry(
                 source.end_column,
             ],
         )?;
-        if let Some(span) = &resource.source {
-            insert_source_span(tx, file_path, "resource", tx.last_insert_rowid(), span)?;
-        }
     }
 
     for diagnostic in &entry.diagnostics {
-        insert_diagnostic(tx, file_id, Some(entry_id), file_path, diagnostic)?;
+        insert_diagnostic(tx, file_id, Some(entry_id), diagnostic)?;
     }
 
     insert_fts_row(tx, entry_id, entry)?;
@@ -984,7 +1049,6 @@ fn insert_diagnostic(
     tx: &Transaction<'_>,
     file_id: i64,
     entry_id: Option<i64>,
-    file_path: &str,
     diagnostic: &Diagnostic,
 ) -> Result<()> {
     let source = nullable_span(diagnostic.source.as_ref())?;
@@ -1015,9 +1079,6 @@ fn insert_diagnostic(
             source.end_column,
         ],
     )?;
-    if let Some(span) = &diagnostic.source {
-        insert_source_span(tx, file_path, "diagnostic", tx.last_insert_rowid(), span)?;
-    }
     Ok(())
 }
 
@@ -1096,36 +1157,6 @@ fn refresh_duplicate_groups(tx: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
-fn insert_source_span(
-    tx: &Transaction<'_>,
-    file_path: &str,
-    owner_kind: &str,
-    owner_id: i64,
-    span: &SourceSpan,
-) -> Result<()> {
-    let span = db_span(span)?;
-    tx.execute(
-        "INSERT INTO source_spans(
-            file_path, owner_kind, owner_id, path,
-            start_byte, start_line, start_column,
-            end_byte, end_line, end_column
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-        params![
-            file_path,
-            owner_kind,
-            owner_id,
-            span.path,
-            span.start_byte,
-            span.start_line,
-            span.start_column,
-            span.end_byte,
-            span.end_line,
-            span.end_column,
-        ],
-    )?;
-    Ok(())
-}
-
 fn person_name_storage_text(name: &PersonName) -> String {
     if let Some(literal) = name
         .literal
@@ -1147,6 +1178,19 @@ fn person_name_storage_text(name: &PersonName) -> String {
         text.push_str(&name.suffix.join(" "));
     }
     text
+}
+
+fn fts_query_from_user_input(query: &str) -> Option<String> {
+    let tokens = query
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(|token| format!("{token}*"))
+        .collect::<Vec<_>>();
+    if tokens.is_empty() {
+        None
+    } else {
+        Some(tokens.join(" "))
+    }
 }
 
 fn stored_entry_from_row(row: &Row<'_>) -> rusqlite::Result<StoredEntry> {

@@ -183,34 +183,43 @@ impl SyncEngine {
             ..SyncStatus::default()
         };
 
-        for path in discovered {
-            let path = path_string(&path)?;
-            let snapshot = read_file_snapshot(&path)?;
-            status.latest_modified_ns =
-                max_optional(status.latest_modified_ns, snapshot.modified_ns);
+        store.begin_bulk_update().map_err(SyncError::Store)?;
+        let sync_result = (|| {
+            for path in discovered {
+                let path = path_string(&path)?;
+                let snapshot = read_file_snapshot(&path)?;
+                status.latest_modified_ns =
+                    max_optional(status.latest_modified_ns, snapshot.modified_ns);
 
-            if existing
-                .get(&path)
-                .is_some_and(|metadata| same_freshness(metadata, &snapshot))
-            {
-                status.skipped_file_count += 1;
-                continue;
+                if existing
+                    .get(&path)
+                    .is_some_and(|metadata| same_freshness(metadata, &snapshot))
+                {
+                    status.skipped_file_count += 1;
+                    continue;
+                }
+
+                let parsed = parse_bibliography_file(path.clone(), snapshot.text.as_str());
+                let metadata = snapshot.into_metadata(&parsed);
+                store
+                    .upsert_file(&parsed, &metadata)
+                    .map_err(SyncError::Store)?;
+                status.changed_file_count += 1;
             }
 
-            let parsed = parse_bibliography_file(path.clone(), snapshot.text.as_str());
-            let metadata = snapshot.into_metadata(&parsed);
-            store
-                .upsert_file(&parsed, &metadata)
-                .map_err(SyncError::Store)?;
-            status.changed_file_count += 1;
-        }
-
-        for path in existing.keys() {
-            if !discovered_paths.contains(path) {
-                store.remove_file(path).map_err(SyncError::Store)?;
-                status.removed_file_count += 1;
+            for path in existing.keys() {
+                if !discovered_paths.contains(path) {
+                    store.remove_file(path).map_err(SyncError::Store)?;
+                    status.removed_file_count += 1;
+                }
             }
-        }
+
+            Ok(status)
+        })();
+
+        let finish_result = store.finish_bulk_update().map_err(SyncError::Store);
+        let mut status = sync_result?;
+        finish_result?;
 
         apply_counts(store.index_counts().map_err(SyncError::Store)?, &mut status);
         Ok(status)

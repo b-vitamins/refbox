@@ -33,6 +33,9 @@ fn full_sync_indexes_eligible_files_and_prunes_missing_files() {
     assert!(store.path_ending("refs/b.bib").is_some());
     assert!(store.path_ending(".hidden/hidden.bib").is_none());
     assert!(store.path_ending("target/generated.bib").is_none());
+    assert_eq!(store.bulk_begin_count, 1);
+    assert_eq!(store.bulk_finish_count, 1);
+    assert_eq!(store.bulk_depth, 0);
 
     fs::remove_file(project.path("refs/b.bib")).expect("test file should remove");
     let status = engine
@@ -43,6 +46,9 @@ fn full_sync_indexes_eligible_files_and_prunes_missing_files() {
     assert_eq!(status.indexed_file_count, 1);
     assert!(store.path_ending("refs/a.bib").is_some());
     assert!(store.path_ending("refs/b.bib").is_none());
+    assert_eq!(store.bulk_begin_count, 2);
+    assert_eq!(store.bulk_finish_count, 2);
+    assert_eq!(store.bulk_depth, 0);
 }
 
 #[test]
@@ -140,6 +146,9 @@ fn sync_status_reports_counts_and_freshness_metadata() {
 struct MemoryStore {
     files: BTreeMap<String, BibliographyFile>,
     metadata: BTreeMap<String, IndexedFileMetadata>,
+    bulk_begin_count: usize,
+    bulk_finish_count: usize,
+    bulk_depth: usize,
 }
 
 impl MemoryStore {
@@ -167,6 +176,18 @@ impl MemoryStore {
 
 impl DerivedBibliographyStore for MemoryStore {
     type Error = Infallible;
+
+    fn begin_bulk_update(&mut self) -> Result<(), Self::Error> {
+        self.bulk_begin_count += 1;
+        self.bulk_depth += 1;
+        Ok(())
+    }
+
+    fn finish_bulk_update(&mut self) -> Result<(), Self::Error> {
+        self.bulk_finish_count += 1;
+        self.bulk_depth = self.bulk_depth.saturating_sub(1);
+        Ok(())
+    }
 
     fn indexed_file_metadata(&self) -> Result<Vec<IndexedFileMetadata>, Self::Error> {
         Ok(self.metadata.values().cloned().collect())

@@ -7,11 +7,39 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
 fn migrations_are_versioned_from_first_schema() {
-    let store = RefboxStore::open_in_memory().expect("store should open");
-    assert_eq!(
-        store.schema_version().expect("schema version should query"),
-        SCHEMA_VERSION
+    let db_path = unique_db_path("refbox-migrations");
+    {
+        let store = RefboxStore::open(&db_path).expect("store should open");
+        assert_eq!(
+            store.schema_version().expect("schema version should query"),
+            SCHEMA_VERSION
+        );
+    }
+
+    let connection = Connection::open(&db_path).expect("database should open");
+    for removed_object in ["source_spans", "fields_lookup_value_idx"] {
+        let count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = ?1",
+                [removed_object],
+                |row| row.get(0),
+            )
+            .expect("schema object check should query");
+        assert_eq!(count, 0, "{removed_object} should not exist");
+    }
+    let fts_sql: String = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE name = 'entry_fts'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("FTS schema should query");
+    assert!(
+        fts_sql.contains("prefix='2 3 4'"),
+        "entry_fts should keep type-ahead prefix indexes"
     );
+    drop(connection);
+    let _ = fs::remove_file(db_path);
 }
 
 #[test]
@@ -185,6 +213,94 @@ fn fts_queries_are_bounded_and_deterministic_for_ties() {
 }
 
 #[test]
+fn fts_queries_prefix_match_title_author_and_punctuation_safe_input() {
+    let mut store = RefboxStore::open_in_memory().expect("store should open");
+    let file = parse_bibliography_file(
+        "refs/prefix.bib",
+        r#"@article{austin2021d3pm,
+  author = {Austin, Jacob and Johnson, Daniel},
+  title = {Structured Denoising Diffusion Models in Discrete State-Spaces},
+  doi = {10.1000/refbox}
+}"#,
+    );
+
+    store.insert_file(&file).expect("file should insert");
+
+    let title = store.search("diff", 5, &[]).expect("title prefix search");
+    assert_eq!(title[0].key, "austin2021d3pm");
+
+    let author = store
+        .search("jac aust", 5, &[])
+        .expect("author prefix search");
+    assert_eq!(author[0].key, "austin2021d3pm");
+
+    let punctuation = store
+        .search("10.1000/ref", 5, &[])
+        .expect("punctuation search should not expose FTS syntax errors");
+    assert_eq!(punctuation[0].key, "austin2021d3pm");
+}
+
+#[test]
+fn migration_rebuilds_existing_fts_rows_with_prefix_indexes() {
+    let db_path = unique_db_path("refbox-fts-migration");
+    {
+        let mut store = RefboxStore::open(&db_path).expect("store should open");
+        let file = parse_bibliography_file(
+            "refs/prefix-migration.bib",
+            r#"@article{austin2021d3pm,
+  author = {Austin, Jacob},
+  title = {Structured Denoising Diffusion Models}
+}"#,
+        );
+        store.insert_file(&file).expect("file should insert");
+    }
+
+    {
+        let connection = Connection::open(&db_path).expect("database should open");
+        connection
+            .execute_batch(
+                r#"
+CREATE VIRTUAL TABLE entry_fts_old USING fts5(
+    entry_key,
+    title,
+    names,
+    date,
+    venue,
+    abstract,
+    keywords,
+    identifiers
+);
+INSERT INTO entry_fts_old(rowid, entry_key, title, names, date, venue, abstract, keywords, identifiers)
+SELECT rowid, entry_key, title, names, date, venue, abstract, keywords, identifiers
+FROM entry_fts;
+DROP TABLE entry_fts;
+ALTER TABLE entry_fts_old RENAME TO entry_fts;
+DELETE FROM schema_migrations WHERE version = 5;
+PRAGMA user_version = 4;
+"#,
+            )
+            .expect("database should downgrade FTS shape");
+    }
+
+    let store = RefboxStore::open(&db_path).expect("store should migrate");
+    let results = store.search("diff", 5, &[]).expect("prefix search");
+    assert_eq!(results[0].key, "austin2021d3pm");
+    drop(store);
+
+    let connection = Connection::open(&db_path).expect("database should open");
+    let fts_sql: String = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE name = 'entry_fts'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("FTS schema should query");
+    assert!(fts_sql.contains("prefix='2 3 4'"));
+    drop(connection);
+    let _ = fs::remove_file(db_path);
+}
+
+#[test]
 fn fts_queries_can_be_scoped_to_source_paths() {
     let mut store = RefboxStore::open_in_memory().expect("store should open");
     let first = parse_bibliography_file(
@@ -301,18 +417,18 @@ fn large_author_lists_do_not_duplicate_full_name_lists_per_person() {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .expect("name storage should query");
-    let name_source_spans: i64 = connection
+    let source_span_table_count: i64 = connection
         .query_row(
-            "SELECT COUNT(*) FROM source_spans WHERE owner_kind = 'name'",
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'source_spans'",
             [],
             |row| row.get(0),
         )
-        .expect("source spans should query");
+        .expect("source span table check should query");
 
     assert_eq!(stored_names, i64::from(author_count));
     assert!(max_raw_len < 32);
     assert!(total_raw_len < 12_000);
-    assert_eq!(name_source_spans, 0);
+    assert_eq!(source_span_table_count, 0);
 
     drop(connection);
     let _ = fs::remove_file(db_path);

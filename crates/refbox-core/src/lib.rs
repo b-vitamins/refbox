@@ -73,6 +73,14 @@ pub struct IndexStoreCounts {
 pub trait DerivedBibliographyStore {
     type Error;
 
+    fn begin_bulk_update(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn finish_bulk_update(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
     fn indexed_file_metadata(&self) -> Result<Vec<IndexedFileMetadata>, Self::Error>;
 
     fn upsert_file(
