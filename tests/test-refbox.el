@@ -531,6 +531,12 @@
   (when (file-exists-p markdown-tests)
     (load markdown-tests nil t)))
 
+(let ((embark-tests (expand-file-name
+                     "test-refbox-embark.el"
+                     (file-name-directory (or load-file-name buffer-file-name)))))
+  (when (file-exists-p embark-tests)
+    (load embark-tests nil t)))
+
 (provide 'test-refbox)
 
 ;;; test-refbox.el ends here

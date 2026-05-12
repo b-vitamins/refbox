@@ -25,3 +25,4 @@ The format follows Keep a Changelog, and this project will follow SemVer once it
 - Added source-entry opening, raw-entry insertion, local bibliography export, and library file add workflows.
 - Added daemon-backed reference formatting, CSL style selection, and formatted insert/copy commands.
 - Added bounded completion-at-point integration for Org, LaTeX, and Markdown citation contexts.
+- Added optional Embark targets and action maps for reference candidates and citations.
