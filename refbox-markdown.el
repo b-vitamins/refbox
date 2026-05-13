@@ -102,6 +102,57 @@
               "")
             "]")))
 
+(defun refbox-markdown--new-keys (keys existing)
+  "Return KEYS that are not already present in EXISTING."
+  (cl-remove-if (lambda (key) (member key existing)) keys))
+
+(defun refbox-markdown--key-spans (citation)
+  "Return key spans for CITATION as (KEY BEGIN END) lists."
+  (save-excursion
+    (let ((end (plist-get citation :body-end))
+          spans)
+      (goto-char (plist-get citation :body-begin))
+      (while (re-search-forward refbox-markdown--key-regexp end t)
+        (push (list (string-remove-prefix
+                     "@"
+                     (string-remove-prefix
+                      "-"
+                      (match-string-no-properties 0)))
+                    (match-beginning 0)
+                    (match-end 0))
+              spans))
+      (nreverse spans))))
+
+(defun refbox-markdown--insert-keys-into-citation (citation keys)
+  "Insert KEYS into existing Markdown CITATION."
+  (let* ((existing (plist-get citation :keys))
+         (keys (refbox-markdown--new-keys keys existing))
+         (text (mapconcat (lambda (key) (concat "@" key))
+                          keys
+                          refbox-markdown-key-separator))
+         (body-begin (plist-get citation :body-begin))
+         (body-end (plist-get citation :body-end))
+         (spans (refbox-markdown--key-spans citation)))
+    (when keys
+      (cond
+       ((null existing)
+        (goto-char body-begin)
+        (insert text))
+       ((<= (point) body-begin)
+        (goto-char body-begin)
+        (insert text refbox-markdown-key-separator))
+       ((>= (point) body-end)
+        (goto-char body-end)
+        (insert refbox-markdown-key-separator text))
+       (t
+        (goto-char
+         (or (cl-loop
+              for (_key begin end) in spans
+              when (and (<= begin (point)) (<= (point) end))
+              return end)
+             body-end))
+        (insert refbox-markdown-key-separator text))))))
+
 (defun refbox-markdown-citation-at-point ()
   "Return Markdown citation metadata at point, or nil."
   (let ((point (point))
@@ -189,25 +240,28 @@
   (insert "@" (refbox-markdown--selected-key)))
 
 ;;;###autoload
-(defun refbox-markdown-insert-citation ()
-  "Insert or replace a bracketed Pandoc Markdown citation at point."
+(defun refbox-markdown-insert-keys (keys)
+  "Insert KEYS as bare Pandoc Markdown citation keys."
+  (insert (mapconcat (lambda (key) (concat "@" key)) keys "; ")))
+
+;;;###autoload
+(defun refbox-markdown-insert-citation (&optional _arg)
+  "Insert a bracketed Pandoc Markdown citation at point.
+
+When point is already in a citation, add selected keys to that
+citation instead of replacing it."
   (interactive)
   (let* ((citation (refbox-markdown-citation-at-point))
-         (keys (refbox-markdown--selected-keys))
-         (affixes (refbox-markdown--read-affixes))
-         (replacement (refbox-markdown-format-citation
-                       keys
-                       (car affixes)
-                       (cdr affixes))))
+         (keys (refbox-markdown--selected-keys)))
     (unless keys
       (user-error "No references selected"))
     (if citation
-        (let ((begin (plist-get citation :begin))
-              (end (plist-get citation :end)))
-          (delete-region begin end)
-          (goto-char begin)
-          (insert replacement))
-      (insert replacement))))
+        (refbox-markdown--insert-keys-into-citation citation keys)
+      (let* ((affixes (refbox-markdown--read-affixes)))
+        (insert (refbox-markdown-format-citation
+                 keys
+                 (car affixes)
+                 (cdr affixes)))))))
 
 ;;;###autoload
 (defun refbox-markdown-list-keys (&optional buffer)

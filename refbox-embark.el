@@ -69,6 +69,8 @@
     (define-key map (kbd "c") #'refbox-embark-copy-reference)
     (define-key map (kbd "C") #'refbox-embark-copy-references)
     (define-key map (kbd "a") #'refbox-embark-add-file)
+    (define-key map (kbd "A") #'refbox-embark-attach-file)
+    (define-key map (kbd "z") #'refbox-embark-open-in-zotero)
     map)
   "Embark actions for refbox reference targets.")
 
@@ -83,6 +85,8 @@
     (define-key map (kbd "c") #'refbox-embark-copy-reference)
     (define-key map (kbd "C") #'refbox-embark-copy-references)
     (define-key map (kbd "a") #'refbox-embark-add-file)
+    (define-key map (kbd "A") #'refbox-embark-attach-file)
+    (define-key map (kbd "z") #'refbox-embark-open-in-zotero)
     map)
   "Embark actions for refbox citation targets.")
 
@@ -209,6 +213,16 @@
   "Add a file to TARGET's library resources."
   (interactive "sReference: ")
   (refbox-add-file-to-library (refbox-embark-reference target)))
+
+(defun refbox-embark-attach-file (target)
+  "Attach a file resource for TARGET."
+  (interactive "sReference: ")
+  (refbox-attach-files (refbox-embark-reference target)))
+
+(defun refbox-embark-open-in-zotero (target)
+  "Open TARGET in Zotero."
+  (interactive "sReference: ")
+  (refbox-open-in-zotero (refbox-embark-reference target)))
 
 ;;;###autoload
 (defun refbox-embark-setup ()

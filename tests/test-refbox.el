@@ -98,6 +98,38 @@
     (should (equal (cadr (nth 2 calls))
                    (list :path "/tmp/example.bib")))))
 
+(define-derived-mode refbox-test-mode fundamental-mode "RefboxTest"
+  "Temporary mode used by generic refbox command tests.")
+
+(ert-deftest refbox-test-generic_commands_dispatch_through_major_mode_adapters ()
+  "Generic commands should use the configured major-mode adapter surface."
+  (let (default-action-refs)
+    (cl-letf (((symbol-function 'refbox-test-insert-keys)
+               (lambda (keys)
+                 (insert (string-join keys "|"))))
+              ((symbol-function 'refbox-test-key-at-point)
+               (lambda () nil))
+              ((symbol-function 'refbox-test-citation-at-point)
+               (lambda () (list :keys ["alpha" "beta"])))
+              ((symbol-function 'refbox-read-references)
+               (lambda (&rest _args)
+                 (list (list :key "alpha")
+                       (list :key "beta")))))
+      (let ((refbox-major-mode-functions
+             '(((refbox-test-mode) .
+                ((insert-keys . refbox-test-insert-keys)
+                 (key-at-point . refbox-test-key-at-point)
+                 (citation-at-point . refbox-test-citation-at-point))))))
+        (with-temp-buffer
+          (refbox-test-mode)
+          (refbox-insert-keys)
+          (should (equal (buffer-string) "alpha|beta"))
+          (let ((refbox-default-action
+                 (lambda (references)
+                   (setq default-action-refs references))))
+            (refbox-dwim)
+            (should (equal default-action-refs '("alpha" "beta")))))))))
+
 (defconst refbox-test-reference-candidate
   '(:key "smith2020"
     :source_path "refs/main.bib"
@@ -166,6 +198,45 @@
                  "F@ article main\\.bib"
                  (nth 2 affixation)))))))
 
+(ert-deftest refbox-test-search-tags-use_daemon_resource_filters ()
+  "Search tags backed by indexed resources should be sent to the daemon."
+  (let (calls)
+    (cl-letf (((symbol-function 'refbox-rpc-request)
+               (lambda (method params)
+                 (push (list method params) calls)
+                 (should (equal method refbox-rpc-method-search-entries))
+                 (list :entries (list refbox-test-reference-candidate)))))
+      (let ((results (refbox-search-references "has:files alpha" 7)))
+        (should (equal (plist-get (cadar calls) :query) "alpha"))
+        (should (equal (plist-get (cadar calls) :limit) 7))
+        (should (equal (plist-get (cadar calls) :resource_kinds)
+                       ["file"]))
+        (should (equal (plist-get (car results) :key) "smith2020"))))))
+
+(ert-deftest refbox-test-search_tags_support_emacs_side_predicates ()
+  "Search tags backed by local predicates should filter returned candidates."
+  (let* ((cited (copy-tree refbox-test-reference-candidate))
+         (uncited (plist-put (copy-tree refbox-test-reference-candidate)
+                             :key "doe2021"))
+         calls)
+    (let ((refbox-reference-cited-predicate
+           (lambda (candidate)
+             (equal (refbox-reference-field candidate "key") "smith2020"))))
+      (cl-letf (((symbol-function 'refbox-rpc-request)
+                 (lambda (method params)
+                   (push (list method params) calls)
+                   (should (equal method refbox-rpc-method-search-entries))
+                   (list :entries (list cited uncited)))))
+        (let ((results (refbox-search-references "is:cited" 5)))
+          (should (equal (plist-get (cadar calls) :query) ""))
+          (should (equal (plist-get (cadar calls) :limit)
+                         refbox-search-maximum-limit))
+          (should (equal (plist-get (cadar calls) :allow_empty_query) t))
+          (should (equal (mapcar (lambda (candidate)
+                                   (plist-get candidate :key))
+                                 results)
+                         '("smith2020"))))))))
+
 (ert-deftest refbox-test-read-reference-contract-returns_candidate_payload ()
   "The chooser should return candidate metadata, not display strings."
   (let ((refbox-reference-main-template "%{key} %{title!refbox-template-clean}")
@@ -182,6 +253,26 @@
         (should (equal (plist-get selected :key) "smith2020"))
         (should (equal (plist-get selected :source_path) "refs/main.bib"))
         (should (equal (cadar calls) (list :query "smith" :limit 3)))))))
+
+(ert-deftest refbox-test-read-reference_accepts_candidate_predicates ()
+  "Reference selection should support filtering by candidate metadata."
+  (let* ((alpha (copy-tree refbox-test-reference-candidate))
+         (beta (plist-put (copy-tree refbox-test-reference-candidate)
+                          :key "beta2021")))
+    (cl-letf (((symbol-function 'refbox-rpc-request)
+               (lambda (_method _params)
+                 (list :entries (list alpha beta))))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt collection predicate &rest _args)
+                 (car (all-completions "beta" collection predicate)))))
+      (let ((selected
+             (refbox-read-reference
+              "Reference: "
+              "beta"
+              5
+              (lambda (candidate)
+                (equal (plist-get candidate :key) "beta2021")))))
+        (should (equal (plist-get selected :key) "beta2021"))))))
 
 (ert-deftest refbox-test-resource-file-parsers-handle-escaped-delimiters ()
   "File field parsers should handle path lists and triplet values."
@@ -239,6 +330,44 @@
                            (expand-file-name "doe_2021.org" root)))))
       (delete-directory root t))))
 
+(ert-deftest refbox-test-note_sources_are_swappable ()
+  "Note commands should use the configured note source protocol."
+  (let (opened created)
+    (let ((refbox-note-source 'mock)
+          (refbox-note-sources
+           `((mock
+              :items ,(lambda (key _reference)
+                        (list (format "note:%s" key)))
+              :hasitems ,(lambda (key _reference)
+                           (equal key "smith2020"))
+              :open ,(lambda (item)
+                       (push item opened))
+              :create ,(lambda (key _reference)
+                         (push key created)
+                         (format "created:%s" key))
+              :create-label ,(lambda (key _reference)
+                               (format "new:%s" key))
+              :transform ,(lambda (item)
+                            (concat "label:" item)))))
+          (refbox-open-prompt nil))
+      (should (refbox-reference-has-notes-p refbox-test-reference-candidate))
+      (should (equal (refbox-create-note refbox-test-reference-candidate)
+                     "created:smith2020"))
+      (refbox-open-notes refbox-test-reference-candidate)
+      (should (equal created '("smith2020")))
+      (should (equal opened '("note:smith2020"))))))
+
+(ert-deftest refbox-test-note_sources_can_be_registered_and_removed ()
+  "Note source registration helpers should update the source table."
+  (let ((refbox-note-sources nil))
+    (should (eq (refbox-register-note-source
+                 'mock
+                 (list :items #'ignore :open #'ignore :create #'ignore))
+                'mock))
+    (should (alist-get 'mock refbox-note-sources))
+    (should (eq (refbox-remove-note-source 'mock) 'mock))
+    (should-not (alist-get 'mock refbox-note-sources))))
+
 (ert-deftest refbox-test-link-resource-formatting ()
   "Identifier and URL resources should format into openable links."
   (should (equal (refbox-resource-link-url '(:kind "doi" :value "{10.1000/refbox}"))
@@ -282,6 +411,57 @@
                           opened)))
       (delete-directory root t))))
 
+(ert-deftest refbox-test-open_without_note_paths_does_not_offer_uncreatable_notes ()
+  "Resource opening should not fail while building unavailable note choices."
+  (let ((candidate '(:key "empty2020" :fields nil :resources nil))
+        (refbox-note-paths nil)
+        (refbox-open-resources '(:create-notes)))
+    (cl-letf (((symbol-function 'refbox-reference-resources)
+               (lambda (_candidate) nil)))
+      (should-error (refbox-open candidate) :type 'user-error))))
+
+(ert-deftest refbox-test-file_openers_support_extension_overrides_and_attachments ()
+  "File resources should support extension-specific openers and MIME attach."
+  (let* ((root (make-temp-file "refbox-file-openers-" t))
+         (pdf (expand-file-name "paper.pdf" root))
+         (html (expand-file-name "paper.html" root))
+         opened
+         attached)
+    (unwind-protect
+        (progn
+          (dolist (file (list pdf html))
+            (with-temp-file file))
+          (let ((candidate (copy-tree refbox-test-reference-candidate))
+                (refbox-resource-open-file-function
+                 (lambda (target) (push (cons 'default target) opened)))
+                (refbox-resource-open-file-functions
+                 `(("html" . ,(lambda (target)
+                                (push (cons 'html target) opened)))))
+                (refbox-open-prompt nil))
+            (setq candidate
+                  (plist-put candidate :resources
+                             (list (list :kind "file" :lookup_name "file"
+                                         :value html
+                                         :owner_source_path
+                                         (expand-file-name "main.bib" root)))))
+            (cl-letf (((symbol-function 'refbox-reference-resources)
+                       (lambda (_candidate)
+                         (refbox--candidate-resources candidate)))
+                      ((symbol-function 'mml-attach-file)
+                       (lambda (file &rest _args)
+                         (push file attached))))
+              (refbox-open-files candidate)
+              (setq candidate
+                    (plist-put candidate :resources
+                               (list (list :kind "file" :lookup_name "file"
+                                           :value pdf
+                                           :owner_source_path
+                                           (expand-file-name "main.bib" root)))))
+              (refbox-attach-files candidate)))
+          (should (member (cons 'html html) opened))
+          (should (equal attached (list pdf))))
+      (delete-directory root t))))
+
 (ert-deftest refbox-test-open-source-jumps-to-indexed-location ()
   "Source opening should use indexed file, line, and column information."
   (let* ((root (make-temp-file "refbox-source-" t))
@@ -304,6 +484,16 @@
       (when-let ((buffer (find-buffer-visiting source-file)))
         (kill-buffer buffer))
       (delete-directory root t))))
+
+(ert-deftest refbox-test-open_in_zotero_uses_citation_key_url ()
+  "Zotero opening should use the selected citation key."
+  (let (opened)
+    (let ((refbox-zotero-open-function
+           (lambda (url)
+             (push url opened))))
+      (refbox-open-in-zotero refbox-test-reference-candidate)
+      (should (equal opened
+                     '("zotero://select/items/@smith2020"))))))
 
 (ert-deftest refbox-test-raw-entry-insertion-preserves-indexed-text ()
   "Raw entry insertion should insert daemon-provided entry text unchanged."

@@ -423,46 +423,90 @@ impl RefboxStore {
         query: &str,
         limit: usize,
         source_paths: &[String],
+        resource_kinds: &[String],
+        allow_empty_query: bool,
     ) -> Result<Vec<SearchResult>> {
-        if query.trim().is_empty() || limit == 0 {
+        if limit == 0 {
             return Ok(Vec::new());
         }
 
         let limit = i64::try_from(limit).map_err(|_| StoreError::LimitOutOfRange(limit))?;
-        let Some(fts_query) = fts_query_from_user_input(query) else {
+        let fts_query = fts_query_from_user_input(query);
+        let resource_kinds = resource_kinds
+            .iter()
+            .map(|kind| kind.trim().to_ascii_lowercase())
+            .filter(|kind| !kind.is_empty())
+            .collect::<Vec<_>>();
+        if fts_query.is_none() && resource_kinds.is_empty() && !allow_empty_query {
             return Ok(Vec::new());
-        };
+        }
         let source_paths = source_paths
             .iter()
             .map(|path| path.trim())
             .filter(|path| !path.is_empty())
             .map(ToOwned::to_owned)
             .collect::<Vec<_>>();
-        let mut sql = String::from(
-            "SELECT e.id, f.path, e.entry_key, e.entry_type, bm25(entry_fts) AS score
-             FROM entry_fts
-             JOIN entries e ON e.id = entry_fts.rowid
-             JOIN files f ON f.id = e.file_id
-             WHERE entry_fts MATCH ?1",
-        );
+        let mut parameters: Vec<&dyn rusqlite::ToSql> = Vec::new();
+        let mut next_param = 1;
+        let mut sql = if fts_query.is_some() {
+            String::from(
+                "SELECT e.id, f.path, e.entry_key, e.entry_type, bm25(entry_fts) AS score
+                 FROM entry_fts
+                 JOIN entries e ON e.id = entry_fts.rowid
+                 JOIN files f ON f.id = e.file_id
+                 WHERE entry_fts MATCH ?",
+            )
+        } else {
+            String::from(
+                "SELECT e.id, f.path, e.entry_key, e.entry_type, 0.0 AS score
+                 FROM entries e
+                 JOIN files f ON f.id = e.file_id
+                 WHERE 1 = 1",
+            )
+        };
+        if let Some(fts_query) = &fts_query {
+            sql.push_str(&next_param.to_string());
+            parameters.push(fts_query);
+            next_param += 1;
+        }
         if !source_paths.is_empty() {
             let placeholders = (0..source_paths.len())
-                .map(|index| format!("?{}", index + 3))
+                .map(|index| format!("?{}", index + next_param))
                 .collect::<Vec<_>>()
                 .join(", ");
             sql.push_str(" AND f.path IN (");
             sql.push_str(&placeholders);
             sql.push(')');
+            for path in &source_paths {
+                parameters.push(path);
+                next_param += 1;
+            }
+        }
+        if !resource_kinds.is_empty() {
+            let placeholders = (0..resource_kinds.len())
+                .map(|index| format!("?{}", index + next_param))
+                .collect::<Vec<_>>()
+                .join(", ");
+            sql.push_str(
+                " AND EXISTS (
+                    SELECT 1 FROM resources r
+                    WHERE r.entry_id = e.id
+                    AND r.kind IN (",
+            );
+            sql.push_str(&placeholders);
+            sql.push_str("))");
+            for kind in &resource_kinds {
+                parameters.push(kind);
+                next_param += 1;
+            }
         }
         sql.push_str(
             " ORDER BY score, e.entry_key, f.path, e.id
-             LIMIT ?2",
+             LIMIT ?",
         );
+        sql.push_str(&next_param.to_string());
+        parameters.push(&limit);
         let mut statement = self.connection.prepare(&sql)?;
-        let mut parameters: Vec<&dyn rusqlite::ToSql> = vec![&fts_query, &limit];
-        for path in &source_paths {
-            parameters.push(path);
-        }
         let results = statement
             .query_map(params_from_iter(parameters), |row| {
                 Ok(SearchResult {

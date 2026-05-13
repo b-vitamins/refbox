@@ -153,9 +153,16 @@ impl Daemon {
                 let request: SearchEntriesRequest = parse_params(params)?;
                 let limit = clamp_limit(request.limit);
                 let source_paths = request.source_paths.unwrap_or_default();
+                let resource_kinds = request.resource_kinds.unwrap_or_default();
                 let search_results = self
                     .store
-                    .search(&request.query, limit, &source_paths)
+                    .search(
+                        &request.query,
+                        limit,
+                        &source_paths,
+                        &resource_kinds,
+                        request.allow_empty_query.unwrap_or(false),
+                    )
                     .map_err(store_error)?;
                 let entries = search_results
                     .into_iter()

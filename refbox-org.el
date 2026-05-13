@@ -33,6 +33,7 @@
 
 (require 'cl-lib)
 (require 'oc)
+(require 'oc-basic nil t)
 (require 'org)
 (require 'org-element)
 (require 'subr-x)
@@ -46,6 +47,7 @@
                   (data types fun &optional info first-match no-recursion with-affiliated))
 (declare-function org-element-parse-buffer "org-element" (&optional granularity visible-only))
 (declare-function org-element-property "org-element" (property element))
+(declare-function org-cite-basic-activate "oc-basic" (citation))
 
 (defgroup refbox-org nil
   "Org citation integration for refbox."
@@ -71,15 +73,30 @@ datum at point, and the raw prefix argument."
   :type 'function
   :group 'refbox-org)
 
+(defcustom refbox-org-activation-functions
+  '(refbox-org-basic-activate
+    refbox-org-activate-keymap)
+  "Functions used to activate an Org citation.
+
+Each function receives the citation datum."
+  :type '(repeat function)
+  :group 'refbox-org)
+
 (defvar refbox-org-style-history nil
   "Minibuffer history for Org citation styles.")
 
 (defvar refbox-org-citation-map
   (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "<mouse-1>") #'refbox-org-follow-at-point)
+    (with-eval-after-load 'embark
+      (define-key map (kbd "<mouse-3>") #'embark-act))
+    (define-key map (kbd "C-c C-x DEL") #'refbox-org-delete-at-point)
+    (define-key map (kbd "C-c C-x k") #'refbox-org-kill-at-point)
     (define-key map (kbd "d") #'refbox-org-delete-at-point)
     (define-key map (kbd "k") #'refbox-org-kill-at-point)
     (define-key map (kbd "S-<left>") #'refbox-org-shift-reference-left)
     (define-key map (kbd "S-<right>") #'refbox-org-shift-reference-right)
+    (define-key map (kbd "M-p") #'refbox-org-update-prefix-suffix)
     (define-key map (kbd "p") #'refbox-org-set-reference-prefix)
     (define-key map (kbd "s") #'refbox-org-set-reference-suffix)
     map)
@@ -242,6 +259,18 @@ SIDE is either `prefix' or `suffix'."
    suffix))
 
 ;;;###autoload
+(defun refbox-org-update-prefix-suffix (prefix suffix)
+  "Set PREFIX and SUFFIX for the Org citation reference at point."
+  (interactive
+   (list (read-string "Reference prefix: ")
+         (read-string "Reference suffix: ")))
+  (let ((reference (refbox-org--reference-or-error)))
+    (refbox-org--set-reference-affix reference 'prefix prefix)
+    (refbox-org--set-reference-affix (refbox-org--reference-or-error)
+                                     'suffix
+                                     suffix)))
+
+;;;###autoload
 (defun refbox-org-delete-at-point ()
   "Delete the Org citation or citation reference at point."
   (interactive)
@@ -370,13 +399,23 @@ DIRECTION is -1 for left and 1 for right."
             nil
             t))
 
-(defun refbox-org-activate (citation)
-  "Activate Org CITATION with refbox text properties."
+(defun refbox-org-basic-activate (citation)
+  "Activate Org CITATION with Org's basic citation styling."
+  (when (fboundp 'org-cite-basic-activate)
+    (org-cite-basic-activate citation)))
+
+(defun refbox-org-activate-keymap (citation)
+  "Activate Org CITATION with refbox keymap text properties."
   (pcase-let ((`(,begin . ,end) (org-cite-boundaries citation)))
     (add-text-properties
      begin end
      `(keymap ,refbox-org-citation-map
        help-echo "refbox Org citation"))))
+
+(defun refbox-org-activate (citation)
+  "Activate Org CITATION with configured refbox activation functions."
+  (dolist (function refbox-org-activation-functions)
+    (funcall function citation)))
 
 ;;;###autoload
 (defun refbox-org-bibliography-files (&optional buffer)

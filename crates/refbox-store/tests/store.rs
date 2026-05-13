@@ -86,7 +86,7 @@ fn inserts_parsed_files_and_queries_records_back() {
     );
 
     let results = store
-        .search("scalable", 5, &[])
+        .search("scalable", 5, &[], &[], false)
         .expect("search should work");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].key, "smith2020");
@@ -202,7 +202,9 @@ fn fts_queries_are_bounded_and_deterministic_for_ties() {
 
     store.insert_file(&file).expect("file should insert");
 
-    let results = store.search("shared", 2, &[]).expect("search should work");
+    let results = store
+        .search("shared", 2, &[], &[], false)
+        .expect("search should work");
     assert_eq!(
         results
             .iter()
@@ -226,16 +228,18 @@ fn fts_queries_prefix_match_title_author_and_punctuation_safe_input() {
 
     store.insert_file(&file).expect("file should insert");
 
-    let title = store.search("diff", 5, &[]).expect("title prefix search");
+    let title = store
+        .search("diff", 5, &[], &[], false)
+        .expect("title prefix search");
     assert_eq!(title[0].key, "austin2021d3pm");
 
     let author = store
-        .search("jac aust", 5, &[])
+        .search("jac aust", 5, &[], &[], false)
         .expect("author prefix search");
     assert_eq!(author[0].key, "austin2021d3pm");
 
     let punctuation = store
-        .search("10.1000/ref", 5, &[])
+        .search("10.1000/ref", 5, &[], &[], false)
         .expect("punctuation search should not expose FTS syntax errors");
     assert_eq!(punctuation[0].key, "austin2021d3pm");
 }
@@ -283,7 +287,9 @@ PRAGMA user_version = 4;
     }
 
     let store = RefboxStore::open(&db_path).expect("store should migrate");
-    let results = store.search("diff", 5, &[]).expect("prefix search");
+    let results = store
+        .search("diff", 5, &[], &[], false)
+        .expect("prefix search");
     assert_eq!(results[0].key, "austin2021d3pm");
     drop(store);
 
@@ -322,11 +328,46 @@ fn fts_queries_can_be_scoped_to_source_paths() {
         .expect("second file should insert");
 
     let results = store
-        .search("shared", 5, &["refs/second.bib".to_string()])
+        .search("shared", 5, &["refs/second.bib".to_string()], &[], false)
         .expect("search should work");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].key, "second");
     assert_eq!(results[0].file_path, "refs/second.bib");
+}
+
+#[test]
+fn fts_queries_can_be_filtered_to_resource_kinds() {
+    let mut store = RefboxStore::open_in_memory().expect("store should open");
+    let file = parse_bibliography_file(
+        "refs/resources.bib",
+        r#"@article{withfile,
+  title = {Shared Resource Signal},
+  file = {paper.pdf}
+}
+@article{withdoi,
+  title = {Shared Resource Signal},
+  doi = {10.1000/resource}
+}"#,
+    );
+
+    store.insert_file(&file).expect("file should insert");
+
+    let file_results = store
+        .search("shared", 5, &[], &["file".to_string()], false)
+        .expect("filtered search should work");
+    assert_eq!(file_results.len(), 1);
+    assert_eq!(file_results[0].key, "withfile");
+
+    let doi_results = store
+        .search("", 5, &[], &["doi".to_string()], true)
+        .expect("tag-only search should work");
+    assert_eq!(doi_results.len(), 1);
+    assert_eq!(doi_results[0].key, "withdoi");
+
+    let empty_results = store
+        .search("", 5, &[], &[], false)
+        .expect("blank search should work");
+    assert!(empty_results.is_empty());
 }
 
 #[test]

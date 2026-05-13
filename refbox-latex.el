@@ -260,24 +260,55 @@
                 (user-error "refbox candidate has no key")))
           (refbox-read-references "References: ")))
 
+(defun refbox-latex--new-keys (keys existing)
+  "Return KEYS that are not already present in EXISTING."
+  (cl-remove-if (lambda (key) (member key existing)) keys))
+
+(defun refbox-latex--insert-keys-into-citation (citation keys)
+  "Insert KEYS into existing LaTeX CITATION."
+  (let* ((existing (plist-get citation :keys))
+         (keys (refbox-latex--new-keys keys existing))
+         (text (string-join keys refbox-latex-key-separator))
+         (key-begin (plist-get citation :key-begin))
+         (key-end (plist-get citation :key-end))
+         (spans (refbox-latex--key-spans citation)))
+    (when keys
+      (cond
+       ((null existing)
+        (goto-char key-begin)
+        (insert text))
+       ((<= (point) key-begin)
+        (goto-char key-begin)
+        (insert text refbox-latex-key-separator))
+       ((>= (point) key-end)
+        (goto-char key-end)
+        (insert refbox-latex-key-separator text))
+       (t
+        (goto-char
+         (or (cl-loop
+              for (_key begin end) in spans
+              when (and (<= begin (point)) (<= (point) end))
+              return end)
+             key-end))
+        (insert refbox-latex-key-separator text))))))
+
 ;;;###autoload
-(defun refbox-latex-insert-citation ()
-  "Insert or replace a LaTeX citation at point."
+(defun refbox-latex-insert-citation (&optional _arg)
+  "Insert a LaTeX citation at point.
+
+When point is already in a citation command, add selected keys to
+that citation instead of replacing it."
   (interactive)
   (let* ((citation (refbox-latex-citation-at-point))
-         (command (refbox-latex--read-command))
-         (optional-args (refbox-latex--read-optional-arguments))
-         (keys (refbox-latex--selected-keys))
-         (replacement (refbox-latex-format-citation command keys optional-args)))
+         (keys (refbox-latex--selected-keys)))
     (unless keys
       (user-error "No references selected"))
     (if citation
-        (let ((begin (plist-get citation :begin))
-              (end (plist-get citation :end)))
-          (delete-region begin end)
-          (goto-char begin)
-          (insert replacement))
-      (insert replacement))))
+        (refbox-latex--insert-keys-into-citation citation keys)
+      (let* ((command (refbox-latex--read-command))
+             (optional-args (refbox-latex--read-optional-arguments)))
+        (insert (refbox-latex-format-citation
+                 command keys optional-args))))))
 
 (defun refbox-latex--bib-file (path)
   "Return PATH with a .bib extension when it has no extension."

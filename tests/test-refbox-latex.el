@@ -87,9 +87,9 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
         (should (equal (buffer-string)
                        "\\textcite[see][p. 2]{alpha}"))))))
 
-(ert-deftest refbox-latex-test-replaces-existing-citation ()
-  "Insertion at an existing citation should replace that citation."
-  (refbox-latex-test-with-buffer "A \\cite{al|pha} Z"
+(ert-deftest refbox-latex-test-adds-to-existing-citation ()
+  "Insertion at an existing citation should add selected keys."
+  (refbox-latex-test-with-buffer "A \\cite{al|pha, beta} Z"
     (let ((refbox-latex-default-command "autocite")
           (refbox-latex-default-optional-arguments nil))
       (cl-letf (((symbol-function 'refbox-read-references)
@@ -97,7 +97,7 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                    (list (refbox-latex-test-candidate "gamma")))))
         (refbox-latex-insert-citation)
         (should (equal (buffer-string)
-                       "A \\autocite{gamma} Z"))))))
+                       "A \\cite{alpha, gamma, beta} Z"))))))
 
 (ert-deftest refbox-latex-test-formats-biblatex-and-optional-arguments ()
   "Formatter should support biblatex-style commands and optional arguments."

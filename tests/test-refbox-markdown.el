@@ -70,16 +70,16 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                       (plist-get citation :end))
                      "[see @alpha pp. 1-2; @beta]")))))
 
-(ert-deftest refbox-markdown-test-edits-existing-citation ()
-  "Insertion at a citation should replace the bracketed citation."
-  (refbox-markdown-test-with-buffer "A [@al|pha] Z"
+(ert-deftest refbox-markdown-test-adds-to-existing-citation ()
+  "Insertion at a citation should add selected keys."
+  (refbox-markdown-test-with-buffer "A [@al|pha; @beta] Z"
     (let ((refbox-markdown-default-prefix "see")
           (refbox-markdown-default-suffix "p. 4"))
       (cl-letf (((symbol-function 'refbox-read-references)
                  (lambda (&rest _args)
                    (list (refbox-markdown-test-candidate "gamma")))))
         (refbox-markdown-insert-citation)
-        (should (equal (buffer-string) "A [see @gamma p. 4] Z"))))))
+        (should (equal (buffer-string) "A [@alpha; @gamma; @beta] Z"))))))
 
 (ert-deftest refbox-markdown-test-prompted-affixes ()
   "Prompted affixes should be reflected in inserted citations."
