@@ -595,7 +595,7 @@ when registering a note source with `refbox-register-notes-source'."
   :type 'function
   :group 'refbox)
 
-(defcustom refbox-bibtex-no-export-fields '("file")
+(defcustom refbox-bibtex-no-export-fields nil
   "Field names removed when exporting a local bibliography."
   :type '(repeat string)
   :group 'refbox)

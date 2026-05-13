@@ -45,7 +45,7 @@
   :group 'refbox
   :prefix "refbox-markdown-")
 
-(defcustom refbox-markdown-prompt-for-extra-arguments nil
+(defcustom refbox-markdown-prompt-for-extra-arguments t
   "When non-nil, prompt for citation prefix and suffix text."
   :type 'boolean
   :group 'refbox-markdown)

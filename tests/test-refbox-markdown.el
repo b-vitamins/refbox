@@ -48,18 +48,20 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
 (ert-deftest refbox-markdown-test-inserts-multiple-citation-keys ()
   "Citation insertion should support multiple keys."
   (refbox-markdown-test-with-buffer "Alpha |omega"
-    (cl-letf (((symbol-function 'refbox-read-references)
-               (lambda (&rest _args)
-                 (list (refbox-markdown-test-candidate "alpha")
-                       (refbox-markdown-test-candidate "beta")))))
-      (refbox-markdown-insert-citation)
-      (should (equal (buffer-string) "Alpha [@alpha; @beta]omega")))))
+    (let ((refbox-markdown-prompt-for-extra-arguments nil))
+      (cl-letf (((symbol-function 'refbox-read-references)
+                 (lambda (&rest _args)
+                   (list (refbox-markdown-test-candidate "alpha")
+                         (refbox-markdown-test-candidate "beta")))))
+        (refbox-markdown-insert-citation)
+        (should (equal (buffer-string) "Alpha [@alpha; @beta]omega"))))))
 
 (ert-deftest refbox-markdown-test-inserts_supplied_citation_keys ()
   "Citation insertion should accept direct key lists."
   (refbox-markdown-test-with-buffer "Alpha |omega"
-    (refbox-markdown-insert-citation '("alpha" "beta"))
-    (should (equal (buffer-string) "Alpha [@alpha; @beta]omega"))))
+    (let ((refbox-markdown-prompt-for-extra-arguments nil))
+      (refbox-markdown-insert-citation '("alpha" "beta"))
+      (should (equal (buffer-string) "Alpha [@alpha; @beta]omega")))))
 
 (ert-deftest refbox-markdown-test-detects-key-at-point ()
   "Key helper should find keys inside bracketed citations."

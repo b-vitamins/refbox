@@ -72,6 +72,7 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
   (refbox-latex-test-with-buffer "Before | after"
     (let ((refbox-latex-default-cite-command "parencite")
           (refbox-latex-prompt-for-cite-style nil)
+          (refbox-latex-prompt-for-extra-arguments nil)
           (refbox-latex-default-optional-arguments nil))
       (cl-letf (((symbol-function 'refbox-read-references)
                  (lambda (&rest _args)
@@ -98,6 +99,7 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
         (let ((default-directory root)
               (refbox-latex-default-cite-command "cite")
               (refbox-latex-prompt-for-cite-style nil)
+              (refbox-latex-prompt-for-extra-arguments nil)
               (refbox-latex-default-optional-arguments nil))
           (make-directory (file-name-directory bib) t)
           (write-region "" nil bib)

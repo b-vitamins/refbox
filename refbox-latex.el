@@ -56,12 +56,12 @@
   :type 'string
   :group 'refbox-latex)
 
-(defcustom refbox-latex-prompt-for-cite-style nil
+(defcustom refbox-latex-prompt-for-cite-style t
   "When non-nil, prompt for the LaTeX citation command before insertion."
   :type 'boolean
   :group 'refbox-latex)
 
-(defcustom refbox-latex-prompt-for-extra-arguments nil
+(defcustom refbox-latex-prompt-for-extra-arguments t
   "When non-nil, prompt for optional citation command arguments."
   :type 'boolean
   :group 'refbox-latex)
