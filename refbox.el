@@ -84,6 +84,14 @@ error instead."
                  (const :tag "Error" nil))
   :group 'refbox)
 
+(defcustom refbox-autosync-sync-on-enable t
+  "Whether `refbox-autosync-mode' performs a full sync when enabled.
+
+This catches bibliography edits made outside Emacs before the current
+session.  Save, rename, and delete events still use targeted file sync."
+  :type 'boolean
+  :group 'refbox)
+
 (defcustom refbox-open-resources '(:files :links :notes :create-notes)
   "Resource types offered by `refbox-open'."
   :type '(set (const :tag "Files" :files)
@@ -460,6 +468,11 @@ when registering a note source with `refbox-register-note-source'."
 
 (defvar refbox-reference-history nil
   "Minibuffer history for refbox reference selection.")
+
+(defvar refbox-autosync-mode)
+
+(defvar refbox--autosync-suppress-after-save nil
+  "Non-nil while an explicit sync path owns the current save.")
 
 (defvar refbox-map
   (let ((map (make-sparse-keymap)))
@@ -2673,6 +2686,7 @@ asks before replacing an existing file."
 
 PROMPT, PRESET, LIMIT, ALLOW-EMPTY, PREDICATE, and SOURCE-PATHS
 control completion and validation."
+  (refbox--sync-current-bibliography-buffer-if-needed)
   (let* ((state (refbox--completion-state limit source-paths))
          (selection (completing-read
                      prompt
@@ -2697,6 +2711,158 @@ control completion and validation."
     (user-error "Command can only be used in minibuffer"))
   (let ((enable-recursive-minibuffers t))
     (insert (completing-read "Preset: " refbox-presets nil t))))
+
+(defun refbox--normalized-bibliography-extensions ()
+  "Return normalized bibliography extensions accepted by refbox."
+  (cl-loop for extension in refbox-bibliography-extensions
+           when (and (stringp extension)
+                     (not (string-empty-p extension)))
+           collect (downcase (string-remove-prefix "." extension))))
+
+(defun refbox--bibliography-extension-p (file)
+  "Return non-nil when FILE has a configured bibliography extension."
+  (when-let ((extension (file-name-extension file)))
+    (member (downcase extension)
+            (refbox--normalized-bibliography-extensions))))
+
+(defun refbox--bibliography-root ()
+  "Return the daemon bibliography root used for file-level sync."
+  (when-let ((root (car refbox-bibliography-roots)))
+    (let ((root (expand-file-name root)))
+      (when (file-directory-p root)
+        (file-name-as-directory (file-truename root))))))
+
+(defun refbox--file-in-bibliography-root-p (file)
+  "Return non-nil when FILE is inside the active bibliography root."
+  (when-let ((root (refbox--bibliography-root)))
+    (file-in-directory-p (expand-file-name file) root)))
+
+(defun refbox--syncable-file-p (file)
+  "Return non-nil when FILE is eligible for targeted autosync."
+  (and file
+       (not (auto-save-file-name-p file))
+       (not (backup-file-name-p file))
+       (refbox--bibliography-extension-p file)
+       (refbox--file-in-bibliography-root-p file)))
+
+(defun refbox--syncable-buffer-p (&optional buffer)
+  "Return non-nil when BUFFER visits a syncable bibliography file."
+  (with-current-buffer (or buffer (current-buffer))
+    (refbox--syncable-file-p buffer-file-name)))
+
+(defun refbox--sync-full (&optional quiet)
+  "Synchronize all configured bibliography roots.
+
+When QUIET is non-nil, do not report successful sync counts."
+  (let* ((response (refbox-rpc-request refbox-rpc-method-sync-full))
+         (changed (plist-get response :changed_file_count))
+         (removed (plist-get response :removed_file_count))
+         (entries (plist-get response :indexed_entry_count)))
+    (unless quiet
+      (message "refbox sync: %s changed, %s removed, %s indexed entries"
+               changed removed entries))
+    response))
+
+(defun refbox--sync-file (file &optional quiet)
+  "Synchronize bibliography FILE.
+
+When QUIET is non-nil, do not report successful sync counts."
+  (let* ((path (expand-file-name file))
+         (response (refbox-rpc-request refbox-rpc-method-sync-file
+                                       (list :path path)))
+         (changed (plist-get response :changed_file_count))
+         (removed (plist-get response :removed_file_count))
+         (entries (plist-get response :indexed_entry_count)))
+    (unless quiet
+      (message "refbox file sync: %s changed, %s removed, %s indexed entries"
+               changed removed entries))
+    response))
+
+(defun refbox--autosync-warn (operation file error)
+  "Warn that autosync OPERATION for FILE failed with ERROR."
+  (display-warning
+   'refbox
+   (format "refbox autosync %s failed for %s: %s"
+           operation file (error-message-string error))
+   :warning))
+
+(defun refbox--autosync-sync-full ()
+  "Run a quiet full sync for `refbox-autosync-mode'."
+  (condition-case error
+      (refbox--sync-full 'quiet)
+    (error (refbox--autosync-warn "full sync" "<configured roots>" error))))
+
+(defun refbox--autosync-sync-file (file operation)
+  "Run a quiet targeted sync for FILE after OPERATION."
+  (when (refbox--syncable-file-p file)
+    (condition-case error
+        (refbox--sync-file file 'quiet)
+      (error (refbox--autosync-warn operation file error)))))
+
+(defun refbox--autosync-after-save-h ()
+  "Synchronize the current bibliography file after saving it."
+  (unless refbox--autosync-suppress-after-save
+    (refbox--autosync-sync-file buffer-file-name "save")))
+
+(defun refbox--autosync-setup-buffer (&optional buffer)
+  "Install or remove autosync save hooks for BUFFER."
+  (with-current-buffer (or buffer (current-buffer))
+    (if (and refbox-autosync-mode
+             (refbox--syncable-buffer-p))
+        (add-hook 'after-save-hook #'refbox--autosync-after-save-h nil t)
+      (remove-hook 'after-save-hook #'refbox--autosync-after-save-h t))))
+
+(defun refbox--autosync-setup-file-h ()
+  "Set up autosync for the current file-visiting buffer."
+  (refbox--autosync-setup-buffer))
+
+(defun refbox--autosync-delete-file-a (file &rest _args)
+  "Synchronize the index after deleting FILE."
+  (refbox--autosync-sync-file file "delete"))
+
+(defun refbox--autosync-rename-file-a (old-file new-file-or-dir &rest _args)
+  "Synchronize the index after renaming OLD-FILE to NEW-FILE-OR-DIR."
+  (let ((new-file (if (directory-name-p new-file-or-dir)
+                      (expand-file-name (file-name-nondirectory old-file)
+                                        new-file-or-dir)
+                    new-file-or-dir)))
+    (refbox--autosync-sync-file old-file "rename")
+    (refbox--autosync-sync-file new-file "rename")))
+
+(defun refbox--sync-current-bibliography-buffer-if-needed ()
+  "Save and sync the current buffer when it visits a modified bibliography."
+  (when (and (refbox--syncable-buffer-p)
+             (buffer-modified-p))
+    (let ((refbox--autosync-suppress-after-save t))
+      (save-buffer))
+    (refbox--sync-file buffer-file-name 'quiet)))
+
+;;;###autoload
+(define-minor-mode refbox-autosync-mode
+  "Keep the refbox index current for Emacs bibliography file events.
+
+Enabling this global mode performs a full sync when
+`refbox-autosync-sync-on-enable' is non-nil, installs buffer-local
+save hooks for tracked bibliography files, and updates the index after
+tracked files are renamed or deleted through Emacs."
+  :global t
+  :group 'refbox
+  (if refbox-autosync-mode
+      (progn
+        (add-hook 'find-file-hook #'refbox--autosync-setup-file-h)
+        (advice-add #'rename-file :after #'refbox--autosync-rename-file-a)
+        (advice-add #'delete-file :after #'refbox--autosync-delete-file-a)
+        (advice-add #'vc-delete-file :after #'refbox--autosync-delete-file-a)
+        (dolist (buffer (buffer-list))
+          (refbox--autosync-setup-buffer buffer))
+        (when refbox-autosync-sync-on-enable
+          (refbox--autosync-sync-full)))
+    (remove-hook 'find-file-hook #'refbox--autosync-setup-file-h)
+    (advice-remove #'rename-file #'refbox--autosync-rename-file-a)
+    (advice-remove #'delete-file #'refbox--autosync-delete-file-a)
+    (advice-remove #'vc-delete-file #'refbox--autosync-delete-file-a)
+    (dolist (buffer (buffer-list))
+      (refbox--autosync-setup-buffer buffer))))
 
 ;;;###autoload
 (defun refbox-read-reference (&optional prompt preset limit predicate source-paths)
@@ -2772,27 +2938,13 @@ searches to those bibliography source files."
 (defun refbox-sync ()
   "Synchronize all configured bibliography roots."
   (interactive)
-  (let* ((response (refbox-rpc-request refbox-rpc-method-sync-full))
-         (changed (plist-get response :changed_file_count))
-         (removed (plist-get response :removed_file_count))
-         (entries (plist-get response :indexed_entry_count)))
-    (message "refbox sync: %s changed, %s removed, %s indexed entries"
-             changed removed entries)
-    response))
+  (refbox--sync-full))
 
 ;;;###autoload
 (defun refbox-sync-file (file)
   "Synchronize bibliography FILE."
   (interactive "fSync bibliography file: ")
-  (let* ((path (expand-file-name file))
-         (response (refbox-rpc-request refbox-rpc-method-sync-file
-                                       (list :path path)))
-         (changed (plist-get response :changed_file_count))
-         (removed (plist-get response :removed_file_count))
-         (entries (plist-get response :indexed_entry_count)))
-    (message "refbox file sync: %s changed, %s removed, %s indexed entries"
-             changed removed entries)
-    response))
+  (refbox--sync-file file))
 
 ;;;###autoload
 (defun refbox-sync-current-file ()
@@ -2800,6 +2952,9 @@ searches to those bibliography source files."
   (interactive)
   (unless buffer-file-name
     (user-error "Current buffer is not visiting a file"))
+  (when (buffer-modified-p)
+    (let ((refbox--autosync-suppress-after-save t))
+      (save-buffer)))
   (refbox-sync-file buffer-file-name))
 
 (provide 'refbox)

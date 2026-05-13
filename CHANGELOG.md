@@ -6,12 +6,19 @@ The format follows Keep a Changelog, and this project will follow SemVer once it
 
 ## [Unreleased]
 
+### Added
+- Added `refbox-autosync-mode` to sync on enable, update tracked bibliography files after save, and keep the index current after Emacs rename/delete operations.
+
+### Changed
+- Replaced the internal BibTeX parser with the `bibtex-parser` crate.
+
 ### Fixed
 - Reduced index storage growth for large collaboration papers by storing compact per-person name text instead of duplicating full author lists for every parsed name.
 - Reduced full-sync work by refreshing duplicate-key groups once per bulk sync instead of after every changed file.
 - Removed unused span-shadow storage and an unused broad field-value index from the SQLite schema to keep large bibliography indexes smaller.
 - Made indexed search build safe FTS prefix queries from user input and added FTS prefix indexes so title, author, identifier, and key fragments work naturally for type-ahead completion.
 - Fixed scoped Emacs RPC requests so Org and LaTeX citation completion send JSON arrays for source-path filters.
+- Made targeted single-file sync obey the same discovery policy as full sync.
 
 ## [0.1.0] - 2026-05-12
 

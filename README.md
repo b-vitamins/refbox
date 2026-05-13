@@ -46,11 +46,15 @@ Minimal daemon configuration:
 (setq refbox-bibliography-roots '("~/bibliography"))
 (setq refbox-database-file
       (expand-file-name "refbox.sqlite" user-emacs-directory))
+
+(refbox-autosync-mode 1)
 ```
 
 The current daemon indexes the first directory in `refbox-bibliography-roots`.
 The SQLite database is derived state. If it is deleted while the daemon is not
 running, `M-x refbox-sync` can rebuild it from the bibliography root.
+`refbox-autosync-mode` performs that sync when it is enabled, then keeps files
+edited through Emacs current with targeted file updates.
 
 Useful resource, note, and formatting options:
 
@@ -80,13 +84,15 @@ parses changed files, and updates the derived index. Check index state with:
 M-x refbox-status
 ```
 
-After editing a bibliography file, use:
+When `refbox-autosync-mode` is enabled, saving a tracked bibliography file
+updates that file in the index. Without autosync, use:
 
 ```text
 M-x refbox-sync-current-file
 ```
 
-or sync an explicit file with `M-x refbox-sync-file`.
+or sync an explicit file with `M-x refbox-sync-file`. Renames and deletes made
+through Emacs are also tracked by autosync mode.
 
 ## Daily Use
 
@@ -291,10 +297,11 @@ absolute executable path.
 `refbox bibliography root does not exist`: check `refbox-bibliography-roots`.
 The current daemon uses the first configured root.
 
-Stale search results: run `M-x refbox-sync-current-file` after editing one
-bibliography file, or `M-x refbox-sync` after changing many files. If needed,
-shut down Emacs, remove `refbox-database-file`, and run `M-x refbox-sync` to
-rebuild the derived index.
+Stale search results: enable `refbox-autosync-mode`, or run
+`M-x refbox-sync-current-file` after editing one bibliography file. Use
+`M-x refbox-sync` after changing many files outside Emacs. If needed, shut down
+Emacs, remove `refbox-database-file`, and run `M-x refbox-sync` to rebuild the
+derived index.
 
 Malformed bibliography files: run `M-x refbox-status` and check the diagnostic
 count. Fix the `.bib` source file and sync again.

@@ -96,6 +96,26 @@ fn file_removal_drops_only_that_file() {
 }
 
 #[test]
+fn single_file_sync_respects_discovery_policy() {
+    let project = TestProject::new("single-file-policy");
+    let visible_path = project.write("refs/a.bib", "@article{a2020, title = {Alpha}}\n");
+    let hidden_path = project.write(".hidden/hidden.bib", "@article{hidden, title = {Hidden}}\n");
+
+    let engine = SyncEngine::new(DiscoveryPolicy::new(vec![project.root.clone()]));
+    let mut store = MemoryStore::default();
+
+    engine
+        .sync_file(&mut store, &visible_path)
+        .expect("visible file should sync");
+    engine
+        .sync_file(&mut store, &hidden_path)
+        .expect("hidden file should be rejected through normal removal path");
+
+    assert_eq!(store.field_value_for_key("a2020", "title"), Some("{Alpha}"));
+    assert_eq!(store.field_value_for_key("hidden", "title"), None);
+}
+
+#[test]
 fn discovery_policy_applies_include_and_exclude_globs() {
     let project = TestProject::new("discovery-policy");
     project.write("refs/keep.bib", "@article{keep, title = {Keep}}\n");

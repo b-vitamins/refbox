@@ -98,6 +98,180 @@
     (should (equal (cadr (nth 2 calls))
                    (list :path "/tmp/example.bib")))))
 
+(ert-deftest refbox-test-autosync-mode-toggles-hooks-and-advices ()
+  "Autosync mode should own only its explicit lifecycle hooks."
+  (let ((refbox-autosync-sync-on-enable nil)
+        (refbox-bibliography-roots (list temporary-file-directory)))
+    (unwind-protect
+        (progn
+          (refbox-autosync-mode -1)
+          (should-not (memq #'refbox--autosync-setup-file-h find-file-hook))
+          (refbox-autosync-mode 1)
+          (should (memq #'refbox--autosync-setup-file-h find-file-hook))
+          (should (advice-member-p #'refbox--autosync-rename-file-a
+                                   #'rename-file))
+          (should (advice-member-p #'refbox--autosync-delete-file-a
+                                   #'delete-file))
+          (should (advice-member-p #'refbox--autosync-delete-file-a
+                                   #'vc-delete-file)))
+      (refbox-autosync-mode -1))))
+
+(ert-deftest refbox-test-autosync-mode-syncs-on-enable ()
+  "Autosync startup should catch on-disk changes through a full sync."
+  (let ((refbox-autosync-sync-on-enable t)
+        (refbox-bibliography-roots (list temporary-file-directory))
+        calls)
+    (unwind-protect
+        (cl-letf (((symbol-function 'refbox-rpc-request)
+                   (lambda (method &optional params)
+                     (push (list method params) calls)
+                     '(:changed_file_count 0 :removed_file_count 0
+                       :indexed_entry_count 0))))
+          (refbox-autosync-mode -1)
+          (refbox-autosync-mode 1)
+          (should (equal (nreverse calls)
+                         (list (list refbox-rpc-method-sync-full nil)))))
+      (refbox-autosync-mode -1))))
+
+(ert-deftest refbox-test-autosync-mode-syncs-on-save ()
+  "Saving a tracked bibliography buffer should update that file."
+  (let* ((root (make-temp-file "refbox-root-" t))
+         (file (expand-file-name "refs/main.bib" root))
+         (refbox-autosync-sync-on-enable nil)
+         (refbox-bibliography-roots (list root))
+         (refbox-bibliography-extensions '("bib"))
+         calls)
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory file) t)
+          (with-temp-file file
+            (insert "@article{alpha, title = {Alpha}}\n"))
+          (cl-letf (((symbol-function 'refbox-rpc-request)
+                     (lambda (method &optional params)
+                       (push (list method params) calls)
+                       '(:changed_file_count 1 :removed_file_count 0
+                         :indexed_entry_count 1))))
+            (refbox-autosync-mode -1)
+            (refbox-autosync-mode 1)
+            (let ((buffer (find-file-noselect file)))
+              (unwind-protect
+                  (with-current-buffer buffer
+                    (should (memq #'refbox--autosync-after-save-h
+                                  after-save-hook))
+                    (goto-char (point-max))
+                    (insert "@article{beta, title = {Beta}}\n")
+                    (save-buffer))
+                (kill-buffer buffer)))))
+      (refbox-autosync-mode -1)
+      (delete-directory root t))
+    (should (equal (nreverse calls)
+                   (list (list refbox-rpc-method-sync-file
+                               (list :path file)))))))
+
+(ert-deftest refbox-test-autosync-mode-syncs-renames-and-deletes ()
+  "Renaming or deleting a tracked bibliography file should update the index."
+  (let* ((root (make-temp-file "refbox-root-" t))
+         (old-file (expand-file-name "refs/old.bib" root))
+         (new-file (expand-file-name "refs/new.bib" root))
+         (refbox-autosync-sync-on-enable nil)
+         (refbox-bibliography-roots (list root))
+         (refbox-bibliography-extensions '("bib"))
+         calls)
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory old-file) t)
+          (with-temp-file old-file
+            (insert "@article{alpha, title = {Alpha}}\n"))
+          (cl-letf (((symbol-function 'refbox-rpc-request)
+                     (lambda (method &optional params)
+                       (push (list method params) calls)
+                       '(:changed_file_count 1 :removed_file_count 0
+                         :indexed_entry_count 1))))
+            (refbox-autosync-mode -1)
+            (refbox-autosync-mode 1)
+            (rename-file old-file new-file)
+            (delete-file new-file)))
+      (refbox-autosync-mode -1)
+      (delete-directory root t))
+    (should (equal (nreverse calls)
+                   (list (list refbox-rpc-method-sync-file
+                               (list :path old-file))
+                         (list refbox-rpc-method-sync-file
+                               (list :path new-file))
+                         (list refbox-rpc-method-sync-file
+                               (list :path new-file)))))))
+
+(ert-deftest refbox-test-sync-current-file-saves-before-sync ()
+  "Explicit current-file sync should write pending buffer changes first."
+  (let* ((root (make-temp-file "refbox-root-" t))
+         (file (expand-file-name "main.bib" root))
+         calls
+         saved-contents)
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "@article{alpha, title = {Alpha}}\n"))
+          (let ((buffer (find-file-noselect file)))
+            (unwind-protect
+                (with-current-buffer buffer
+                  (goto-char (point-max))
+                  (insert "@article{beta, title = {Beta}}\n")
+                  (should (buffer-modified-p))
+                  (cl-letf (((symbol-function 'refbox-rpc-request)
+                             (lambda (method &optional params)
+                               (push (list method params) calls)
+                               '(:changed_file_count 1 :removed_file_count 0
+                                 :indexed_entry_count 2))))
+                    (refbox-sync-current-file))
+                  (should-not (buffer-modified-p)))
+              (kill-buffer buffer)))
+          (with-temp-buffer
+            (insert-file-contents file)
+            (setq saved-contents (buffer-string))))
+      (delete-directory root t))
+    (should (equal (nreverse calls)
+                   (list (list refbox-rpc-method-sync-file
+                               (list :path file)))))
+    (should (string-match-p "beta" saved-contents))))
+
+(ert-deftest refbox-test-read-reference-syncs-modified-current-bibliography ()
+  "Reference reads should save and sync a modified bibliography buffer first."
+  (let* ((root (make-temp-file "refbox-root-" t))
+         (file (expand-file-name "main.bib" root))
+         (refbox-bibliography-roots (list root))
+         (refbox-bibliography-extensions '("bib"))
+         calls
+         saved-contents)
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "@article{alpha, title = {Alpha}}\n"))
+          (let ((buffer (find-file-noselect file)))
+            (unwind-protect
+                (with-current-buffer buffer
+                  (goto-char (point-max))
+                  (insert "@article{beta, title = {Beta}}\n")
+                  (should (buffer-modified-p))
+                  (cl-letf (((symbol-function 'refbox-rpc-request)
+                             (lambda (method &optional params)
+                               (push (list method params) calls)
+                               '(:changed_file_count 1 :removed_file_count 0
+                                 :indexed_entry_count 2)))
+                            ((symbol-function 'completing-read)
+                             (lambda (&rest _args) "")))
+                    (should-not
+                     (refbox--read-reference "Reference: " nil 5 t)))
+                  (should-not (buffer-modified-p)))
+              (kill-buffer buffer)))
+          (with-temp-buffer
+            (insert-file-contents file)
+            (setq saved-contents (buffer-string))))
+      (delete-directory root t))
+    (should (equal (nreverse calls)
+                   (list (list refbox-rpc-method-sync-file
+                               (list :path file)))))
+    (should (string-match-p "beta" saved-contents))))
+
 (define-derived-mode refbox-test-mode fundamental-mode "RefboxTest"
   "Temporary mode used by generic refbox command tests.")
 

@@ -66,6 +66,16 @@ impl DiscoveryPolicy {
         self.discover_files_inner()
     }
 
+    pub fn is_managed_file<E>(&self, path: &Path) -> std::result::Result<bool, SyncError<E>> {
+        let include_globs = build_glob_set::<E>(&self.include_globs)?;
+        let exclude_globs = build_glob_set::<E>(&self.exclude_globs)?;
+
+        Ok(self.roots.iter().any(|root| {
+            path.starts_with(root)
+                && self.is_eligible_file(root, path, &include_globs, &exclude_globs)
+        }))
+    }
+
     fn discover_files_inner<E>(&self) -> std::result::Result<Vec<PathBuf>, SyncError<E>> {
         let include_globs = build_glob_set::<E>(&self.include_globs)?;
         let exclude_globs = build_glob_set::<E>(&self.exclude_globs)?;
@@ -260,11 +270,7 @@ impl SyncEngine {
         let path = path.as_ref();
         let mut status = SyncStatus::default();
 
-        if !path.exists()
-            || !self
-                .policy
-                .is_eligible_file(path.parent().unwrap_or(path), path, &None, &None)
-        {
+        if !path.exists() || !self.policy.is_managed_file(path)? {
             store
                 .remove_file(&path_string(path)?)
                 .map_err(SyncError::Store)?;
