@@ -158,7 +158,7 @@ session.  Save, rename, and delete events still use targeted file sync."
   :group 'refbox)
 
 (defcustom refbox-open-prompt
-  '(refbox-open refbox-open-note refbox-open-notes refbox-attach-files)
+  '(refbox-open refbox-attach-files refbox-open-note)
   "Commands that should prompt even when there is only one resource.
 
 When nil, commands open a single resource without prompting.  When

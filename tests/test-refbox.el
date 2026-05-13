@@ -892,6 +892,23 @@
         (refbox-open-note))
       (should (equal opened '("note:orphan" "note:smith2020"))))))
 
+(ert-deftest refbox-test-open_notes_accepts_single_note_by_default ()
+  "Opening notes should not prompt when only one note is available."
+  (let (opened)
+    (let ((refbox-notes-source 'mock)
+          (refbox-notes-sources
+           `((mock
+              :items ,(lambda (key _reference)
+                        (list (format "note:%s" key)))
+              :open ,(lambda (item)
+                       (push item opened))
+              :create ,#'ignore))))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (&rest _args)
+                   (error "unexpected prompt"))))
+        (refbox-open-notes refbox-test-reference-candidate)
+        (should (equal opened '("note:smith2020")))))))
+
 (ert-deftest refbox-test-file_note_source_can_list_all_notes ()
   "The file note source should support direct note browsing."
   (let* ((root (make-temp-file "refbox-all-notes-" t))
