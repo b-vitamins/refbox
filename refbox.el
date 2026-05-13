@@ -184,21 +184,21 @@ is a list of command symbols for which creation is always offered."
   '(((org-mode) .
      ((local-bib-files . refbox-org-local-bib-files)
       (insert-citation . refbox-org-insert-citation)
-      (insert-edit . refbox-org-insert-citation)
+      (insert-edit . refbox-org-insert-edit)
       (key-at-point . refbox-org-key-at-point)
       (citation-at-point . refbox-org-citation-at-point)
       (list-keys . refbox-org-list-keys)))
     ((latex-mode LaTeX-mode tex-mode) .
      ((local-bib-files . refbox-latex-local-bib-files)
       (insert-citation . refbox-latex-insert-citation)
-      (insert-edit . refbox-latex-insert-citation)
+      (insert-edit . refbox-latex-insert-edit)
       (key-at-point . refbox-latex-key-at-point)
       (citation-at-point . refbox-latex-citation-at-point)
       (list-keys . refbox-latex-list-keys)))
     ((markdown-mode gfm-mode) .
      ((insert-keys . refbox-markdown-insert-keys)
       (insert-citation . refbox-markdown-insert-citation)
-      (insert-edit . refbox-markdown-insert-citation)
+      (insert-edit . refbox-markdown-insert-edit)
       (key-at-point . refbox-markdown-key-at-point)
       (citation-at-point . refbox-markdown-citation-at-point)
       (list-keys . refbox-markdown-list-keys)))
@@ -2829,8 +2829,8 @@ passed to the adapter command."
 (defun refbox-insert-edit (&optional arg)
   "Edit the citation at point using the current major-mode adapter."
   (interactive "P")
-	(if (refbox--get-major-mode-function 'insert-edit)
-	    (refbox--major-mode-function 'insert-edit #'ignore arg)
+  (if (refbox--get-major-mode-function 'insert-edit)
+      (refbox--major-mode-function 'insert-edit #'ignore arg)
     (refbox-insert-citation nil arg)))
 
 ;;;###autoload
