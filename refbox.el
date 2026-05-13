@@ -271,6 +271,25 @@ When nil, associated file lookup does not filter by extension."
   :type '(repeat function)
   :group 'refbox)
 
+(defcustom refbox-resource-file-sources
+  '((indexed-fields
+     :items refbox-resource-file-source-indexed-items
+     :hasitems refbox-resource-file-source-indexed-has-items)
+    (library-paths
+     :items refbox-resource-file-source-library-items
+     :hasitems refbox-resource-file-source-library-has-items))
+  "Sources used to discover files associated with references.
+
+Each source is an alist entry of the form (NAME . PLIST).  NAME
+is a symbol identifying the source.  PLIST recognizes `:items'
+and optional `:hasitems'.  Both functions receive CANDIDATE and
+RESOURCES, where RESOURCES are the indexed resources already
+loaded for CANDIDATE.  `:items' returns existing file names;
+`:hasitems' should return non-nil when the source can report a
+file association more cheaply than materializing all items."
+  :type 'alist
+  :group 'refbox)
+
 (defcustom refbox-resource-additional-file-separator nil
   "Regexp separating a reference key from additional file-name text."
   :type '(choice (const :tag "Ignore additional files" nil)
@@ -640,13 +659,9 @@ loaded for CANDIDATE."
 
 (defun refbox-reference-has-files-p (candidate)
   "Return non-nil when CANDIDATE has an associated file resource."
-  (or (refbox-reference-has-resource-kind-p candidate "file")
-      (refbox-reference-has-any-field-p
-       candidate refbox-reference-resource-field-names)
-      (and refbox-resource-library-paths
-           (not (null (refbox-reference-files
-                       candidate
-                       (refbox--candidate-resources candidate)))))))
+  (refbox-resource-file-source-has-items-p
+   candidate
+   (refbox--candidate-resources candidate)))
 
 (defun refbox-reference-has-links-p (candidate)
   "Return non-nil when CANDIDATE has an indexed link resource."
@@ -1260,14 +1275,30 @@ bibliography source files."
                     (push file found)))))))))
     (nreverse (delete-dups found))))
 
-(cl-defun refbox-reference-files
-    (candidate &optional (resources nil resources-supplied-p))
-  "Return existing file resources for CANDIDATE."
-  (let* ((resources (if resources-supplied-p
-                        resources
-                      (refbox-reference-resources candidate)))
-         (keys (refbox-reference-related-keys candidate resources))
-         (extensions refbox-resource-library-file-extensions)
+(defun refbox-resource-file-source--plist (source)
+  "Return the plist for file SOURCE."
+  (unless (and (consp source) (symbolp (car source)) (listp (cdr source)))
+    (user-error "Invalid refbox file source: %S" source))
+  (cdr source))
+
+(defun refbox-resource-file-source--function (source property &optional required)
+  "Return SOURCE function PROPERTY.
+
+When REQUIRED is non-nil, signal if the property is absent or not
+callable."
+  (let ((function (plist-get (refbox-resource-file-source--plist source)
+                             property)))
+    (cond
+     ((functionp function) function)
+     (required
+      (user-error "refbox file source %s has no callable %s"
+                  (car source)
+                  property))
+     (t nil))))
+
+(defun refbox-resource-file-source-indexed-items (candidate resources)
+  "Return files declared by indexed resources for CANDIDATE."
+  (let* ((extensions refbox-resource-library-file-extensions)
          (field-files
           (cl-loop
            for resource in resources
@@ -1280,18 +1311,76 @@ bibliography source files."
                    (refbox--resource-value resource))))
          (source-dirs (refbox-resource--source-dirs candidate resources))
          (library-dirs (refbox-resource--library-dirs)))
-    (delete-dups
-     (append
-      (refbox-resource--find-files-in-dirs
-       field-files
-       (append source-dirs library-dirs)
-       extensions)
-      (when keys
-        (refbox-resource--files-for-keys
-         keys
-         library-dirs
-         extensions
-         refbox-resource-additional-file-separator))))))
+    (refbox-resource--find-files-in-dirs
+     field-files
+     (append source-dirs library-dirs)
+     extensions)))
+
+(defun refbox-resource-file-source-indexed-has-items (candidate resources)
+  "Return non-nil when CANDIDATE has indexed file declarations."
+  (or (refbox-reference-has-resource-kind-p candidate "file")
+      (refbox-reference-has-any-field-p
+       candidate
+       (delete-dups
+        (append refbox-resource-file-field-names
+                refbox-reference-resource-field-names)))
+      (cl-some
+       (lambda (resource)
+         (let ((kind (refbox--resource-kind resource))
+               (lookup (refbox--resource-lookup-name resource)))
+           (or (equal kind "file")
+               (and lookup
+                    (member lookup refbox-resource-file-field-names)))))
+       resources)))
+
+(defun refbox-resource-file-source-library-items (candidate resources)
+  "Return library-path files associated with CANDIDATE."
+  (refbox-resource--files-for-keys
+   (refbox-reference-related-keys candidate resources)
+   (refbox-resource--library-dirs)
+   refbox-resource-library-file-extensions
+   refbox-resource-additional-file-separator))
+
+(defun refbox-resource-file-source-library-has-items (candidate resources)
+  "Return non-nil when CANDIDATE has files in configured library paths."
+  (not (null (refbox-resource-file-source-library-items candidate resources))))
+
+(defun refbox-resource-file-source-items (candidate resources)
+  "Return file items from `refbox-resource-file-sources'."
+  (delete-dups
+   (cl-loop
+    for source in refbox-resource-file-sources
+    append
+    (refbox--listify
+     (funcall
+      (refbox-resource-file-source--function source :items t)
+      candidate
+      resources)))))
+
+(defun refbox-resource-file-source-has-items-p (candidate resources)
+  "Return non-nil when any file source has items for CANDIDATE."
+  (cl-some
+   (lambda (source)
+     (if-let ((hasitems
+               (refbox-resource-file-source--function source :hasitems)))
+         (funcall hasitems candidate resources)
+       (not
+        (null
+         (refbox--listify
+          (funcall
+           (refbox-resource-file-source--function source :items t)
+           candidate
+           resources))))))
+   refbox-resource-file-sources))
+
+(cl-defun refbox-reference-files
+    (candidate &optional (resources nil resources-supplied-p))
+  "Return existing file resources for CANDIDATE."
+  (refbox-resource-file-source-items
+   candidate
+   (if resources-supplied-p
+       resources
+     (refbox-reference-resources candidate))))
 
 (defun refbox-resource-link-url (resource)
   "Return the URL represented by RESOURCE."

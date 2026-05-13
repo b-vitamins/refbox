@@ -324,6 +324,59 @@
                     '("paper.pdf" "smith2020.pdf" "smith2020-extra.pdf")))))
       (delete-directory root t))))
 
+(ert-deftest refbox-test-resource_file_sources_are_extensible ()
+  "File lookup should dispatch through configured resource sources."
+  (let* ((root (make-temp-file "refbox-file-source-" t))
+         (external (expand-file-name "external.pdf" root))
+         (candidate '(:key "alpha" :resources nil))
+         seen-items
+         seen-has)
+    (unwind-protect
+        (progn
+          (with-temp-file external)
+          (let ((refbox-resource-file-sources
+                 `((external
+                    :items ,(lambda (reference resources)
+                              (setq seen-items (list reference resources))
+                              (list external))
+                    :hasitems ,(lambda (reference resources)
+                                 (setq seen-has (list reference resources))
+                                 t)))))
+            (should (equal (refbox-reference-files candidate nil)
+                           (list external)))
+            (should (refbox-reference-has-files-p candidate)))
+          (should (equal seen-items (list candidate nil)))
+          (should (equal seen-has (list candidate nil))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-resource_file_sources_fallback_to_items_for_has_files ()
+  "File sources without :hasitems should still support indicators."
+  (let ((candidate '(:key "alpha" :resources nil))
+        called)
+    (let ((refbox-resource-file-sources
+           `((external
+              :items ,(lambda (reference resources)
+                        (setq called (list reference resources))
+                        '("/tmp/external.pdf"))))))
+      (should (refbox-reference-has-files-p candidate)))
+    (should (equal called (list candidate nil)))))
+
+(ert-deftest refbox-test-resource_file_sources_reject_invalid_items ()
+  "Broken file sources should fail at the source boundary."
+  (let ((candidate '(:key "alpha" :resources nil))
+        (refbox-resource-file-sources '((broken))))
+    (should-error (refbox-reference-files candidate nil) :type 'user-error)))
+
+(ert-deftest refbox-test-resource_file_sources_preserve_indicator_fields ()
+  "File source has-items should honor configured indicator field names."
+  (let ((candidate
+         '(:key "alpha"
+           :fields ((:lookup_name "pdf" :value "alpha.pdf"))
+           :resources nil))
+        (refbox-resource-file-field-names '("file"))
+        (refbox-reference-resource-field-names '("pdf")))
+    (should (refbox-reference-has-files-p candidate))))
+
 (ert-deftest refbox-test-local_resource_lookup_uses_crossref_parent_keys ()
   "File lookup should include parent keys declared by cross-reference fields."
   (let* ((root (make-temp-file "refbox-crossref-files-" t))
