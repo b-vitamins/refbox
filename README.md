@@ -59,8 +59,8 @@ edited through Emacs current with targeted file updates.
 Useful resource, note, and formatting options:
 
 ```elisp
-(setq refbox-resource-library-paths '("~/papers"))
-(setq refbox-resource-library-paths-recursive t)
+(setq refbox-library-paths '("~/papers"))
+(setq refbox-library-paths-recursive t)
 (setq refbox-note-paths '("~/notes/references"))
 
 (setq refbox-csl-style-directories '("~/csl/styles"))
@@ -156,8 +156,8 @@ M-x refbox-org-set-reference-prefix
 M-x refbox-org-set-reference-suffix
 M-x refbox-org-shift-reference-left
 M-x refbox-org-shift-reference-right
-M-x refbox-org-delete-at-point
-M-x refbox-org-kill-at-point
+M-x refbox-org-delete-citation
+M-x refbox-org-kill-citation
 M-x refbox-org-follow-at-point
 ```
 
@@ -184,9 +184,9 @@ M-x refbox-latex-insert-citation
 Relevant options:
 
 ```elisp
-(setq refbox-latex-default-command "cite")
-(setq refbox-latex-prompt-for-command nil)
-(setq refbox-latex-prompt-for-optional-arguments nil)
+(setq refbox-latex-default-cite-command "cite")
+(setq refbox-latex-prompt-for-cite-style nil)
+(setq refbox-latex-prompt-for-extra-arguments nil)
 ```
 
 LaTeX completion is active inside recognized citation commands. Bibliography
@@ -214,7 +214,7 @@ M-x refbox-markdown-insert-key
 Relevant options:
 
 ```elisp
-(setq refbox-markdown-prompt-for-affixes nil)
+(setq refbox-markdown-prompt-for-extra-arguments nil)
 (setq refbox-markdown-default-prefix nil)
 (setq refbox-markdown-default-suffix nil)
 ```
@@ -226,14 +226,14 @@ Markdown insertion uses Pandoc-style `[@key]` citations.
 For a generic completion hook, use:
 
 ```elisp
-(add-hook 'completion-at-point-functions #'refbox-completion-at-point)
+(add-hook 'completion-at-point-functions #'refbox-capf)
 ```
 
 Mode-specific setup commands are usually better because they install a
 buffer-local completion function:
 
 ```text
-M-x refbox-setup-capf
+M-x refbox-capf-setup
 M-x refbox-org-setup-capf
 M-x refbox-latex-setup-capf
 M-x refbox-markdown-setup-capf
@@ -306,8 +306,8 @@ derived index.
 Malformed bibliography files: run `M-x refbox-status` and check the diagnostic
 count. Fix the `.bib` source file and sync again.
 
-Missing file resources: check `file` fields, `refbox-resource-library-paths`,
-`refbox-resource-library-paths-recursive`, and
+Missing file resources: check `file` fields, `refbox-library-paths`,
+`refbox-library-paths-recursive`, and
 `refbox-resource-library-file-extensions`. `M-x refbox-add-file-to-library`
 writes new files into the first configured library path.
 

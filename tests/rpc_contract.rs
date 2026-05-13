@@ -6,8 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use refbox_rpc::{
     METHOD_DIAGNOSTICS, METHOD_DUPLICATE_GROUPS, METHOD_ENTRY_BY_KEY, METHOD_FORMAT_REFERENCES,
-    METHOD_RAW_ENTRY, METHOD_RESOURCES_BY_KEY, METHOD_SEARCH_ENTRIES, METHOD_SOURCE_LOCATION,
-    METHOD_STATUS, METHOD_SYNC_FILE, METHOD_SYNC_FULL,
+    METHOD_LIST_ENTRIES, METHOD_RAW_ENTRY, METHOD_RESOURCES_BY_KEY, METHOD_SEARCH_ENTRIES,
+    METHOD_SOURCE_LOCATION, METHOD_STATUS, METHOD_SYNC_FILE, METHOD_SYNC_FULL,
 };
 use serde_json::{Value, json};
 
@@ -55,7 +55,24 @@ fn stdio_rpc_contract_covers_success_and_error_shapes() {
     assert_eq!(entries[0]["source_path"], project.path_string("valid.bib"));
     assert!(entries[0]["fields"].as_array().expect("fields").len() >= 2);
 
-    let resources = rpc.result(4, METHOD_RESOURCES_BY_KEY, json!({ "key": "res2020" }));
+    let listed = rpc.result(
+        4,
+        METHOD_LIST_ENTRIES,
+        json!({
+            "limit": 2,
+            "offset": 0,
+        }),
+    );
+    let listed_entries = listed["entries"].as_array().expect("listed entries");
+    assert_eq!(listed_entries.len(), 2);
+    assert!(
+        !listed_entries[0]["fields"]
+            .as_array()
+            .expect("fields")
+            .is_empty()
+    );
+
+    let resources = rpc.result(5, METHOD_RESOURCES_BY_KEY, json!({ "key": "res2020" }));
     let mut kinds = resources["resources"]
         .as_array()
         .expect("resources array")
@@ -65,7 +82,7 @@ fn stdio_rpc_contract_covers_success_and_error_shapes() {
     kinds.sort_unstable();
     assert_eq!(kinds, vec!["doi", "file", "url"]);
 
-    let duplicates = rpc.result(5, METHOD_DUPLICATE_GROUPS, json!({ "limit": 20 }));
+    let duplicates = rpc.result(6, METHOD_DUPLICATE_GROUPS, json!({ "limit": 20 }));
     assert_eq!(duplicates["groups"][0]["key"], "dup2020");
     assert_eq!(
         duplicates["groups"][0]["entries"]
@@ -75,7 +92,7 @@ fn stdio_rpc_contract_covers_success_and_error_shapes() {
         2
     );
 
-    let diagnostics = rpc.result(6, METHOD_DIAGNOSTICS, json!({ "limit": 20 }));
+    let diagnostics = rpc.result(7, METHOD_DIAGNOSTICS, json!({ "limit": 20 }));
     assert!(
         diagnostics["diagnostics"]
             .as_array()
@@ -84,11 +101,11 @@ fn stdio_rpc_contract_covers_success_and_error_shapes() {
             .any(|diagnostic| diagnostic["file_path"] == project.path_string("malformed.bib"))
     );
 
-    let source = rpc.result(7, METHOD_SOURCE_LOCATION, json!({ "key": "alpha2020" }));
+    let source = rpc.result(8, METHOD_SOURCE_LOCATION, json!({ "key": "alpha2020" }));
     assert_eq!(source["source_path"], project.path_string("valid.bib"));
     assert_eq!(source["source"]["start"]["line"], 1);
 
-    let raw = rpc.result(8, METHOD_RAW_ENTRY, json!({ "key": "alpha2020" }));
+    let raw = rpc.result(9, METHOD_RAW_ENTRY, json!({ "key": "alpha2020" }));
     assert!(
         raw["raw"]
             .as_str()
@@ -97,7 +114,7 @@ fn stdio_rpc_contract_covers_success_and_error_shapes() {
     );
 
     let formatted = rpc.result(
-        9,
+        10,
         METHOD_FORMAT_REFERENCES,
         json!({
             "keys": ["alpha2020", "beta2021"],
@@ -114,20 +131,20 @@ fn stdio_rpc_contract_covers_success_and_error_shapes() {
     );
 
     assert_error_kind(
-        rpc.request(10, METHOD_ENTRY_BY_KEY, json!({ "key": "dup2020" })),
+        rpc.request(11, METHOD_ENTRY_BY_KEY, json!({ "key": "dup2020" })),
         "ambiguous_key",
     );
     assert_error_kind(
-        rpc.request(11, METHOD_RAW_ENTRY, json!({ "key": "missing" })),
+        rpc.request(12, METHOD_RAW_ENTRY, json!({ "key": "missing" })),
         "unknown_key",
     );
     assert_error_kind(
-        rpc.request(12, METHOD_SYNC_FILE, json!({ "path": "../outside.bib" })),
+        rpc.request(13, METHOD_SYNC_FILE, json!({ "path": "../outside.bib" })),
         "invalid_path",
     );
     assert_error_kind(
         rpc.request(
-            13,
+            14,
             METHOD_FORMAT_REFERENCES,
             json!({ "keys": ["alpha2020"], "style_path": project.path("missing.csl") }),
         ),

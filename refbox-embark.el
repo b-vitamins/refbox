@@ -59,13 +59,15 @@
   :type 'natnum
   :group 'refbox-embark)
 
-(defvar refbox-embark-reference-map
+(defvar refbox-embark-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "o") #'refbox-embark-open)
     (define-key map (kbd "f") #'refbox-embark-open-files)
     (define-key map (kbd "n") #'refbox-embark-open-notes)
     (define-key map (kbd "l") #'refbox-embark-open-links)
+    (define-key map (kbd "e") #'refbox-embark-open-entry)
     (define-key map (kbd "s") #'refbox-embark-open-source)
+    (define-key map (kbd "b") #'refbox-embark-insert-bibtex)
     (define-key map (kbd "r") #'refbox-embark-insert-raw-entry)
     (define-key map (kbd "c") #'refbox-embark-copy-reference)
     (define-key map (kbd "C") #'refbox-embark-copy-references)
@@ -82,7 +84,9 @@
     (define-key map (kbd "f") #'refbox-embark-open-files)
     (define-key map (kbd "n") #'refbox-embark-open-notes)
     (define-key map (kbd "l") #'refbox-embark-open-links)
+    (define-key map (kbd "e") #'refbox-embark-open-entry)
     (define-key map (kbd "s") #'refbox-embark-open-source)
+    (define-key map (kbd "b") #'refbox-embark-insert-bibtex)
     (define-key map (kbd "r") #'refbox-embark-insert-raw-entry)
     (define-key map (kbd "c") #'refbox-embark-copy-reference)
     (define-key map (kbd "C") #'refbox-embark-copy-references)
@@ -98,7 +102,7 @@
   "Target finders installed by `refbox-embark-mode'.")
 
 (defvar refbox-embark--keymap-alist
-  '((refbox-reference . refbox-embark-reference-map)
+  '((refbox-reference . refbox-embark-map)
     (refbox-citation . refbox-embark-citation-map))
   "Embark keymap entries installed by `refbox-embark-mode'.")
 
@@ -204,6 +208,16 @@
   "Open the bibliography source entry for TARGET."
   (interactive "sReference: ")
   (refbox-open-source (refbox-embark-reference target)))
+
+(defun refbox-embark-open-entry (target)
+  "Open the bibliography entry for TARGET."
+  (interactive "sReference: ")
+  (refbox-open-entry (refbox-embark-reference target)))
+
+(defun refbox-embark-insert-bibtex (target)
+  "Insert the BibTeX entry for TARGET."
+  (interactive "sReference: ")
+  (refbox-insert-bibtex (list (refbox-embark-reference target))))
 
 (defun refbox-embark-insert-raw-entry (target)
   "Insert the raw bibliography entry for TARGET."

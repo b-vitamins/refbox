@@ -40,7 +40,7 @@
   :group 'refbox
   :prefix "refbox-latex-")
 
-(defcustom refbox-latex-citation-commands
+(defcustom refbox-latex-cite-commands
   '("cite" "Cite" "citet" "Citet" "citep" "Citep" "citealp" "citealt"
     "parencite" "Parencite" "footcite" "footcitetext" "textcite"
     "Textcite" "smartcite" "Smartcite" "autocite" "Autocite"
@@ -51,17 +51,17 @@
   :type '(repeat string)
   :group 'refbox-latex)
 
-(defcustom refbox-latex-default-command "cite"
+(defcustom refbox-latex-default-cite-command "cite"
   "Default LaTeX citation command inserted by refbox."
   :type 'string
   :group 'refbox-latex)
 
-(defcustom refbox-latex-prompt-for-command nil
+(defcustom refbox-latex-prompt-for-cite-style nil
   "When non-nil, prompt for the LaTeX citation command before insertion."
   :type 'boolean
   :group 'refbox-latex)
 
-(defcustom refbox-latex-prompt-for-optional-arguments nil
+(defcustom refbox-latex-prompt-for-extra-arguments nil
   "When non-nil, prompt for optional citation command arguments."
   :type 'boolean
   :group 'refbox-latex)
@@ -76,12 +76,12 @@
   :type 'string
   :group 'refbox-latex)
 
-(defvar refbox-latex-command-history nil
+(defvar refbox-latex-cite-command-history nil
   "Minibuffer history for LaTeX citation commands.")
 
 (defun refbox-latex--command-regexp ()
   "Return a regexp matching configured LaTeX citation commands."
-  (concat "\\\\\\(" (regexp-opt refbox-latex-citation-commands) "\\*?\\)"))
+  (concat "\\\\\\(" (regexp-opt refbox-latex-cite-commands) "\\*?\\)"))
 
 (defun refbox-latex--scan-braced-group (position)
   "Return bounds of braced group at POSITION, or nil."
@@ -212,7 +212,7 @@
 (defun refbox-latex-completion-at-point ()
   "Return CAPF data for LaTeX citation keys at point."
   (when-let ((bounds (refbox-latex--completion-bounds)))
-    (refbox-capf-at-bounds bounds (refbox-latex-bibliography-files))))
+    (refbox-capf-at-bounds bounds (refbox-latex-local-bib-files))))
 
 ;;;###autoload
 (defun refbox-latex-setup-capf ()
@@ -225,20 +225,20 @@
 
 (defun refbox-latex--read-command ()
   "Read or return the configured LaTeX citation command."
-  (if refbox-latex-prompt-for-command
+  (if refbox-latex-prompt-for-cite-style
       (completing-read
        "Citation command: "
-       refbox-latex-citation-commands
+       refbox-latex-cite-commands
        nil
        nil
        nil
-       'refbox-latex-command-history
-       refbox-latex-default-command)
-    refbox-latex-default-command))
+       'refbox-latex-cite-command-history
+       refbox-latex-default-cite-command)
+    refbox-latex-default-cite-command))
 
 (defun refbox-latex--read-optional-arguments ()
   "Read or return configured optional LaTeX citation arguments."
-  (if refbox-latex-prompt-for-optional-arguments
+  (if refbox-latex-prompt-for-extra-arguments
       (let ((first (read-string "First optional argument: "))
             (second (read-string "Second optional argument: ")))
         (delq nil
@@ -267,7 +267,7 @@
            nil
            nil
            nil
-           (refbox-latex-bibliography-files))))
+           (refbox-latex-local-bib-files))))
 
 (defun refbox-latex--new-keys (keys existing)
   "Return KEYS that are not already present in EXISTING."
@@ -319,6 +319,12 @@ that citation instead of replacing it."
         (insert (refbox-latex-format-citation
                  command keys optional-args))))))
 
+;;;###autoload
+(defun refbox-latex-insert-edit (&optional arg)
+  "Insert or edit a LaTeX citation at point."
+  (interactive "P")
+  (refbox-latex-insert-citation arg))
+
 (defun refbox-latex--bib-file (path)
   "Return PATH with a .bib extension when it has no extension."
   (if (file-name-extension path)
@@ -365,7 +371,7 @@ that citation instead of replacing it."
     files))
 
 ;;;###autoload
-(defun refbox-latex-bibliography-files (&optional buffer)
+(defun refbox-latex-local-bib-files (&optional buffer)
   "Return bibliography files declared for LaTeX BUFFER."
   (with-current-buffer (or buffer (current-buffer))
     (delete-dups

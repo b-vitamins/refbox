@@ -70,8 +70,8 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
 (ert-deftest refbox-latex-test-inserts-default-command ()
   "Insertion should honor the configured default command."
   (refbox-latex-test-with-buffer "Before | after"
-    (let ((refbox-latex-default-command "parencite")
-          (refbox-latex-prompt-for-command nil)
+    (let ((refbox-latex-default-cite-command "parencite")
+          (refbox-latex-prompt-for-cite-style nil)
           (refbox-latex-default-optional-arguments nil))
       (cl-letf (((symbol-function 'refbox-read-references)
                  (lambda (&rest _args)
@@ -88,8 +88,8 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
          calls)
     (unwind-protect
         (let ((default-directory root)
-              (refbox-latex-default-command "cite")
-              (refbox-latex-prompt-for-command nil)
+              (refbox-latex-default-cite-command "cite")
+              (refbox-latex-prompt-for-cite-style nil)
               (refbox-latex-default-optional-arguments nil))
           (make-directory (file-name-directory bib) t)
           (write-region "" nil bib)
@@ -105,8 +105,8 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
 (ert-deftest refbox-latex-test-prompts-for-command-and-optional-arguments ()
   "Prompt settings should drive command and optional argument selection."
   (refbox-latex-test-with-buffer "|"
-    (let ((refbox-latex-prompt-for-command t)
-          (refbox-latex-prompt-for-optional-arguments t))
+    (let ((refbox-latex-prompt-for-cite-style t)
+          (refbox-latex-prompt-for-extra-arguments t))
       (cl-letf (((symbol-function 'completing-read)
                  (lambda (&rest _args) "textcite"))
                 ((symbol-function 'read-string)
@@ -122,7 +122,7 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
 (ert-deftest refbox-latex-test-adds-to-existing-citation ()
   "Insertion at an existing citation should add selected keys."
   (refbox-latex-test-with-buffer "A \\cite{al|pha, beta} Z"
-    (let ((refbox-latex-default-command "autocite")
+    (let ((refbox-latex-default-cite-command "autocite")
           (refbox-latex-default-optional-arguments nil))
       (cl-letf (((symbol-function 'refbox-read-references)
                  (lambda (&rest _args)
@@ -150,7 +150,7 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
           (write-region "" nil (expand-file-name "refs/b.bib" root))
           (refbox-latex-test-with-buffer
               "\\bibliography{refs/a}\n\\addbibresource{refs/b.bib}\n|"
-            (should (equal (refbox-latex-bibliography-files)
+            (should (equal (refbox-latex-local-bib-files)
                            (list (expand-file-name "refs/a.bib" root)
                                  (expand-file-name "refs/b.bib" root))))))
       (delete-directory root t))))
@@ -160,7 +160,7 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
   (refbox-latex-test-with-buffer "|"
     (let ((reftex-default-bibliography '("global.bib"))
           (LaTeX-bibliography-list '("local")))
-      (should (equal (refbox-latex-bibliography-files)
+      (should (equal (refbox-latex-local-bib-files)
                      (list (expand-file-name "global.bib")
                            (expand-file-name "local.bib")))))))
 

@@ -11,6 +11,7 @@ pub const METHOD_SYNC_FULL: &str = "refbox/syncFull";
 pub const METHOD_SYNC_FILE: &str = "refbox/syncFile";
 pub const METHOD_INDEXED_FILES: &str = "refbox/indexedFiles";
 pub const METHOD_SEARCH_ENTRIES: &str = "refbox/searchEntries";
+pub const METHOD_LIST_ENTRIES: &str = "refbox/listEntries";
 pub const METHOD_ENTRY_BY_KEY: &str = "refbox/entryByKey";
 pub const METHOD_ENTRIES_BY_KEYS: &str = "refbox/entriesByKeys";
 pub const METHOD_RESOURCES_BY_KEY: &str = "refbox/resourcesByKey";
@@ -185,6 +186,12 @@ pub struct SearchEntriesRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SearchEntriesResponse {
     pub entries: Vec<EntrySearchItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ListEntriesRequest {
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

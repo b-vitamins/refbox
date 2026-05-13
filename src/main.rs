@@ -10,14 +10,14 @@ use refbox_rpc::{
     EntriesByKeysRequest, EntriesResponse, EntryByKeyRequest, EntryFieldItem, EntryItem,
     EntryRefItem, EntrySearchItem, FormatReferencesRequest, FormatReferencesResponse,
     FormattedReferenceItem, IndexedFilesResponse, JsonRpcError, JsonRpcErrorObject, JsonRpcRequest,
-    JsonRpcResponse, LimitRequest, METHOD_DIAGNOSTICS, METHOD_DUPLICATE_GROUPS,
+    JsonRpcResponse, LimitRequest, ListEntriesRequest, METHOD_DIAGNOSTICS, METHOD_DUPLICATE_GROUPS,
     METHOD_ENTRIES_BY_KEYS, METHOD_ENTRY_BY_KEY, METHOD_FORMAT_REFERENCES, METHOD_INDEXED_FILES,
-    METHOD_PING, METHOD_RAW_ENTRY, METHOD_RESOURCES_BY_KEY, METHOD_RESOURCES_BY_KEYS,
-    METHOD_SEARCH_ENTRIES, METHOD_SOURCE_LOCATION, METHOD_STATUS, METHOD_SYNC_FILE,
-    METHOD_SYNC_FULL, RawEntryRequest, RawEntryResponse, ResourceItem, ResourcesByKeyRequest,
-    ResourcesByKeysRequest, ResourcesResponse, SearchEntriesRequest, SearchEntriesResponse,
-    SourceLocationRequest, SourceLocationResponse, StatusResponse, SyncFileRequest, SyncResponse,
-    clamp_limit,
+    METHOD_LIST_ENTRIES, METHOD_PING, METHOD_RAW_ENTRY, METHOD_RESOURCES_BY_KEY,
+    METHOD_RESOURCES_BY_KEYS, METHOD_SEARCH_ENTRIES, METHOD_SOURCE_LOCATION, METHOD_STATUS,
+    METHOD_SYNC_FILE, METHOD_SYNC_FULL, RawEntryRequest, RawEntryResponse, ResourceItem,
+    ResourcesByKeyRequest, ResourcesByKeysRequest, ResourcesResponse, SearchEntriesRequest,
+    SearchEntriesResponse, SourceLocationRequest, SourceLocationResponse, StatusResponse,
+    SyncFileRequest, SyncResponse, clamp_limit,
 };
 use refbox_store::{RefboxStore, StoredEntry, StoredField};
 use serde::de::DeserializeOwned;
@@ -109,6 +109,38 @@ impl Daemon {
         }
     }
 
+    fn entry_search_item(
+        &self,
+        entry_id: i64,
+        key: String,
+        source_path: String,
+        entry_type: String,
+        score: f64,
+    ) -> std::result::Result<EntrySearchItem, JsonRpcError> {
+        let fields = self
+            .store
+            .fields_for_entry(entry_id)
+            .map_err(store_error)?
+            .into_iter()
+            .map(field_item)
+            .collect();
+        let resources = self
+            .store
+            .resources_for_entry(entry_id, &default_crossref_fields())
+            .map_err(store_error)?
+            .into_iter()
+            .map(resource_item)
+            .collect();
+        Ok(EntrySearchItem {
+            key,
+            source_path,
+            entry_type,
+            score,
+            fields,
+            resources,
+        })
+    }
+
     fn dispatch(
         &mut self,
         method: &str,
@@ -167,28 +199,34 @@ impl Daemon {
                 let entries = search_results
                     .into_iter()
                     .map(|entry| {
-                        let fields = self
-                            .store
-                            .fields_for_entry(entry.entry_id)
-                            .map_err(store_error)?
-                            .into_iter()
-                            .map(field_item)
-                            .collect();
-                        let resources = self
-                            .store
-                            .resources_for_entry(entry.entry_id, &default_crossref_fields())
-                            .map_err(store_error)?
-                            .into_iter()
-                            .map(resource_item)
-                            .collect();
-                        Ok(EntrySearchItem {
-                            key: entry.key,
-                            source_path: entry.file_path,
-                            entry_type: entry.entry_type,
-                            score: entry.score,
-                            fields,
-                            resources,
-                        })
+                        self.entry_search_item(
+                            entry.entry_id,
+                            entry.key,
+                            entry.file_path,
+                            entry.entry_type,
+                            entry.score,
+                        )
+                    })
+                    .collect::<std::result::Result<Vec<_>, JsonRpcError>>()?;
+                self.to_value(SearchEntriesResponse { entries })
+            }
+            METHOD_LIST_ENTRIES => {
+                let request: ListEntriesRequest = parse_params(params)?;
+                let limit = clamp_limit(request.limit);
+                let offset = request.offset.unwrap_or(0);
+                let entries = self
+                    .store
+                    .list_entries(limit, offset)
+                    .map_err(store_error)?
+                    .into_iter()
+                    .map(|entry| {
+                        self.entry_search_item(
+                            entry.id,
+                            entry.key,
+                            entry.file_path,
+                            entry.entry_type,
+                            0.0,
+                        )
                     })
                     .collect::<std::result::Result<Vec<_>, JsonRpcError>>()?;
                 self.to_value(SearchEntriesResponse { entries })
@@ -713,6 +751,13 @@ mod tests {
         assert_eq!(search["entries"][0]["entry_type"], "article");
         assert_eq!(search["entries"][0]["fields"][0]["lookup_name"], "title");
         assert_eq!(search["entries"][0]["resources"][0]["kind"], "doi");
+
+        let listed = result(daemon.handle_request(request(
+            METHOD_LIST_ENTRIES,
+            json!({ "limit": 1, "offset": 0 }),
+        )));
+        assert_eq!(listed["entries"][0]["key"], "a2020");
+        assert_eq!(listed["entries"][0]["fields"][0]["lookup_name"], "title");
 
         let resources = result(
             daemon.handle_request(request(METHOD_RESOURCES_BY_KEY, json!({ "key": "a2020" }))),

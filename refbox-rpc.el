@@ -52,7 +52,7 @@ names."
   :type '(repeat directory)
   :group 'refbox)
 
-(defcustom refbox-bibliography-files nil
+(defcustom refbox-bibliography nil
   "Explicit bibliography files that belong to the user's refbox corpus."
   :type '(repeat file)
   :group 'refbox)
@@ -104,6 +104,7 @@ names."
 (defconst refbox-rpc-method-sync-full "refbox/syncFull")
 (defconst refbox-rpc-method-sync-file "refbox/syncFile")
 (defconst refbox-rpc-method-search-entries "refbox/searchEntries")
+(defconst refbox-rpc-method-list-entries "refbox/listEntries")
 (defconst refbox-rpc-method-entry-by-key "refbox/entryByKey")
 (defconst refbox-rpc-method-resources-by-key "refbox/resourcesByKey")
 (defconst refbox-rpc-method-resources-by-keys "refbox/resourcesByKeys")

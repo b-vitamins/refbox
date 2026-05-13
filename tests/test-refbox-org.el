@@ -116,10 +116,10 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
 (ert-deftest refbox-org-test-delete-and-kill-citation-elements ()
   "Deletion and kill commands should use Org citation boundaries."
   (refbox-org-test-with-buffer "A [cite:@al|pha; @beta] Z"
-    (refbox-org-delete-at-point)
+    (refbox-org-delete-citation)
     (should (equal (buffer-string) "A [cite:@beta] Z")))
   (refbox-org-test-with-buffer "A [cite:@al|pha] Z"
-    (refbox-org-kill-at-point)
+    (refbox-org-kill-citation)
     (should (equal (current-kill 0 t) "[cite:@alpha]"))
     (should (equal (buffer-string) "A Z"))))
 
@@ -208,7 +208,7 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
           (write-region "" nil global-bib)
           (refbox-org-test-with-buffer "#+bibliography: refs/main.bib\n\n|Body"
             (let ((org-cite-global-bibliography (list global-bib)))
-              (should (equal (refbox-org-bibliography-files)
+              (should (equal (refbox-org-local-bib-files)
                              (list (expand-file-name "refs/main.bib" root)))))))
       (delete-directory root t))))
 

@@ -70,6 +70,12 @@ When nil, styles are read from Org's supported citation styles."
                  (repeat string))
   :group 'refbox-org)
 
+(defcustom refbox-org-styles-format 'long
+  "Org citation style display format."
+  :type '(choice (const long)
+                 (const short))
+  :group 'refbox-org)
+
 (defcustom refbox-org-style-targets nil
   "Org citation export processors used to limit style completion.
 
@@ -86,7 +92,7 @@ datum at point, and the raw prefix argument."
   :group 'refbox-org)
 
 (defcustom refbox-org-activation-functions
-  '(refbox-org-basic-activate
+  '(refbox-org-cite-basic-activate
     refbox-org-activate-keymap)
   "Functions used to activate an Org citation.
 
@@ -114,10 +120,10 @@ Each function receives the citation datum."
     (define-key map (kbd "<mouse-1>") #'refbox-org-follow-at-point)
     (with-eval-after-load 'embark
       (define-key map (kbd "<mouse-3>") #'embark-act))
-    (define-key map (kbd "C-c C-x DEL") #'refbox-org-delete-at-point)
-    (define-key map (kbd "C-c C-x k") #'refbox-org-kill-at-point)
-    (define-key map (kbd "d") #'refbox-org-delete-at-point)
-    (define-key map (kbd "k") #'refbox-org-kill-at-point)
+    (define-key map (kbd "C-c C-x DEL") #'refbox-org-delete-citation)
+    (define-key map (kbd "C-c C-x k") #'refbox-org-kill-citation)
+    (define-key map (kbd "d") #'refbox-org-delete-citation)
+    (define-key map (kbd "k") #'refbox-org-kill-citation)
     (define-key map (kbd "S-<left>") #'refbox-org-shift-reference-left)
     (define-key map (kbd "S-<right>") #'refbox-org-shift-reference-right)
     (define-key map (kbd "M-p") #'refbox-org-update-prefix-suffix)
@@ -136,7 +142,7 @@ Each function receives the citation datum."
 
 When MULTIPLE is non-nil, return a list of keys.  Otherwise return
 a single key."
-  (let ((source-paths (refbox-org-bibliography-files)))
+  (let ((source-paths (refbox-org-local-bib-files)))
     (if multiple
         (mapcar #'refbox-org--candidate-key
                 (refbox-read-references
@@ -146,12 +152,19 @@ a single key."
                  nil
                  source-paths))
       (refbox-org--candidate-key
-       (refbox-read-reference
-        "Reference: "
-        nil
-        nil
-        nil
-        source-paths)))))
+	       (refbox-read-reference
+	        "Reference: "
+	        nil
+	        nil
+	        nil
+	        source-paths)))))
+
+;;;###autoload
+(defun refbox-org-select-key (&optional multiple)
+  "Select one or more Org citation keys.
+
+When MULTIPLE is non-nil, return a list of keys.  Otherwise return one key."
+  (refbox-org--select-keys multiple))
 
 (defun refbox-org--flat-styles (&optional targets)
   "Return flat Org citation styles for TARGETS."
@@ -196,7 +209,9 @@ When TRANSFORM is non-nil, return the displayed candidate."
 (defun refbox-org--style-annotation (style)
   "Return preview annotation for STYLE."
   (let ((preview (or (cdr (assoc style refbox-org-style-preview-alist)) "")))
-    (truncate-string-to-width preview 50 nil 32)))
+    (propertize
+     (truncate-string-to-width preview 50 nil 32)
+     'face 'refbox-org-style-preview)))
 
 ;;;###autoload
 (defun refbox-org-select-style ()
@@ -240,7 +255,7 @@ When TRANSFORM is non-nil, return the displayed candidate."
   (org-cite-register-processor
    'refbox
    :insert (refbox-org--insert-processor)
-   :follow #'refbox-org--processor-follow
+   :follow #'refbox-org-follow
    :activate #'refbox-org-activate))
 
 ;;;###autoload
@@ -256,10 +271,16 @@ citation, a non-nil ARG requests an explicit citation style."
     (cond
      ((org-element-type-p context '(citation citation-reference))
       (funcall insert context arg))
-     ((org-cite--allowed-p context)
-      (funcall insert nil arg))
-     (t
-      (user-error "Cannot insert an Org citation here")))))
+	     ((org-cite--allowed-p context)
+	      (funcall insert nil arg))
+	     (t
+	      (user-error "Cannot insert an Org citation here")))))
+
+;;;###autoload
+(defun refbox-org-insert-edit (&optional arg)
+  "Insert or edit an Org citation at point."
+  (interactive "P")
+  (refbox-org-insert-citation arg))
 
 (defun refbox-org-reference-at-point (&optional datum)
   "Return the Org citation reference at point or in DATUM."
@@ -441,7 +462,7 @@ every reference in that citation."
         (refbox-org--update-reference-prefix-suffix datum)))))
 
 ;;;###autoload
-(defun refbox-org-delete-at-point ()
+(defun refbox-org-delete-citation ()
   "Delete the Org citation or citation reference at point."
   (interactive)
   (let ((context (org-element-context)))
@@ -452,7 +473,7 @@ every reference in that citation."
       (user-error "Point is not on an Org citation"))))
 
 ;;;###autoload
-(defun refbox-org-kill-at-point ()
+(defun refbox-org-kill-citation ()
   "Kill the Org citation or citation reference at point."
   (interactive)
   (let* ((context (org-element-context))
@@ -521,8 +542,9 @@ DIRECTION is -1 for left and 1 for right."
   (interactive)
   (refbox-org--shift-reference 1))
 
-(defun refbox-org--processor-follow (datum arg)
+(defun refbox-org-follow (datum arg)
   "Follow Org citation DATUM with ARG through `refbox-org-follow-action'."
+  (interactive (list (org-element-context) current-prefix-arg))
   (let ((key (refbox-org-key-at-point datum)))
     (unless key
       (user-error "No Org citation key at point"))
@@ -532,7 +554,7 @@ DIRECTION is -1 for left and 1 for right."
 (defun refbox-org-follow-at-point (&optional arg)
   "Follow the Org citation key at point using `refbox-org-follow-action'."
   (interactive "P")
-  (refbox-org--processor-follow (org-element-context) arg))
+  (refbox-org-follow (org-element-context) arg))
 
 (defun refbox-org-open-source (key _datum _arg)
   "Open bibliography source for citation KEY."
@@ -562,7 +584,7 @@ DIRECTION is -1 for left and 1 for right."
 (defun refbox-org-completion-at-point ()
   "Return CAPF data for Org citation references at point."
   (when-let ((bounds (refbox-org--completion-bounds)))
-    (refbox-capf-at-bounds bounds (refbox-org-bibliography-files))))
+    (refbox-capf-at-bounds bounds (refbox-org-local-bib-files))))
 
 ;;;###autoload
 (defun refbox-org-setup-capf ()
@@ -573,7 +595,7 @@ DIRECTION is -1 for left and 1 for right."
             nil
             t))
 
-(defun refbox-org-basic-activate (citation)
+(defun refbox-org-cite-basic-activate (citation)
   "Activate Org CITATION with Org's basic citation styling."
   (when (fboundp 'org-cite-basic-activate)
     (org-cite-basic-activate citation)))
@@ -584,6 +606,7 @@ DIRECTION is -1 for left and 1 for right."
     (add-text-properties
      begin end
      `(keymap ,refbox-org-citation-map
+       face refbox-org-highlight
        help-echo "refbox Org citation"))))
 
 (defun refbox-org-activate (citation)
@@ -592,7 +615,7 @@ DIRECTION is -1 for left and 1 for right."
     (funcall function citation)))
 
 ;;;###autoload
-(defun refbox-org-bibliography-files (&optional buffer)
+(defun refbox-org-local-bib-files (&optional buffer)
   "Return bibliography files declared for Org BUFFER.
 
 Relative paths are expanded against the buffer's `default-directory'."

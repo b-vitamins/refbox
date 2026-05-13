@@ -33,22 +33,78 @@
 
 (require 'browse-url)
 (require 'cl-lib)
+(require 'seq)
 (require 'subr-x)
 (require 'xml)
 (require 'refbox-rpc)
+
+(defface refbox
+  '((t :inherit default))
+  "Base face for refbox completion candidates."
+  :group 'refbox)
+
+(defface refbox-highlight
+  '((t :inherit highlight))
+  "Face for highlighted refbox text."
+  :group 'refbox)
+
+(defface refbox-title
+  '((t :inherit font-lock-function-name-face))
+  "Face for reference titles."
+  :group 'refbox)
+
+(defface refbox-year
+  '((t :inherit shadow))
+  "Face for reference years."
+  :group 'refbox)
+
+(defface refbox-author
+  '((t :inherit font-lock-variable-name-face))
+  "Face for reference authors and editors."
+  :group 'refbox)
+
+(defface refbox-journal
+  '((t :inherit font-lock-string-face))
+  "Face for journals, publishers, and containers."
+  :group 'refbox)
+
+(defface refbox-tags
+  '((t :inherit font-lock-keyword-face))
+  "Face for reference tags and keywords."
+  :group 'refbox)
+
+(defface refbox-note-highlight
+  '((t :inherit font-lock-doc-face))
+  "Face for note-oriented reference text."
+  :group 'refbox)
+
+(defface refbox-org-highlight
+  '((t :inherit link))
+  "Face for activated Org citations."
+  :group 'refbox)
+
+(defface refbox-org-style-preview
+  '((t :inherit completions-annotations))
+  "Face for Org citation style previews."
+  :group 'refbox)
+
+(defface refbox-selection
+  '((t :inherit highlight))
+  "Face for selected refbox references."
+  :group 'refbox)
 
 (declare-function org-cite-get-references "oc" (citation))
 (declare-function org-element-parent "org-element" (element))
 (declare-function org-element-property "org-element" (property element))
 (declare-function org-element-type "org-element" (element))
 (declare-function mml-attach-file "mml" (file &optional type description disposition))
-(declare-function refbox-org-bibliography-files "refbox-org" (&optional buffer))
+(declare-function refbox-org-local-bib-files "refbox-org" (&optional buffer))
 (declare-function refbox-org-citation-at-point "refbox-org" (&optional datum))
 (declare-function refbox-org-insert-citation "refbox-org" (&optional arg))
 (declare-function refbox-org-key-at-point "refbox-org" (&optional datum))
 (declare-function refbox-org-list-keys "refbox-org" (&optional buffer))
 (declare-function refbox-org-completion-at-point "refbox-org" ())
-(declare-function refbox-latex-bibliography-files "refbox-latex" (&optional buffer))
+(declare-function refbox-latex-local-bib-files "refbox-latex" (&optional buffer))
 (declare-function refbox-latex-citation-at-point "refbox-latex" ())
 (declare-function refbox-latex-insert-citation "refbox-latex" (&optional arg))
 (declare-function refbox-latex-key-at-point "refbox-latex" ())
@@ -77,10 +133,11 @@ completion candidate plist or a citation key string."
 (defcustom refbox-at-point-fallback 'prompt
   "Fallback used by `refbox-dwim' when no citation key is at point.
 
-When the value is `prompt', `refbox-dwim' prompts for references
-and runs `refbox-default-action'.  When nil, it signals a user
-error instead."
+When the value is `prompt' or t, `refbox-dwim' prompts for
+references and runs `refbox-default-action'.  When nil, it signals
+a user error instead."
   :type '(choice (const :tag "Prompt" prompt)
+                 (const :tag "Prompt (t)" t)
                  (const :tag "Error" nil))
   :group 'refbox)
 
@@ -125,14 +182,14 @@ is a list of command symbols for which creation is always offered."
 
 (defcustom refbox-major-mode-functions
   '(((org-mode) .
-     ((local-bib-files . refbox-org-bibliography-files)
+     ((local-bib-files . refbox-org-local-bib-files)
       (insert-citation . refbox-org-insert-citation)
       (insert-edit . refbox-org-insert-citation)
       (key-at-point . refbox-org-key-at-point)
       (citation-at-point . refbox-org-citation-at-point)
       (list-keys . refbox-org-list-keys)))
     ((latex-mode LaTeX-mode tex-mode) .
-     ((local-bib-files . refbox-latex-bibliography-files)
+     ((local-bib-files . refbox-latex-local-bib-files)
       (insert-citation . refbox-latex-insert-citation)
       (insert-edit . refbox-latex-insert-citation)
       (key-at-point . refbox-latex-key-at-point)
@@ -180,12 +237,21 @@ adapter functions.  Supported adapter keys are `local-bib-files',
   :type 'string
   :group 'refbox)
 
+(defcustom refbox-templates nil
+  "Reference display templates.
+
+When non-nil, this alist may contain `main', `suffix', `preview',
+and `note' entries.  Template strings use Refbox's `%{field}'
+placeholder syntax."
+  :type '(alist :key-type symbol :value-type string)
+  :group 'refbox)
+
 (defcustom refbox-reference-display-width 100
   "Display width used when formatting star-width reference templates."
   :type 'natnum
   :group 'refbox)
 
-(defcustom refbox-template-ellipsis nil
+(defcustom refbox-ellipsis nil
   "String used to mark truncated template fields.
 
 When nil, truncated fields end at the configured display width
@@ -240,6 +306,57 @@ without adding a marker."
   :type '(choice (const :tag "Disabled" nil) function)
   :group 'refbox)
 
+(cl-defstruct
+    (refbox-indicator (:constructor refbox-indicator-create)
+                      (:copier nil))
+  "A reference indicator specification."
+  (tag nil)
+  (symbol nil)
+  (padding " ")
+  (emptysymbol "")
+  (function nil)
+  (compiledfunction nil))
+
+(defvar refbox-indicator-files
+  (refbox-indicator-create
+   :symbol refbox-reference-resource-indicator
+   :function #'refbox-has-files
+   :tag "has:file")
+  "Default indicator for references with files.")
+
+(defvar refbox-indicator-links
+  (refbox-indicator-create
+   :symbol refbox-reference-link-indicator
+   :function #'refbox-has-links
+   :tag "has:links")
+  "Default indicator for references with links.")
+
+(defvar refbox-indicator-notes
+  (refbox-indicator-create
+   :symbol refbox-reference-note-indicator
+   :function #'refbox-has-notes
+   :tag "has:notes")
+  "Default indicator for references with notes.")
+
+(defvar refbox-indicator-cited
+  (refbox-indicator-create
+   :symbol refbox-reference-cited-indicator
+   :function #'refbox-is-cited
+   :tag "is:cited")
+  "Default indicator for references cited in the current buffer.")
+
+(defcustom refbox-indicators
+  (list refbox-indicator-files
+        refbox-indicator-links
+        refbox-indicator-notes
+        refbox-indicator-cited)
+  "Reference indicators rendered in completion candidates.
+
+Each item is a `refbox-indicator' whose function returns a predicate
+accepting a reference key or candidate."
+  :type 'sexp
+  :group 'refbox)
+
 (defcustom refbox-crossref-field-names '("crossref")
   "Field names whose values name parent references.
 
@@ -249,17 +366,25 @@ returned directly by the daemon."
   :type '(repeat string)
   :group 'refbox)
 
-(defcustom refbox-resource-library-paths nil
+(defcustom refbox-crossref-variable "crossref"
+  "Primary field name whose value names a parent reference.
+
+When non-nil, this field is included with `refbox-crossref-field-names'
+while resolving related local files and notes."
+  :type '(choice (const :tag "Disabled" nil) string)
+  :group 'refbox)
+
+(defcustom refbox-library-paths nil
   "Directories searched for files associated with references."
   :type '(repeat directory)
   :group 'refbox)
 
-(defcustom refbox-resource-library-paths-recursive nil
-  "When non-nil, include subdirectories of `refbox-resource-library-paths'."
+(defcustom refbox-library-paths-recursive nil
+  "When non-nil, include subdirectories of `refbox-library-paths'."
   :type 'boolean
   :group 'refbox)
 
-(defcustom refbox-resource-library-file-extensions nil
+(defcustom refbox-library-file-extensions nil
   "File extensions accepted for associated files.
 
 When nil, associated file lookup does not filter by extension."
@@ -272,14 +397,14 @@ When nil, associated file lookup does not filter by extension."
   :type '(repeat string)
   :group 'refbox)
 
-(defcustom refbox-resource-file-parser-functions
+(defcustom refbox-file-parser-functions
   '(refbox-resource-parse-file-field-default
     refbox-resource-parse-file-field-triplet)
   "Functions used to parse file-resource field values."
   :type '(repeat function)
   :group 'refbox)
 
-(defcustom refbox-resource-file-sources
+(defcustom refbox-file-sources
   '((indexed-fields
      :items refbox-resource-file-source-indexed-items
      :hasitems refbox-resource-file-source-indexed-has-items)
@@ -298,7 +423,7 @@ file association more cheaply than materializing all items."
   :type 'alist
   :group 'refbox)
 
-(defcustom refbox-resource-additional-file-separator nil
+(defcustom refbox-file-additional-files-separator nil
   "Regexp separating a reference key from additional file-name text."
   :type '(choice (const :tag "Ignore additional files" nil)
                  regexp)
@@ -337,27 +462,27 @@ source and return the destination file name."
   :type 'function
   :group 'refbox)
 
-(defcustom refbox-resource-open-file-function #'find-file
+(defcustom refbox-file-open-function #'find-file
   "Function used to open file resources."
   :type 'function
   :group 'refbox)
 
-(defcustom refbox-resource-open-file-functions
-  '(("html" . refbox-resource-open-file-externally))
+(defcustom refbox-file-open-functions
+  '(("html" . refbox-file-open-external))
   "Alist mapping file extensions to resource opening functions.
 
 Keys are extension strings without a leading dot.  When a file's
 extension is not present in this alist,
-`refbox-resource-open-file-function' is used."
+`refbox-file-open-function' is used."
   :type '(alist :key-type string :value-type function)
   :group 'refbox)
 
-(defcustom refbox-resource-open-link-function #'browse-url
+(defcustom refbox-link-open-function #'browse-url
   "Function used to open link resources."
   :type 'function
   :group 'refbox)
 
-(defcustom refbox-resource-link-templates
+(defcustom refbox-link-fields
   '((url . "%s")
     (doi . "https://doi.org/%s")
     (arxiv . "https://arxiv.org/abs/%s")
@@ -367,32 +492,32 @@ extension is not present in this alist,
   :type '(alist :key-type symbol :value-type string)
   :group 'refbox)
 
-(defcustom refbox-note-paths nil
+(defcustom refbox-notes-paths nil
   "Directories searched for per-reference note files."
   :type '(repeat directory)
   :group 'refbox)
 
-(defcustom refbox-note-file-extensions '("org" "md")
+(defcustom refbox-file-note-extensions '("org" "md")
   "File extensions used for per-reference notes."
   :type '(repeat string)
   :group 'refbox)
 
-(defcustom refbox-note-open-function #'find-file
+(defcustom refbox-open-note-function #'find-file
   "Function used to open note resources."
   :type 'function
   :group 'refbox)
 
-(defcustom refbox-note-content-function #'refbox-note-default-content
+(defcustom refbox-note-format-function #'refbox-org-format-note-default
   "Function called with KEY and CANDIDATE to initialize a new note."
   :type '(choice (const :tag "Empty note" nil) function)
   :group 'refbox)
 
-(defcustom refbox-note-source 'file
+(defcustom refbox-notes-source 'file
   "Selected note source used by note opening and creation commands."
   :type 'symbol
   :group 'refbox)
 
-(defcustom refbox-note-sources
+(defcustom refbox-notes-sources
   '((file
      :name "Notes"
      :items refbox-note-source-file-items
@@ -411,7 +536,7 @@ functions receive KEY and REFERENCE.  `:all-items' receives no
 arguments and returns note items directly openable by `:open'.
 `:open' receives a note item.  `:create' and `:create-label'
 receive KEY and REFERENCE.  `:items' and `:open' are required
-when registering a note source with `refbox-register-note-source'."
+when registering a note source with `refbox-register-notes-source'."
   :type 'alist
   :group 'refbox)
 
@@ -420,12 +545,17 @@ when registering a note source with `refbox-register-note-source'."
   :type 'function
   :group 'refbox)
 
+(defcustom refbox-open-entry-function #'refbox-open-entry-in-file
+  "Function used by `refbox-open-entry' to open a bibliography entry."
+  :type 'function
+  :group 'refbox)
+
 (defcustom refbox-zotero-open-function #'browse-url
   "Function used to open Zotero select URLs."
   :type 'function
   :group 'refbox)
 
-(defcustom refbox-export-no-export-fields '("file")
+(defcustom refbox-bibtex-no-export-fields '("file")
   "Field names removed when exporting a local bibliography."
   :type '(repeat string)
   :group 'refbox)
@@ -466,7 +596,16 @@ when registering a note source with `refbox-register-note-source'."
   :type '(repeat string)
   :group 'refbox)
 
-(defvar refbox-reference-history nil
+(defcustom refbox-select-multiple t
+  "Whether selection helpers should read multiple references by default.
+
+When nil, `refbox-select-references' and `refbox-select-refs' use
+single-reference selection even when their MULTIPLE keyword argument
+is non-nil."
+  :type 'boolean
+  :group 'refbox)
+
+(defvar refbox-history nil
   "Minibuffer history for refbox reference selection.")
 
 (defvar refbox-autosync-mode)
@@ -478,9 +617,9 @@ when registering a note source with `refbox-register-note-source'."
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "a") #'refbox-add-file-to-library)
     (define-key map (kbd "A") #'refbox-attach-files)
-    (define-key map (kbd "b") #'refbox-insert-raw-entry)
+    (define-key map (kbd "b") #'refbox-insert-bibtex)
     (define-key map (kbd "c") #'refbox-insert-citation)
-    (define-key map (kbd "e") #'refbox-open-source)
+    (define-key map (kbd "e") #'refbox-open-entry)
     (define-key map (kbd "f") #'refbox-open-files)
     (define-key map (kbd "k") #'refbox-insert-keys)
     (define-key map (kbd "l") #'refbox-open-links)
@@ -569,6 +708,14 @@ when registering a note source with `refbox-register-note-source'."
   "Normalize FIELD for lookup against indexed bibliography fields."
   (downcase (string-trim field)))
 
+(defun refbox--crossref-field-names ()
+  "Return field names used for parent reference keys."
+  (delete-dups
+   (cl-remove-if
+    #'refbox--blank-string-p
+    (append refbox-crossref-field-names
+            (list refbox-crossref-variable)))))
+
 (defun refbox-reference-field (candidate field)
   "Return FIELD from CANDIDATE.
 
@@ -613,6 +760,43 @@ computed property such as indicators, or an indexed bibliography field."
              (refbox-reference-has-field-p candidate field))
            fields))
 
+(defun refbox-reference-entry-alist (candidate)
+  "Return CANDIDATE as a field alist suitable for data access helpers."
+  (let ((alist (list (cons "key" (refbox-reference-field candidate "key"))
+                     (cons "citekey" (refbox-reference-field candidate "key"))
+                     (cons "=key=" (refbox-reference-field candidate "key"))
+                     (cons "id" (refbox-reference-field candidate "key"))
+                     (cons "entry_type" (refbox-reference-field candidate "entry_type"))
+                     (cons "entry-type" (refbox-reference-field candidate "entry_type"))
+                     (cons "type" (refbox-reference-field candidate "entry_type"))
+                     (cons "=type=" (refbox-reference-field candidate "entry_type"))
+                     (cons "source_path" (refbox-reference-field candidate "source_path"))
+                     (cons "source-path" (refbox-reference-field candidate "source_path")))))
+    (dolist (field (refbox--candidate-fields candidate))
+      (let ((raw (refbox--field-raw-name field))
+            (lookup (refbox--field-lookup-name field))
+            (value (refbox--field-value field)))
+        (when raw
+          (push (cons raw value) alist))
+        (when (and lookup (not (equal lookup raw)))
+          (push (cons lookup value) alist))))
+    (nreverse
+     (cl-remove-if (lambda (item)
+                     (refbox--blank-string-p (cdr item)))
+                   alist))))
+
+(defun refbox--entry-alist (citekey-or-entry)
+  "Return CITEKEY-OR-ENTRY as an entry alist."
+  (cond
+   ((stringp citekey-or-entry)
+    (refbox-get-entry citekey-or-entry))
+   ((and (listp citekey-or-entry) (plist-member citekey-or-entry :key))
+    (refbox-reference-entry-alist citekey-or-entry))
+   ((and (listp citekey-or-entry)
+         (or (null citekey-or-entry) (consp (car citekey-or-entry))))
+    citekey-or-entry)
+   (t nil)))
+
 (defun refbox-reference-has-resource-kind-p (candidate kind)
   "Return non-nil when CANDIDATE has an indexed resource of KIND."
   (let ((kind (if (symbolp kind) (symbol-name kind) kind)))
@@ -640,7 +824,7 @@ computed property such as indicators, or an indexed bibliography field."
 RESOURCES, when non-nil, supplies indexed resources already
 loaded for CANDIDATE."
   (let ((names (mapcar #'refbox--field-name-normalize
-                       refbox-crossref-field-names))
+                       (refbox--crossref-field-names)))
         keys)
     (dolist (field (refbox--candidate-fields candidate))
       (let ((lookup (refbox--field-lookup-name field))
@@ -671,6 +855,12 @@ loaded for CANDIDATE."
     (cons (refbox--reference-key candidate)
           (refbox-reference-crossref-keys candidate resources)))))
 
+(defun refbox--reference-candidate (reference)
+  "Return REFERENCE as an indexed candidate plist."
+  (if (and (listp reference) (plist-member reference :key))
+      reference
+    (refbox-entry-by-key reference)))
+
 (defun refbox-reference-has-files-p (candidate)
   "Return non-nil when CANDIDATE has an associated file resource."
   (refbox-resource-file-source-has-items-p
@@ -689,20 +879,36 @@ loaded for CANDIDATE."
   (refbox-note-source-has-items-p candidate))
 
 (defun refbox-has-files ()
-  "Return a predicate matching candidates with associated files."
-  #'refbox-reference-has-files-p)
+  "Return a predicate matching references with associated files.
+
+The returned function accepts either an indexed candidate plist or a
+reference key string."
+  (lambda (reference)
+    (refbox-reference-has-files-p (refbox--reference-candidate reference))))
 
 (defun refbox-has-links ()
-  "Return a predicate matching candidates with associated links."
-  #'refbox-reference-has-links-p)
+  "Return a predicate matching references with associated links.
+
+The returned function accepts either an indexed candidate plist or a
+reference key string."
+  (lambda (reference)
+    (refbox-reference-has-links-p (refbox--reference-candidate reference))))
 
 (defun refbox-has-notes ()
-  "Return a predicate matching candidates with associated notes."
-  #'refbox-reference-has-notes-p)
+  "Return a predicate matching references with associated notes.
+
+The returned function accepts either an indexed candidate plist or a
+reference key string."
+  (lambda (reference)
+    (refbox-reference-has-notes-p (refbox--reference-candidate reference))))
 
 (defun refbox-is-cited ()
-  "Return a predicate matching candidates cited in the current buffer."
-  #'refbox-reference-cited-in-current-buffer-p)
+  "Return a predicate matching references cited in the current buffer.
+
+The returned function accepts either an indexed candidate plist or a
+reference key string."
+  (lambda (reference)
+    (refbox-reference-cited-in-current-buffer-p reference)))
 
 (defun refbox-reference-cited-in-current-buffer-p (candidate)
   "Return non-nil when CANDIDATE's key appears in the current buffer."
@@ -724,21 +930,32 @@ loaded for CANDIDATE."
   (and predicate
        (funcall predicate candidate)))
 
+(defun refbox--indicator-predicate (indicator)
+  "Return INDICATOR's cached predicate."
+  (or (refbox-indicator-compiledfunction indicator)
+      (when-let ((function (refbox-indicator-function indicator)))
+        (let ((predicate (funcall function)))
+          (setf (refbox-indicator-compiledfunction indicator) predicate)
+          predicate))))
+
+(defun refbox--indicator-text (indicator candidate)
+  "Return INDICATOR text for CANDIDATE."
+  (let* ((predicate (refbox--indicator-predicate indicator))
+         (matched (and predicate (funcall predicate candidate)))
+         (symbol (if matched
+                     (refbox-indicator-symbol indicator)
+                   (refbox-indicator-emptysymbol indicator)))
+         (padding (refbox-indicator-padding indicator)))
+    (unless (refbox--blank-string-p symbol)
+      (concat symbol (or padding "")))))
+
 (defun refbox-reference-indicators (candidate)
   "Return configured indicator text for CANDIDATE."
   (string-join
    (delq nil
-         (list
-          (when (refbox-reference-has-files-p candidate)
-            refbox-reference-resource-indicator)
-          (when (refbox-reference-has-links-p candidate)
-            refbox-reference-link-indicator)
-          (when (refbox--predicate-matches-p
-                 refbox-reference-note-predicate candidate)
-            refbox-reference-note-indicator)
-          (when (refbox--predicate-matches-p
-                 refbox-reference-cited-predicate candidate)
-            refbox-reference-cited-indicator)))
+         (mapcar (lambda (indicator)
+                   (refbox--indicator-text indicator candidate))
+                 refbox-indicators))
    ""))
 
 (defun refbox-template-clean (value)
@@ -752,12 +969,32 @@ loaded for CANDIDATE."
       (setq text (string-trim (substring text 1 -1))))
     (replace-regexp-in-string "[[:space:]\n\r\t]+" " " text)))
 
+(defun refbox-template-author (value)
+  "Return VALUE cleaned and propertized as an author/editor."
+  (propertize (refbox-template-clean value) 'face 'refbox-author))
+
+(defun refbox-template-title (value)
+  "Return VALUE cleaned and propertized as a title."
+  (propertize (refbox-template-clean value) 'face 'refbox-title))
+
+(defun refbox-template-journal (value)
+  "Return VALUE cleaned and propertized as a journal/container."
+  (propertize (refbox-template-clean value) 'face 'refbox-journal))
+
+(defun refbox-template-tags (value)
+  "Return VALUE cleaned and propertized as tags or keywords."
+  (propertize (refbox-template-clean value) 'face 'refbox-tags))
+
 (defun refbox-template-year (value)
   "Return the first four-digit year found in VALUE."
   (let ((text (format "%s" (or value ""))))
     (if (string-match "[0-9][0-9][0-9][0-9]" text)
         (match-string 0 text)
       text)))
+
+(defun refbox-template-year-face (value)
+  "Return VALUE reduced to a year and propertized as a year."
+  (propertize (refbox-template-year value) 'face 'refbox-year))
 
 (defun refbox-template--parse-field (body)
   "Parse placeholder BODY into a field token."
@@ -829,7 +1066,7 @@ loaded for CANDIDATE."
             width
             nil
             nil
-            refbox-template-ellipsis)))
+            refbox-ellipsis)))
       (if (< (string-width truncated) width)
           (string-pad truncated width)
         truncated))))
@@ -871,29 +1108,43 @@ loaded for CANDIDATE."
              ((eq field-width '*) star-width)
              ((integerp field-width) field-width)
              (t nil)))))
-       rendered
-       ""))))
+	       rendered
+	       ""))))
+
+(defun refbox--template (name fallback)
+  "Return configured template NAME or FALLBACK."
+  (or (alist-get name refbox-templates)
+      fallback))
 
 (defun refbox-reference-format-main (candidate &optional width)
   "Return the main display string for CANDIDATE."
   (string-trim-right
    (refbox-template-format
-    refbox-reference-main-template
+    (refbox--template 'main refbox-reference-main-template)
     candidate
     (or width refbox-reference-display-width))))
 
 (defun refbox-reference-format-suffix (candidate &optional width)
   "Return the suffix display string for CANDIDATE."
   (string-trim-right
-   (refbox-template-format refbox-reference-suffix-template candidate width)))
+   (refbox-template-format
+    (refbox--template 'suffix refbox-reference-suffix-template)
+    candidate
+    width)))
 
 (defun refbox-reference-format-preview (candidate &optional width)
   "Return the preview display string for CANDIDATE."
-  (refbox-template-format refbox-reference-preview-template candidate width))
+  (refbox-template-format
+   (refbox--template 'preview refbox-reference-preview-template)
+   candidate
+   width))
 
 (defun refbox-reference-format-note (candidate &optional width)
   "Return note-oriented display text for CANDIDATE."
-  (refbox-template-format refbox-reference-note-template candidate width))
+  (refbox-template-format
+   (refbox--template 'note refbox-reference-note-template)
+   candidate
+   width))
 
 (defconst refbox-search--tag-resource-kinds
   '(("has:file" . ("file"))
@@ -984,6 +1235,131 @@ bibliography source files."
         (refbox-search--post-filter entries post-filter-tags requested-limit)
       entries)))
 
+(defun refbox-list-references (&optional limit offset)
+  "Return indexed reference candidates from OFFSET up to LIMIT.
+
+This is a paged enumeration API for explicit whole-corpus callers;
+interactive search paths should use `refbox-search-references'."
+  (let* ((params (append (when limit (list :limit limit))
+                         (when offset (list :offset offset))))
+         (response (refbox-rpc-request refbox-rpc-method-list-entries params)))
+    (refbox--listify (plist-get response :entries))))
+
+(defun refbox-entry-by-key (reference)
+  "Return the indexed reference candidate for REFERENCE.
+
+REFERENCE may be a key string or a candidate plist carrying both key
+and source path."
+  (let* ((resolved (refbox-rpc-request
+                    refbox-rpc-method-entry-by-key
+                    (refbox--reference-rpc-params reference)))
+         (key (plist-get resolved :key))
+         (source-path (plist-get resolved :source_path))
+         (candidates (refbox-search-references
+                      key
+                      refbox-search-maximum-limit
+                      (and source-path (list source-path)))))
+    (or (cl-find-if (lambda (candidate)
+                      (and (equal (refbox-reference-field candidate "key") key)
+                           (or (not source-path)
+                               (equal (refbox-reference-field candidate "source_path")
+                                      source-path))))
+                    candidates)
+        (append resolved (list :score 0.0 :fields nil :resources nil)))))
+
+(defun refbox-get-entry (reference)
+  "Return REFERENCE as a bibliography entry alist."
+  (refbox-reference-entry-alist (refbox-entry-by-key reference)))
+
+(defun refbox-get-entries (&optional limit)
+  "Return a hash table of indexed bibliography entries.
+
+When LIMIT is non-nil, return at most that many entries.  Without
+LIMIT, enumerate the full index in daemon-sized pages."
+  (let ((entries (make-hash-table :test 'equal))
+        (remaining limit)
+        (offset 0)
+        (page-size refbox-search-maximum-limit)
+        page)
+    (while (and (or (null remaining) (> remaining 0))
+                (setq page (refbox-list-references
+                            (if remaining (min page-size remaining) page-size)
+                            offset)))
+      (dolist (candidate page)
+        (puthash (refbox-reference-field candidate "key")
+                 (refbox-reference-entry-alist candidate)
+                 entries))
+      (setq offset (+ offset (length page)))
+      (when remaining
+        (setq remaining (- remaining (length page)))))
+    entries))
+
+(defun refbox--all-reference-candidates (&optional limit)
+  "Return indexed reference candidates, optionally bounded by LIMIT."
+  (let ((remaining limit)
+        (offset 0)
+        (page-size refbox-search-maximum-limit)
+        candidates
+        page)
+    (while (and (or (null remaining) (> remaining 0))
+                (setq page (refbox-list-references
+                            (if remaining (min page-size remaining) page-size)
+                            offset)))
+      (setq candidates (nconc candidates page)
+            offset (+ offset (length page)))
+      (when remaining
+        (setq remaining (- remaining (length page)))))
+    candidates))
+
+(defun refbox--resource-reference-candidates
+    (reference-or-references supplied-p)
+  "Return candidates for resource APIs.
+
+When REFERENCE-OR-REFERENCES is omitted, enumerate the full index.
+When it is explicitly nil, return nil."
+  (cond
+   ((and supplied-p (null reference-or-references))
+    nil)
+   ((not supplied-p)
+    (refbox--all-reference-candidates))
+   ((and (listp reference-or-references)
+         (plist-member reference-or-references :key))
+    (list reference-or-references))
+   ((listp reference-or-references)
+    (mapcar #'refbox--reference-candidate
+            (delete-dups (copy-sequence reference-or-references))))
+   (t
+    (list (refbox--reference-candidate reference-or-references)))))
+
+(defun refbox-get-value (field reference-or-entry)
+  "Return FIELD value from REFERENCE-OR-ENTRY."
+  (cdr (assoc-string (format "%s" field)
+                     (refbox--entry-alist reference-or-entry)
+                     'case-fold)))
+
+(defun refbox-get-field-with-value (fields reference-or-entry)
+  "Return the first field/value pair from FIELDS in REFERENCE-OR-ENTRY."
+  (let ((entry (refbox--entry-alist reference-or-entry)))
+    (seq-some (lambda (field)
+                (when-let ((value (cdr (assoc-string (format "%s" field)
+                                                     entry
+                                                     'case-fold))))
+                  (cons field value)))
+              fields)))
+
+(defun refbox-get-display-value (fields reference-or-entry &optional transform)
+  "Return the first display value for FIELDS in REFERENCE-OR-ENTRY.
+
+When TRANSFORM is non-nil, it is a list whose car is a function and
+whose cdr is passed as additional arguments."
+  (let* ((field-value (refbox-get-field-with-value fields reference-or-entry))
+         (function (car transform))
+         (arguments (cdr transform))
+         (value (if transform
+                    (apply function (cdr field-value) arguments)
+                  (cdr field-value))))
+    (or value "")))
+
 (defconst refbox-capf--key-chars "[:alnum:]_:.#$%&+?<>~/=-"
   "Characters treated as part of citation keys during CAPF detection.")
 
@@ -1048,7 +1424,7 @@ bibliography source files."
      ((eq action 'metadata)
       '(metadata
         (category . refbox-reference)
-        (annotation-function . refbox--completion-annotation)
+        (annotation-function . refbox-capf-annotate)
         (affixation-function . refbox--completion-affixation)))
      (t
       (let ((candidates (refbox--completion-filter
@@ -1068,6 +1444,16 @@ bibliography source files."
          ((null (cdr candidates)) (car candidates))
          (t string)))))))
 
+(defun refbox-capf-annotate (citekey)
+  "Return a completion annotation for CITEKEY."
+  (let ((candidate
+         (or (get-text-property 0 'refbox-candidate citekey)
+             (ignore-errors
+               (refbox-entry-by-key (substring-no-properties citekey))))))
+    (if candidate
+        (concat " " (refbox-reference-format-suffix candidate))
+      "")))
+
 (defun refbox-capf-at-bounds (bounds &optional source-paths)
   "Return CAPF data for BOUNDS using optional SOURCE-PATHS."
   (when bounds
@@ -1078,7 +1464,7 @@ bibliography source files."
           :exclusive 'no)))
 
 ;;;###autoload
-(defun refbox-completion-at-point ()
+(defun refbox-capf ()
   "Return reference completion data at supported citation contexts."
   (cond
    ((and (derived-mode-p 'org-mode)
@@ -1092,11 +1478,11 @@ bibliography source files."
     (refbox-markdown-completion-at-point))))
 
 ;;;###autoload
-(defun refbox-setup-capf ()
+(defun refbox-capf-setup ()
   "Enable refbox completion at point in the current buffer."
   (interactive)
   (add-hook 'completion-at-point-functions
-            #'refbox-completion-at-point
+            #'refbox-capf
             nil
             t))
 
@@ -1181,7 +1567,7 @@ bibliography source files."
                  (user-error "refbox file parser is not defined: %s" parser))
                (mapcar #'refbox-resource--clean-value
                        (or (funcall parser value) nil)))
-             refbox-resource-file-parser-functions)))))
+             refbox-file-parser-functions)))))
 
 (defun refbox-resource--normalize-extensions (extensions)
   "Return normalized EXTENSIONS."
@@ -1217,8 +1603,8 @@ bibliography source files."
 (defun refbox-resource--library-dirs ()
   "Return configured library directories."
   (refbox-resource--directory-list
-   refbox-resource-library-paths
-   refbox-resource-library-paths-recursive))
+   refbox-library-paths
+   refbox-library-paths-recursive))
 
 (defun refbox-resource--source-dirs (candidate resources)
   "Return bibliography source directories for CANDIDATE and RESOURCES."
@@ -1312,7 +1698,7 @@ callable."
 
 (defun refbox-resource-file-source-indexed-items (candidate resources)
   "Return files declared by indexed resources for CANDIDATE."
-  (let* ((extensions refbox-resource-library-file-extensions)
+  (let* ((extensions refbox-library-file-extensions)
          (field-files
           (cl-loop
            for resource in resources
@@ -1352,18 +1738,18 @@ callable."
   (refbox-resource--files-for-keys
    (refbox-reference-related-keys candidate resources)
    (refbox-resource--library-dirs)
-   refbox-resource-library-file-extensions
-   refbox-resource-additional-file-separator))
+   refbox-library-file-extensions
+   refbox-file-additional-files-separator))
 
 (defun refbox-resource-file-source-library-has-items (candidate resources)
   "Return non-nil when CANDIDATE has files in configured library paths."
   (not (null (refbox-resource-file-source-library-items candidate resources))))
 
 (defun refbox-resource-file-source-items (candidate resources)
-  "Return file items from `refbox-resource-file-sources'."
+  "Return file items from `refbox-file-sources'."
   (delete-dups
    (cl-loop
-    for source in refbox-resource-file-sources
+    for source in refbox-file-sources
     append
     (refbox--listify
      (funcall
@@ -1385,7 +1771,7 @@ callable."
            (refbox-resource-file-source--function source :items t)
            candidate
            resources))))))
-   refbox-resource-file-sources))
+   refbox-file-sources))
 
 (cl-defun refbox-reference-files
     (candidate &optional (resources nil resources-supplied-p))
@@ -1401,7 +1787,7 @@ callable."
   (let* ((kind-name (refbox--resource-kind resource))
          (kind (and (not (refbox--blank-string-p kind-name))
                     (intern kind-name)))
-         (template (alist-get kind refbox-resource-link-templates))
+         (template (alist-get kind refbox-link-fields))
          (value (refbox-resource--clean-value (refbox--resource-value resource))))
     (when (and template (not (string-empty-p value)))
       (if (or (eq kind 'url)
@@ -1420,7 +1806,7 @@ callable."
 
 (defun refbox-note--directories ()
   "Return configured note directories."
-  (refbox-resource--directory-list refbox-note-paths nil))
+  (refbox-resource--directory-list refbox-notes-paths nil))
 
 (defun refbox-note-files (key)
   "Return existing note files for KEY."
@@ -1431,8 +1817,8 @@ callable."
   (refbox-resource--files-for-keys
    keys
    (refbox-note--directories)
-   refbox-note-file-extensions
-   refbox-resource-additional-file-separator))
+   refbox-file-note-extensions
+   refbox-file-additional-files-separator))
 
 (defun refbox-note-source-file-all-items ()
   "Return all file-backed note items from configured note directories."
@@ -1445,7 +1831,7 @@ callable."
        when (and (file-regular-p file)
                  (refbox-resource--extension-allowed-p
                   file
-                  refbox-note-file-extensions))
+                  refbox-file-note-extensions))
        collect file))
     (refbox-note--directories))))
 
@@ -1457,18 +1843,18 @@ callable."
   "Return the existing or default note filename for KEY."
   (when (refbox--blank-string-p key)
     (user-error "Reference candidate has no key"))
-  (unless refbox-note-paths
-    (user-error "`refbox-note-paths' must contain at least one directory"))
-  (unless refbox-note-file-extensions
-    (user-error "`refbox-note-file-extensions' must contain at least one extension"))
+  (unless refbox-notes-paths
+    (user-error "`refbox-notes-paths' must contain at least one directory"))
+  (unless refbox-file-note-extensions
+    (user-error "`refbox-file-note-extensions' must contain at least one extension"))
   (or (car (refbox-note-files key))
       (expand-file-name
        (format "%s.%s"
                (refbox-note--filename-key key)
-               (string-remove-prefix "." (car refbox-note-file-extensions)))
-       (car refbox-note-paths))))
+               (string-remove-prefix "." (car refbox-file-note-extensions)))
+       (car refbox-notes-paths))))
 
-(defun refbox-note-default-content (key candidate)
+(defun refbox-org-format-note-default (key candidate)
   "Return default note content for KEY and CANDIDATE."
   (let ((title (string-trim (refbox-reference-format-note candidate))))
     (if (string-empty-p title)
@@ -1476,9 +1862,9 @@ callable."
       (format "#+title: %s\n\n" title))))
 
 (defun refbox-note-source--plist ()
-  "Return the configured plist for `refbox-note-source'."
-  (or (alist-get refbox-note-source refbox-note-sources)
-      (user-error "Unknown refbox note source: %s" refbox-note-source)))
+  "Return the configured plist for `refbox-notes-source'."
+  (or (alist-get refbox-notes-source refbox-notes-sources)
+      (user-error "Unknown refbox note source: %s" refbox-notes-source)))
 
 (defconst refbox-note-source--required-properties
   '(:items :open)
@@ -1523,16 +1909,16 @@ callable."
               :warning))))
   name)
 
-(defun refbox-register-note-source (name config)
+(defun refbox-register-notes-source (name config)
   "Register note source NAME with CONFIG."
   (refbox-note-source-validate name config)
-  (setf (alist-get name refbox-note-sources) config)
+  (setf (alist-get name refbox-notes-sources) config)
   name)
 
-(defun refbox-remove-note-source (name)
-  "Remove note source NAME from `refbox-note-sources'."
-  (setq refbox-note-sources
-        (assq-delete-all name refbox-note-sources))
+(defun refbox-remove-notes-source (name)
+  "Remove note source NAME from `refbox-notes-sources'."
+  (setq refbox-notes-sources
+        (assq-delete-all name refbox-notes-sources))
   name)
 
 (defun refbox-note-source--function (property)
@@ -1540,7 +1926,7 @@ callable."
   (let ((function (plist-get (refbox-note-source--plist) property)))
     (unless (functionp function)
       (user-error "refbox note source %s has no callable %s"
-                  refbox-note-source property))
+                  refbox-notes-source property))
     function))
 
 (defun refbox-note-source--display (item)
@@ -1562,7 +1948,7 @@ callable."
 
 (defun refbox-note-source-file-open (item)
   "Open file-backed note ITEM."
-  (refbox--open-target refbox-note-open-function item))
+  (refbox--open-target refbox-open-note-function item))
 
 (defun refbox-note-source-file-create-label (key _reference)
   "Return the file-backed create target label for KEY."
@@ -1573,9 +1959,9 @@ callable."
   (let* ((file (refbox-note-filename key))
          (exists (file-exists-p file)))
     (make-directory (file-name-directory file) t)
-    (funcall refbox-note-open-function file)
+    (funcall refbox-open-note-function file)
     (unless exists
-      (when-let* ((content-function refbox-note-content-function)
+      (when-let* ((content-function refbox-note-format-function)
                   (content (funcall content-function key reference)))
         (when (and (stringp content)
                    (not (string-empty-p content))
@@ -1591,6 +1977,61 @@ callable."
     (unless (refbox--blank-string-p key)
       (refbox--listify
        (funcall (refbox-note-source--function :items) key reference)))))
+
+(defun refbox--resource-table (candidates items-function)
+  "Return a hash table of resource ITEMS-FUNCTION values for CANDIDATES."
+  (let ((table (make-hash-table :test 'equal)))
+    (dolist (candidate candidates)
+      (let* ((key (refbox--reference-key candidate))
+             (items (and key (refbox--listify
+                              (funcall items-function candidate)))))
+        (when items
+          (puthash key items table))))
+    table))
+
+(cl-defun refbox-get-files
+    (&optional (reference-or-references nil supplied-p))
+  "Return files associated with REFERENCE-OR-REFERENCES.
+
+REFERENCE-OR-REFERENCES may be a single reference key, an indexed
+candidate, or a list of reference keys.  Return a hash table mapping
+keys to non-empty file lists.  When REFERENCE-OR-REFERENCES is omitted,
+enumerate all indexed references; when it is explicitly nil, return nil."
+  (when (or reference-or-references (not supplied-p))
+    (refbox--resource-table
+     (refbox--resource-reference-candidates
+      reference-or-references supplied-p)
+     (lambda (candidate)
+       (refbox-reference-files candidate (refbox--candidate-resources candidate))))))
+
+(cl-defun refbox-get-links
+    (&optional (reference-or-references nil supplied-p))
+  "Return links associated with REFERENCE-OR-REFERENCES.
+
+REFERENCE-OR-REFERENCES may be a single reference key, an indexed
+candidate, or a list of reference keys.  Return a hash table mapping
+keys to non-empty link lists.  When REFERENCE-OR-REFERENCES is omitted,
+enumerate all indexed references; when it is explicitly nil, return nil."
+  (when (or reference-or-references (not supplied-p))
+    (refbox--resource-table
+     (refbox--resource-reference-candidates
+      reference-or-references supplied-p)
+     (lambda (candidate)
+       (refbox-reference-links candidate (refbox--candidate-resources candidate))))))
+
+(cl-defun refbox-get-notes
+    (&optional (reference-or-references nil supplied-p))
+  "Return notes associated with REFERENCE-OR-REFERENCES.
+
+REFERENCE-OR-REFERENCES may be a single reference key, an indexed
+candidate, or a list of reference keys.  Return a hash table mapping
+keys to non-empty note lists.  When REFERENCE-OR-REFERENCES is omitted,
+enumerate all indexed references; when it is explicitly nil, return nil."
+  (when (or reference-or-references (not supplied-p))
+    (refbox--resource-table
+     (refbox--resource-reference-candidates
+      reference-or-references supplied-p)
+     #'refbox-note-source-items)))
 
 (defun refbox-note-source-all-items ()
   "Return all items from the active note source."
@@ -1676,18 +2117,18 @@ single choice is accepted without prompting."
   (funcall function target)
   target)
 
-(defun refbox-resource-open-file (file)
+(defun refbox-file-open (file)
   "Open FILE using the configured resource opener."
   (let* ((extension (file-name-extension file))
          (function (and extension
                         (alist-get (downcase extension)
-                                   refbox-resource-open-file-functions
+                                   refbox-file-open-functions
                                    nil nil #'equal))))
     (refbox--open-target
-     (or function refbox-resource-open-file-function)
+     (or function refbox-file-open-function)
      file)))
 
-(defun refbox-resource-open-file-externally (file)
+(defun refbox-file-open-external (file)
   "Open FILE using the platform's external file opener."
   (let ((file (expand-file-name file)))
     (if (and (eq system-type 'windows-nt)
@@ -1790,8 +2231,8 @@ COMMAND controls `refbox-open-always-create-notes'."
   "Open resource CHOICE and return its target."
   (let ((target (plist-get choice :target)))
     (pcase (plist-get choice :type)
-      ('file (refbox-resource-open-file target))
-      ('link (refbox--open-target refbox-resource-open-link-function target))
+      ('file (refbox-file-open target))
+      ('link (refbox--open-target refbox-link-open-function target))
       ('note (refbox-note-source-open target))
       ('create-note (refbox-create-note (plist-get choice :reference)))
       (_ (user-error "Unknown refbox resource type: %S"
@@ -1937,6 +2378,16 @@ COMMAND controls `refbox-open-always-create-notes'."
         (move-to-column (max 0 (1- column)))))
     location))
 
+;;;###autoload
+(defun refbox-open-entry (&optional reference)
+  "Open REFERENCE's bibliography entry using `refbox-open-entry-function'."
+  (interactive)
+  (funcall refbox-open-entry-function (or reference (refbox-read-reference))))
+
+(defun refbox-open-entry-in-file (&optional reference)
+  "Open REFERENCE's bibliography entry at its indexed source location."
+  (refbox-open-source reference))
+
 (defun refbox-zotero-url (reference)
   "Return a Zotero select URL for REFERENCE."
   (format "zotero://select/items/@%s" (refbox--reference-key reference)))
@@ -1947,6 +2398,10 @@ COMMAND controls `refbox-open-always-create-notes'."
   (interactive)
   (let ((reference (or reference (refbox-read-reference))))
     (funcall refbox-zotero-open-function (refbox-zotero-url reference))))
+
+(defun refbox-open-entry-in-zotero (&optional reference)
+  "Open REFERENCE in Zotero using its citation key."
+  (refbox-open-in-zotero reference))
 
 (defun refbox-raw-entry (reference)
   "Return raw bibliography entry text for REFERENCE."
@@ -2025,8 +2480,27 @@ COMMAND controls `refbox-open-always-create-notes'."
               (let ((end (refbox--raw-entry-field-end)))
                 (delete-region begin end)
                 (goto-char begin))
-            (goto-char (refbox--raw-entry-field-end)))))
+              (goto-char (refbox--raw-entry-field-end)))))
       (string-trim-right (buffer-string)))))
+
+;;;###autoload
+(defun refbox-insert-bibtex (&optional references)
+  "Insert BibTeX entries for REFERENCES.
+
+Fields listed in `refbox-bibtex-no-export-fields' are removed before
+insertion."
+  (interactive)
+  (let ((references (refbox--reference-list references)))
+    (unless references
+      (user-error "No references selected"))
+    (insert
+     (string-join
+      (mapcar (lambda (reference)
+                (refbox-raw-entry-remove-fields
+                 (refbox-raw-entry reference)
+                 refbox-bibtex-no-export-fields))
+              references)
+      "\n\n"))))
 
 (defun refbox--generic-citation-keys ()
   "Return unique @KEY-style citation keys in the current buffer."
@@ -2188,7 +2662,7 @@ ARG is passed to the adapter command."
     (cond
      (references
       (refbox-run-default-action references))
-     ((eq refbox-at-point-fallback 'prompt)
+     ((memq refbox-at-point-fallback '(prompt t))
       (refbox-run-default-action nil))
      (t
       (user-error "No citation keys found")))))
@@ -2213,7 +2687,7 @@ ARG is passed to the adapter command."
         (mapcar (lambda (key)
                   (refbox-raw-entry-remove-fields
                    (refbox-raw-entry key)
-                   refbox-export-no-export-fields))
+                   refbox-bibtex-no-export-fields))
                 keys)
         "\n\n"))
       (insert "\n"))
@@ -2224,7 +2698,7 @@ ARG is passed to the adapter command."
   (let ((extension
          (or (when-let ((file (car (refbox-local-bibliography-files))))
                (file-name-extension file))
-             (when-let ((file (car refbox-bibliography-files)))
+             (when-let ((file (car refbox-bibliography)))
                (file-name-extension file))
              (car refbox-bibliography-extensions)
              "bib")))
@@ -2244,6 +2718,12 @@ ARG is passed to the adapter command."
                             (file-name-directory buffer-file-name))
                        default-directory)))))
     (refbox-export-bibliography file)))
+
+;;;###autoload
+(defun refbox-export-local-bib-file (&optional file)
+  "Export the current buffer's citations to a local bibliography file."
+  (interactive)
+  (refbox-export-local-bibliography file))
 
 (defun refbox-csl--directories (dirs)
   "Return existing CSL DIRS."
@@ -2404,17 +2884,21 @@ ARG is passed to the adapter command."
                   (plist-get item :text))
                 (refbox--listify (plist-get response :references)))))))
 
+(defun refbox-format-reference (references)
+  "Return formatted reference text for REFERENCES."
+  (string-join (refbox-format-references references) "\n\n"))
+
 ;;;###autoload
 (defun refbox-insert-reference (&optional references)
   "Insert formatted references for REFERENCES."
   (interactive)
-  (insert (string-join (refbox-format-references references) "\n\n")))
+  (insert (refbox-format-reference references)))
 
 ;;;###autoload
 (defun refbox-copy-reference (&optional references)
   "Copy formatted references for REFERENCES to the kill ring."
   (interactive)
-  (let ((text (string-join (refbox-format-references references) "\n\n")))
+  (let ((text (refbox-format-reference references)))
     (kill-new text)
     (when (called-interactively-p 'interactive)
       (message "refbox: copied formatted reference%s"
@@ -2433,9 +2917,9 @@ ARG is passed to the adapter command."
 
 (defun refbox-library--primary-directory ()
   "Return a library destination directory, creating it if needed."
-  (unless refbox-resource-library-paths
-    (user-error "`refbox-resource-library-paths' must contain at least one directory"))
-  (dolist (directory refbox-resource-library-paths)
+  (unless refbox-library-paths
+    (user-error "`refbox-library-paths' must contain at least one directory"))
+  (dolist (directory refbox-library-paths)
     (make-directory (file-name-as-directory (expand-file-name directory)) t))
   (let* ((directories (refbox-resource--library-dirs))
          (directory (if (cdr directories)
@@ -2694,7 +3178,7 @@ control completion and validation."
                      (refbox--completion-predicate predicate)
                      (not allow-empty)
                      preset
-                     'refbox-reference-history
+                     'refbox-history
                      refbox-presets))
          (selection-key (substring-no-properties selection)))
     (cond
@@ -2863,6 +3347,66 @@ tracked files are renamed or deleted through Emacs."
     (advice-remove #'vc-delete-file #'refbox--autosync-delete-file-a)
     (dolist (buffer (buffer-list))
       (refbox--autosync-setup-buffer buffer))))
+
+;;;###autoload
+(cl-defun refbox-select-references (&key (multiple t) filter preset limit source-paths)
+  "Select references from the indexed bibliography.
+
+When MULTIPLE is non-nil, return a list of candidates.  Otherwise
+return a single candidate.  FILTER, when non-nil, is called with
+each candidate and should return non-nil for selectable references."
+  (interactive)
+  (let ((selected
+         (if (and multiple refbox-select-multiple)
+             (refbox-read-references "References: " preset limit filter source-paths)
+           (refbox-read-reference "Reference: " preset limit filter source-paths))))
+    (when (called-interactively-p 'interactive)
+      (let ((count (cond
+                    ((null selected) 0)
+                    ((and (listp selected) (plist-member selected :key)) 1)
+                    ((listp selected) (length selected))
+                    (t 1))))
+        (message "refbox: selected %d reference%s"
+                 count
+                 (if (= count 1) "" "s"))))
+    selected))
+
+;;;###autoload
+(cl-defun refbox-select-reference (&key filter preset limit source-paths)
+  "Select and return one reference from the indexed bibliography."
+  (interactive)
+  (refbox-select-references
+   :multiple nil
+   :filter filter
+   :preset preset
+   :limit limit
+   :source-paths source-paths))
+
+;;;###autoload
+(cl-defun refbox-select-refs (&key (multiple t) filter preset limit source-paths)
+  "Select reference keys from the indexed bibliography.
+
+FILTER, when non-nil, is called with each candidate key."
+  (mapcar #'refbox--reference-key
+          (refbox--reference-list
+           (refbox-select-references
+            :multiple multiple
+            :filter (when filter
+                      (lambda (candidate)
+                        (funcall filter (refbox--reference-key candidate))))
+            :preset preset
+            :limit limit
+            :source-paths source-paths))))
+
+;;;###autoload
+(cl-defun refbox-select-ref (&key filter preset limit source-paths)
+  "Select and return one reference key from the indexed bibliography."
+  (car (refbox-select-refs
+        :multiple nil
+        :filter filter
+        :preset preset
+        :limit limit
+        :source-paths source-paths)))
 
 ;;;###autoload
 (defun refbox-read-reference (&optional prompt preset limit predicate source-paths)

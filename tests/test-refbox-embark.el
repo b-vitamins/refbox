@@ -66,12 +66,16 @@
     (should (memq #'refbox-embark-target-citation-at-point
                   embark-target-finders))
     (should (eq (cdr (assq 'refbox-reference embark-keymap-alist))
-                'refbox-embark-reference-map))
+                'refbox-embark-map))
     (should (eq (cdr (assq 'refbox-citation embark-keymap-alist))
                 'refbox-embark-citation-map))
-    (should (eq (lookup-key refbox-embark-reference-map (kbd "s"))
+    (should (eq (lookup-key refbox-embark-map (kbd "s"))
                 #'refbox-embark-open-source))
-    (should (eq (lookup-key refbox-embark-reference-map (kbd "C"))
+    (should (eq (lookup-key refbox-embark-map (kbd "e"))
+                #'refbox-embark-open-entry))
+    (should (eq (lookup-key refbox-embark-map (kbd "b"))
+                #'refbox-embark-insert-bibtex))
+    (should (eq (lookup-key refbox-embark-map (kbd "C"))
                 #'refbox-embark-copy-references))
     (should (memq #'refbox-embark-copy-references
                   embark-multitarget-actions))))
@@ -109,6 +113,29 @@
       (should (equal (car calls)
                      (list :key "alpha"
                            :source_path "/tmp/refs.bib"))))))
+
+(ert-deftest refbox-embark-test-entry_actions-use-stable-reference_identity ()
+  "Entry-oriented actions should pass stable reference plists."
+  (let ((target (refbox-embark--target-string
+                 (list :key "alpha" :source_path "/tmp/refs.bib")))
+        calls)
+    (cl-letf (((symbol-function 'refbox-open-entry)
+               (lambda (reference)
+                 (push (list :open reference) calls)
+                 :opened))
+              ((symbol-function 'refbox-insert-bibtex)
+               (lambda (references)
+                 (push (list :insert references) calls)
+                 :inserted)))
+      (should (eq (refbox-embark-open-entry target) :opened))
+      (should (eq (refbox-embark-insert-bibtex target) :inserted))
+      (should (equal (nreverse calls)
+                     (list
+                      (list :open (list :key "alpha"
+                                        :source_path "/tmp/refs.bib"))
+                      (list :insert
+                            (list (list :key "alpha"
+                                        :source_path "/tmp/refs.bib")))))))))
 
 (ert-deftest refbox-embark-test-multitarget-copy-is-bounded_and_explicit ()
   "The explicit multi-target copy action should enforce its target cap."

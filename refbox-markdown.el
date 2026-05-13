@@ -45,7 +45,7 @@
   :group 'refbox
   :prefix "refbox-markdown-")
 
-(defcustom refbox-markdown-prompt-for-affixes nil
+(defcustom refbox-markdown-prompt-for-extra-arguments nil
   "When non-nil, prompt for citation prefix and suffix text."
   :type 'boolean
   :group 'refbox-markdown)
@@ -93,7 +93,7 @@
 
 (defun refbox-markdown--read-affixes ()
   "Read or return configured Markdown citation affixes."
-  (if refbox-markdown-prompt-for-affixes
+  (if refbox-markdown-prompt-for-extra-arguments
       (let ((prefix (read-string "Citation prefix: "))
             (suffix (read-string "Citation suffix: ")))
         (cons (unless (string-empty-p prefix) prefix)
@@ -264,6 +264,12 @@ citation instead of replacing it."
                  keys
                  (car affixes)
                  (cdr affixes)))))))
+
+;;;###autoload
+(defun refbox-markdown-insert-edit (&optional arg)
+  "Insert or edit a Markdown citation at point."
+  (interactive "P")
+  (refbox-markdown-insert-citation arg))
 
 ;;;###autoload
 (defun refbox-markdown-list-keys (&optional buffer)

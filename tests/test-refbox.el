@@ -304,6 +304,26 @@
             (refbox-dwim)
             (should (equal default-action-refs '("alpha" "beta")))))))))
 
+(ert-deftest refbox-test-dwim_boolean_fallback_prompts_for_references ()
+  "A non-nil at-point fallback should prompt before the default action."
+  (let (default-action-refs)
+    (cl-letf (((symbol-function 'refbox-key-at-point)
+               (lambda () nil))
+              ((symbol-function 'refbox-citation-at-point)
+               (lambda () nil))
+              ((symbol-function 'refbox-read-references)
+               (lambda (&rest _args)
+                 (list (list :key "alpha")))))
+      (let ((refbox-at-point-fallback t)
+            (refbox-default-action
+             (lambda (references)
+               (setq default-action-refs references))))
+        (refbox-dwim)
+        (should (equal (mapcar (lambda (reference)
+                                 (plist-get reference :key))
+                               default-action-refs)
+                       '("alpha")))))))
+
 (defconst refbox-test-reference-candidate
   '(:key "smith2020"
     :source_path "refs/main.bib"
@@ -343,11 +363,31 @@
 
 (ert-deftest refbox-test-template-formatting-supports_configured_ellipsis ()
   "Template field truncation should support a configured ellipsis marker."
-  (let ((refbox-template-ellipsis "..."))
+  (let ((refbox-ellipsis "..."))
     (should (equal (refbox-template-format
                     "%{title:10!refbox-template-clean}"
                     refbox-test-reference-candidate)
                    "Alpha R..."))))
+
+(ert-deftest refbox-test-template-formatting_supports_template_alist ()
+  "Template alists should configure the standard reference display slots."
+  (let ((refbox-templates
+         '((main . "%{key}")
+           (suffix . "%{entry_type}")
+           (preview . "%{title!refbox-template-clean}")
+           (note . "%{author!refbox-template-clean}"))))
+    (should (equal (refbox-reference-format-main
+                    refbox-test-reference-candidate)
+                   "smith2020"))
+    (should (equal (refbox-reference-format-suffix
+                    refbox-test-reference-candidate)
+                   "article"))
+    (should (equal (refbox-reference-format-preview
+                    refbox-test-reference-candidate)
+                   "Alpha Reference Title"))
+    (should (equal (refbox-reference-format-note
+                    refbox-test-reference-candidate)
+                   "Smith, Jane"))))
 
 (ert-deftest refbox-test-completion-candidates-carry_metadata ()
   "Completion candidates should come from bounded RPC search and carry metadata."
@@ -374,10 +414,10 @@
         (should (string-match-p "smith2020" candidate-string))
         (should (equal (plist-get candidate :key) "smith2020"))
         (should (string-match-p
-                 "F@ article main\\.bib"
+                 "F @ +article main\\.bib"
                  annotation))
         (should (string-match-p
-                 "F@ article main\\.bib"
+                 "F @ +article main\\.bib"
                  (nth 2 affixation)))))))
 
 (ert-deftest refbox-test-search-tags-use_daemon_resource_filters ()
@@ -436,6 +476,49 @@
         (should (equal (plist-get selected :source_path) "refs/main.bib"))
         (should (equal (cadar calls) (list :query "smith" :limit 3)))))))
 
+(ert-deftest refbox-test-list-references-uses-paged-rpc ()
+  "Whole-corpus enumeration should use the daemon's paged list method."
+  (let (calls)
+    (cl-letf (((symbol-function 'refbox-rpc-request)
+               (lambda (method params)
+                 (push (list method params) calls)
+                 (should (equal method refbox-rpc-method-list-entries))
+                 (list :entries (list refbox-test-reference-candidate)))))
+      (let ((entries (refbox-list-references 25 50)))
+        (should (equal (plist-get (car entries) :key) "smith2020"))
+        (should (equal (cadar calls) (list :limit 25 :offset 50)))))))
+
+(ert-deftest refbox-test-entry-field-accessors-return_entry_alists ()
+  "Entry lookup helpers should expose field values for extension code."
+  (let (calls)
+    (cl-letf (((symbol-function 'refbox-rpc-request)
+               (lambda (method params)
+                 (push (list method params) calls)
+                 (cond
+                  ((equal method refbox-rpc-method-entry-by-key)
+                   (should (equal params (list :key "smith2020")))
+                   '(:key "smith2020"
+                     :source_path "refs/main.bib"
+                     :entry_type "article"))
+                  ((equal method refbox-rpc-method-search-entries)
+                   (should (equal (plist-get params :source_paths)
+                                  (vector (expand-file-name "refs/main.bib"))))
+                   (list :entries (list refbox-test-reference-candidate)))))))
+      (let ((entry (refbox-get-entry "smith2020")))
+        (should (equal (cdr (assoc-string "title" entry t))
+                       "{Alpha Reference Title}"))
+        (should (equal (refbox-get-value "author" entry) "{Smith, Jane}"))
+        (should (equal (refbox-get-value "=key=" entry) "smith2020"))
+        (should (equal (refbox-get-field-with-value
+                        '("missing" "date")
+                        entry)
+                       '("date" . "{2020-05-12}")))
+        (should (equal (refbox-get-display-value
+                        '("title")
+                        entry
+                        '(refbox-template-clean))
+                       "Alpha Reference Title"))))))
+
 (ert-deftest refbox-test-read-reference_accepts_candidate_predicates ()
   "Reference selection should support filtering by candidate metadata."
   (let* ((alpha (copy-tree refbox-test-reference-candidate))
@@ -486,10 +569,10 @@
             (with-temp-file file))
           (setq candidate (plist-put candidate :source_path
                                      (expand-file-name "main.bib" refs)))
-          (let ((refbox-resource-library-paths (list library))
-                (refbox-resource-library-paths-recursive t)
-                (refbox-resource-library-file-extensions '("pdf"))
-                (refbox-resource-additional-file-separator "-"))
+          (let ((refbox-library-paths (list library))
+                (refbox-library-paths-recursive t)
+                (refbox-library-file-extensions '("pdf"))
+                (refbox-file-additional-files-separator "-"))
             (should
              (equal (mapcar #'file-name-nondirectory
                             (refbox-reference-files
@@ -508,7 +591,7 @@
     (unwind-protect
         (progn
           (with-temp-file external)
-          (let ((refbox-resource-file-sources
+          (let ((refbox-file-sources
                  `((external
                     :items ,(lambda (reference resources)
                               (setq seen-items (list reference resources))
@@ -527,7 +610,7 @@
   "File sources without :hasitems should still support indicators."
   (let ((candidate '(:key "alpha" :resources nil))
         called)
-    (let ((refbox-resource-file-sources
+    (let ((refbox-file-sources
            `((external
               :items ,(lambda (reference resources)
                         (setq called (list reference resources))
@@ -538,7 +621,7 @@
 (ert-deftest refbox-test-resource_file_sources_reject_invalid_items ()
   "Broken file sources should fail at the source boundary."
   (let ((candidate '(:key "alpha" :resources nil))
-        (refbox-resource-file-sources '((broken))))
+        (refbox-file-sources '((broken))))
     (should-error (refbox-reference-files candidate nil) :type 'user-error)))
 
 (ert-deftest refbox-test-resource_file_sources_preserve_indicator_fields ()
@@ -550,6 +633,87 @@
         (refbox-resource-file-field-names '("file"))
         (refbox-reference-resource-field-names '("pdf")))
     (should (refbox-reference-has-files-p candidate))))
+
+(ert-deftest refbox-test-resource_getters_return_keyed_hash_tables ()
+  "Resource getters should expose files, links, and notes by reference key."
+  (let* ((root (make-temp-file "refbox-resource-getters-" t))
+         (refs (expand-file-name "refs" root))
+         (paper (expand-file-name "paper.pdf" refs))
+         (candidate
+          (list :key "alpha"
+                :source_path (expand-file-name "main.bib" refs)
+                :fields '((:lookup_name "doi" :value "10.1000/alpha"))
+                :resources
+                `((:key "alpha"
+                   :source_path ,(expand-file-name "main.bib" refs)
+                   :owner_key "alpha"
+                   :owner_source_path ,(expand-file-name "main.bib" refs)
+                   :kind "file"
+                   :lookup_name "file"
+                   :value ,paper)
+                  (:key "alpha"
+                   :source_path ,(expand-file-name "main.bib" refs)
+                   :owner_key "alpha"
+                   :owner_source_path ,(expand-file-name "main.bib" refs)
+                   :kind "doi"
+                   :lookup_name "doi"
+                   :value "10.1000/alpha")))))
+    (unwind-protect
+        (progn
+          (make-directory refs t)
+          (with-temp-file paper)
+          (let ((refbox-notes-source 'mock)
+                (refbox-notes-sources
+                 `((mock
+                    :items ,(lambda (key _reference)
+                              (list (format "note:%s" key)))
+                    :open ,#'ignore))))
+            (cl-letf (((symbol-function 'refbox-list-references)
+                       (lambda (_limit offset)
+                         (if (or (null offset) (zerop offset))
+                             (list candidate)
+                           nil)))
+                      ((symbol-function 'refbox-entry-by-key)
+                       (lambda (key)
+                         (should (equal key "alpha"))
+                         candidate)))
+              (let ((files (refbox-get-files))
+                    (links (refbox-get-links "alpha"))
+                    (notes (refbox-get-notes '("alpha" "alpha"))))
+                (should (equal (gethash "alpha" files) (list paper)))
+                (should (equal (gethash "alpha" links)
+                               '("https://doi.org/10.1000/alpha")))
+                (should (equal (gethash "alpha" notes) '("note:alpha")))
+                (should-not (refbox-get-files nil))
+                (should-not (refbox-get-links nil))
+                (should-not (refbox-get-notes nil))))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-resource_predicates_accept_keys_and_candidates ()
+  "Resource predicate helpers should work with keys and candidate plists."
+  (let* ((candidate (copy-tree refbox-test-reference-candidate))
+         (refbox-notes-source 'mock)
+         (refbox-notes-sources
+          `((mock
+             :items ,(lambda (_key _reference)
+                       nil)
+             :hasitems ,(lambda (key _reference)
+                          (equal key "smith2020"))
+             :open ,#'ignore))))
+    (cl-letf (((symbol-function 'refbox-entry-by-key)
+               (lambda (key)
+                 (should (equal key "smith2020"))
+                 candidate)))
+      (should (funcall (refbox-has-files) "smith2020"))
+      (should (funcall (refbox-has-files) candidate))
+      (should (funcall (refbox-has-links) "smith2020"))
+      (should (funcall (refbox-has-links) candidate))
+      (should (funcall (refbox-has-notes) "smith2020"))
+      (should (funcall (refbox-has-notes) candidate)))
+    (with-temp-buffer
+      (insert "See smith2020.")
+      (should (funcall (refbox-is-cited) "smith2020"))
+      (should (funcall (refbox-is-cited) candidate)))))
 
 (ert-deftest refbox-test-local_resource_lookup_uses_crossref_parent_keys ()
   "File lookup should include parent keys declared by cross-reference fields."
@@ -563,8 +727,8 @@
         (progn
           (make-directory library t)
           (with-temp-file (expand-file-name "parent2020.pdf" library))
-          (let ((refbox-resource-library-paths (list library))
-                (refbox-resource-library-file-extensions '("pdf")))
+          (let ((refbox-library-paths (list library))
+                (refbox-library-file-extensions '("pdf")))
             (should (equal (refbox-reference-crossref-keys candidate)
                            '("parent2020")))
             (should (equal (mapcar #'file-name-nondirectory
@@ -585,8 +749,8 @@
     (unwind-protect
         (progn
           (with-temp-file existing)
-          (let ((refbox-note-paths (list root))
-                (refbox-note-file-extensions '("org" "md")))
+          (let ((refbox-notes-paths (list root))
+                (refbox-file-note-extensions '("org" "md")))
             (should (equal (refbox-note-filename "smith2020") existing))
             (should (equal (refbox-note-filename "doe/2021")
                            (expand-file-name "doe_2021.org" root)))))
@@ -603,8 +767,8 @@
     (unwind-protect
         (progn
           (with-temp-file note)
-          (let ((refbox-note-paths (list root))
-                (refbox-note-file-extensions '("org")))
+          (let ((refbox-notes-paths (list root))
+                (refbox-file-note-extensions '("org")))
             (should (equal (refbox-note-source-file-items
                             "child2021"
                             candidate)
@@ -617,8 +781,8 @@
 (ert-deftest refbox-test-note_sources_are_swappable ()
   "Note commands should use the configured note source protocol."
   (let (opened created)
-    (let ((refbox-note-source 'mock)
-          (refbox-note-sources
+    (let ((refbox-notes-source 'mock)
+          (refbox-notes-sources
            `((mock
               :items ,(lambda (key _reference)
                         (list (format "note:%s" key)))
@@ -659,8 +823,8 @@
           (with-temp-file org-note)
           (with-temp-file md-note)
           (with-temp-file ignored)
-          (let ((refbox-note-paths (list root))
-                (refbox-note-file-extensions '("org" "md")))
+          (let ((refbox-notes-paths (list root))
+                (refbox-file-note-extensions '("org" "md")))
             (should (equal (mapcar #'file-name-nondirectory
                                    (refbox-note-source-file-all-items))
                            '("alpha.org" "beta.md")))))
@@ -668,41 +832,48 @@
 
 (ert-deftest refbox-test-note_sources_can_be_registered_and_removed ()
   "Note source registration helpers should update the source table."
-  (let ((refbox-note-sources nil))
-    (should (eq (refbox-register-note-source
+  (let ((refbox-notes-sources nil))
+    (should (eq (refbox-register-notes-source
                  'mock
                  (list :items #'ignore :open #'ignore :create #'ignore))
                 'mock))
-    (should (alist-get 'mock refbox-note-sources))
-    (should (eq (refbox-remove-note-source 'mock) 'mock))
-    (should-not (alist-get 'mock refbox-note-sources))))
+    (should (alist-get 'mock refbox-notes-sources))
+    (should (eq (refbox-remove-notes-source 'mock) 'mock))
+    (should-not (alist-get 'mock refbox-notes-sources))
+    (should (eq (refbox-register-notes-source
+                 'mock
+                 (list :items #'ignore :open #'ignore))
+                'mock))
+    (should (alist-get 'mock refbox-notes-sources))
+    (should (eq (refbox-remove-notes-source 'mock) 'mock))
+    (should-not (alist-get 'mock refbox-notes-sources))))
 
 (ert-deftest refbox-test-note_source_registration_validates_config ()
   "Note source registration should reject broken adapters up front."
-  (let ((refbox-note-sources nil))
+  (let ((refbox-notes-sources nil))
     (should-error
-     (refbox-register-note-source
+     (refbox-register-notes-source
       "mock" (list :items #'ignore :open #'ignore))
      :type 'user-error)
     (should-error
-     (refbox-register-note-source 'mock (list :items #'ignore))
+     (refbox-register-notes-source 'mock (list :items #'ignore))
      :type 'user-error)
     (should-error
-     (refbox-register-note-source 'mock (list :items #'ignore :open "no"))
+     (refbox-register-notes-source 'mock (list :items #'ignore :open "no"))
      :type 'user-error)
     (should-error
-     (refbox-register-note-source
+     (refbox-register-notes-source
       'mock (list :name 'bad :items #'ignore :open #'ignore))
      :type 'user-error)
     (let (warnings)
       (cl-letf (((symbol-function 'display-warning)
                  (lambda (type message &rest _args)
                    (push (list type message) warnings))))
-        (should (eq (refbox-register-note-source
+        (should (eq (refbox-register-notes-source
                      'mock
                      (list :items #'ignore :open #'ignore :extra t))
                     'mock)))
-      (should (alist-get 'mock refbox-note-sources))
+      (should (alist-get 'mock refbox-notes-sources))
       (should (equal (caar warnings) 'refbox))
       (should (string-match-p "unknown property" (cadar warnings))))))
 
@@ -722,14 +893,14 @@
         (progn
           (with-temp-file file)
           (let ((candidate (copy-tree refbox-test-reference-candidate))
-                (refbox-resource-open-file-function
+                (refbox-file-open-function
                  (lambda (target) (push (cons 'file target) opened)))
-                (refbox-resource-open-link-function
+                (refbox-link-open-function
                  (lambda (target) (push (cons 'link target) opened)))
-                (refbox-note-open-function
+                (refbox-open-note-function
                  (lambda (target) (push (cons 'note target) opened)))
-                (refbox-note-paths (list root))
-                (refbox-note-file-extensions '("org")))
+                (refbox-notes-paths (list root))
+                (refbox-file-note-extensions '("org")))
             (setq candidate
                   (plist-put candidate :resources
                              (list (list :kind "file" :lookup_name "file"
@@ -752,18 +923,18 @@
 (ert-deftest refbox-test-file_openers_default_html_to_external_opener ()
   "HTML resources should use the external file opener by default."
   (let ((opened nil))
-    (cl-letf (((symbol-function 'refbox-resource-open-file-externally)
+    (cl-letf (((symbol-function 'refbox-file-open-external)
                (lambda (file)
                  (setq opened file)
                  file)))
-      (should (equal (refbox-resource-open-file "/tmp/refbox-test.html")
+      (should (equal (refbox-file-open "/tmp/refbox-test.html")
                      "/tmp/refbox-test.html"))
       (should (equal opened "/tmp/refbox-test.html")))))
 
 (ert-deftest refbox-test-open_without_note_paths_does_not_offer_uncreatable_notes ()
   "Resource opening should not fail while building unavailable note choices."
   (let ((candidate '(:key "empty2020" :fields nil :resources nil))
-        (refbox-note-paths nil)
+        (refbox-notes-paths nil)
         (refbox-open-resources '(:create-notes)))
     (cl-letf (((symbol-function 'refbox-reference-resources)
                (lambda (_candidate) nil)))
@@ -781,9 +952,9 @@
           (dolist (file (list pdf html))
             (with-temp-file file))
           (let ((candidate (copy-tree refbox-test-reference-candidate))
-                (refbox-resource-open-file-function
+                (refbox-file-open-function
                  (lambda (target) (push (cons 'default target) opened)))
-                (refbox-resource-open-file-functions
+                (refbox-file-open-functions
                  `(("html" . ,(lambda (target)
                                 (push (cons 'html target) opened)))))
                 (refbox-open-prompt nil))
@@ -834,6 +1005,26 @@
         (kill-buffer buffer))
       (delete-directory root t))))
 
+(ert-deftest refbox-test-open-entry_uses_indexed_source_location ()
+  "Entry opening should use the same source navigation as source opening."
+  (let (opened)
+    (cl-letf (((symbol-function 'refbox-open-source)
+               (lambda (reference)
+                 (setq opened reference)
+                 :opened)))
+      (should (eq (refbox-open-entry "alpha") :opened))
+      (should (equal opened "alpha")))))
+
+(ert-deftest refbox-test-open-entry_uses_configured_function ()
+  "Entry opening should be customizable at the command level."
+  (let (opened)
+    (let ((refbox-open-entry-function
+           (lambda (reference)
+             (setq opened reference)
+             :opened)))
+      (should (eq (refbox-open-entry "alpha") :opened))
+      (should (equal opened "alpha")))))
+
 (ert-deftest refbox-test-open_in_zotero_uses_citation_key_url ()
   "Zotero opening should use the selected citation key."
   (let (opened)
@@ -858,13 +1049,26 @@
       (should (equal (buffer-string)
                      (concat raw-alpha "\n\n" raw-beta))))))
 
+(ert-deftest refbox-test-insert-bibtex-removes-configured_fields ()
+  "BibTeX insertion should omit fields configured for export removal."
+  (let ((raw "@article{alpha,\n  title = {Alpha},\n  file = {alpha.pdf},\n  doi = {10.1000/alpha}\n}"))
+    (with-temp-buffer
+      (let ((refbox-bibtex-no-export-fields '("file")))
+        (cl-letf (((symbol-function 'refbox-rpc-request)
+                   (lambda (_method _params)
+                     (list :raw raw))))
+          (refbox-insert-bibtex '("alpha"))))
+      (should (string-match-p "title = {Alpha}" (buffer-string)))
+      (should (string-match-p "doi = {10.1000/alpha}" (buffer-string)))
+      (should-not (string-match-p "file = " (buffer-string))))))
+
 (ert-deftest refbox-test-export-bibliography-removes-configured_fields ()
   "Local bibliography export should remove configured no-export fields."
   (let* ((root (make-temp-file "refbox-export-" t))
          (output (expand-file-name "local.bib" root))
          (raw "@article{alpha,\n  title = {Alpha},\n  file = {alpha.pdf},\n  doi = {10.1000/alpha}\n}"))
     (unwind-protect
-        (let ((refbox-export-no-export-fields '("file")))
+        (let ((refbox-bibtex-no-export-fields '("file")))
           (cl-letf (((symbol-function 'refbox-rpc-request)
                      (lambda (_method _params)
                        (list :raw raw))))
@@ -883,7 +1087,7 @@
          (output (expand-file-name "local-bib.bib" root))
          (raw "@article{alpha,\n  title = {Alpha}\n}"))
     (unwind-protect
-        (let ((refbox-bibliography-files '("main.bib")))
+        (let ((refbox-bibliography '("main.bib")))
           (with-temp-buffer
             (setq buffer-file-name (expand-file-name "paper.org" root))
             (cl-letf (((symbol-function 'refbox-current-buffer-citation-keys)
@@ -898,13 +1102,23 @@
             (should (string-match-p "@article{alpha" (buffer-string)))))
       (delete-directory root t))))
 
+(ert-deftest refbox-test-export-local-bib-file_uses_local_bibliography_export ()
+  "The local bib-file command should use the same export path."
+  (let (exported)
+    (cl-letf (((symbol-function 'refbox-export-local-bibliography)
+               (lambda (&optional file)
+                 (setq exported file)
+                 :exported)))
+      (should (eq (refbox-export-local-bib-file "paper-local.bib") :exported))
+      (should (equal exported "paper-local.bib")))))
+
 (ert-deftest refbox-test-add-file-to-library_sources ()
   "Library add helpers should cover buffer, file, and URL-style sources."
   (let* ((root (make-temp-file "refbox-library-" t))
          (library (expand-file-name "library" root))
          (source (expand-file-name "source.pdf" root)))
     (unwind-protect
-        (let ((refbox-resource-library-paths (list library)))
+        (let ((refbox-library-paths (list library)))
           (with-temp-buffer
             (insert "buffer-pdf")
             (should (equal (refbox-add-buffer-to-library "alpha" "pdf")
@@ -937,7 +1151,7 @@
          (library (expand-file-name "library" root))
          called)
     (unwind-protect
-        (let ((refbox-resource-library-paths (list library))
+        (let ((refbox-library-paths (list library))
               (refbox-add-file-sources
                `((custom
                   :name "Custom"
@@ -965,7 +1179,7 @@
   (let* ((root (make-temp-file "refbox-default-source-" t))
          (library (expand-file-name "library" root)))
     (unwind-protect
-        (let ((refbox-resource-library-paths (list library)))
+        (let ((refbox-library-paths (list library)))
           (with-temp-buffer
             (insert "buffer-pdf")
             (cl-letf (((symbol-function 'completing-read)
@@ -1022,7 +1236,7 @@
          (library-a (expand-file-name "library-a" root))
          (library-b (expand-file-name "library-b" root)))
     (unwind-protect
-        (let ((refbox-resource-library-paths (list library-a library-b)))
+        (let ((refbox-library-paths (list library-a library-b)))
           (cl-letf (((symbol-function 'completing-read)
                      (lambda (_prompt collection &rest _args)
                        (cadr collection))))
@@ -1040,7 +1254,7 @@
          (library (expand-file-name "library" root))
          (destination (expand-file-name "alpha.pdf" library)))
     (unwind-protect
-        (let ((refbox-resource-library-paths (list library)))
+        (let ((refbox-library-paths (list library)))
           (make-directory library t)
           (with-temp-file destination
             (insert "old"))
@@ -1103,8 +1317,10 @@
                                            :text "Formatted Alpha")
                                      (list :key "beta"
                                            :text "Formatted Beta"))))))
-              (should (equal (refbox-format-references '("alpha" "beta"))
-                             '("Formatted Alpha" "Formatted Beta")))))
+	              (should (equal (refbox-format-references '("alpha" "beta"))
+	                             '("Formatted Alpha" "Formatted Beta")))
+	              (should (equal (refbox-format-reference '("alpha" "beta"))
+	                             "Formatted Alpha\n\nFormatted Beta"))))
           (should (equal (caar calls) refbox-rpc-method-format-references))
           (should (equal (cadar calls)
                          (list :keys ["alpha" "beta"]
@@ -1183,6 +1399,62 @@
                        '("smith2020" "doe2021")))
         (should (= (length calls) 3))
         (should (equal (nth 1 (car (last calls))) "alpha"))))))
+
+(ert-deftest refbox-test-select-references_dispatches_to_single_or_multiple_readers ()
+  "Selection helpers should expose both multiple and single-reference reads."
+  (let (multiple-args single-args)
+    (cl-letf (((symbol-function 'refbox-read-references)
+               (lambda (&rest args)
+                 (setq multiple-args args)
+                 (list refbox-test-reference-candidate)))
+              ((symbol-function 'refbox-read-reference)
+               (lambda (&rest args)
+                 (setq single-args args)
+                 refbox-test-reference-candidate)))
+      (should (equal (refbox-select-references
+                      :filter #'ignore
+                      :preset "has:file"
+                      :limit 7
+                      :source-paths '("refs.bib"))
+                     (list refbox-test-reference-candidate)))
+      (should (equal multiple-args
+                     (list "References: " "has:file" 7 #'ignore '("refs.bib"))))
+      (should (eq (refbox-select-reference
+                   :filter #'ignore
+                   :preset "has:notes"
+                   :limit 3
+                   :source-paths '("local.bib"))
+                  refbox-test-reference-candidate))
+      (should (equal single-args
+                     (list "Reference: " "has:notes" 3 #'ignore '("local.bib"))))
+      (setq multiple-args nil
+            single-args nil)
+      (let ((refbox-select-multiple nil))
+        (should (eq (refbox-select-references
+                     :multiple t
+                     :filter #'ignore
+                     :preset "has:links"
+                     :limit 4)
+                    refbox-test-reference-candidate)))
+      (should-not multiple-args)
+      (should (equal single-args
+                     (list "Reference: " "has:links" 4 #'ignore nil))))))
+
+(ert-deftest refbox-test-select-refs_returns_keys_and_filters_by_key ()
+  "Key-oriented selection should expose key strings for extension code."
+  (let (filter-seen)
+    (cl-letf (((symbol-function 'refbox-select-references)
+               (lambda (&rest args)
+                 (let ((filter (plist-get args :filter)))
+                   (when filter
+                     (setq filter-seen
+                           (funcall filter refbox-test-reference-candidate))))
+                 (list refbox-test-reference-candidate))))
+      (should (equal (refbox-select-refs
+                      :filter (lambda (key)
+                                (equal key "smith2020")))
+                     '("smith2020")))
+      (should filter-seen))))
 
 (ert-deftest refbox-test-ensure-restarts-on-configuration-change ()
   "Connection-relevant configuration changes should force reconnection."

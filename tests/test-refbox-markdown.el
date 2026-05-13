@@ -94,7 +94,7 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
 (ert-deftest refbox-markdown-test-prompted-affixes ()
   "Prompted affixes should be reflected in inserted citations."
   (refbox-markdown-test-with-buffer "|"
-    (let ((refbox-markdown-prompt-for-affixes t))
+    (let ((refbox-markdown-prompt-for-extra-arguments t))
       (cl-letf (((symbol-function 'read-string)
                  (lambda (prompt &rest _args)
                    (if (string-prefix-p "Citation prefix" prompt)

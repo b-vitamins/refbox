@@ -305,6 +305,24 @@ impl RefboxStore {
         Ok(entries)
     }
 
+    pub fn list_entries(&self, limit: usize, offset: usize) -> Result<Vec<StoredEntry>> {
+        let limit = i64::try_from(limit).map_err(|_| StoreError::LimitOutOfRange(limit))?;
+        let offset = i64::try_from(offset).map_err(|_| StoreError::LimitOutOfRange(offset))?;
+        let mut statement = self.connection.prepare(
+            "SELECT e.id, f.path, e.entry_key, e.entry_type,
+                    e.source_path, e.source_start_byte, e.source_start_line, e.source_start_column,
+                    e.source_end_byte, e.source_end_line, e.source_end_column
+             FROM entries e
+             JOIN files f ON f.id = e.file_id
+             ORDER BY e.entry_key, f.path, e.id
+             LIMIT ?1 OFFSET ?2",
+        )?;
+        let entries = statement
+            .query_map(params![limit, offset], stored_entry_from_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(entries)
+    }
+
     pub fn fields_for_entry(&self, entry_id: i64) -> Result<Vec<StoredField>> {
         let mut statement = self.connection.prepare(
             "SELECT id, entry_id, raw_name, lookup_name, value,
