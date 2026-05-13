@@ -144,6 +144,17 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
     (should (equal (buffer-string)
                    "[cite:see @alpha p. 12]"))))
 
+(ert-deftest refbox-org-test-prefix-and-suffix-update_can_edit_all_refs ()
+  "Prefix and suffix update should handle every reference in a citation."
+  (refbox-org-test-with-buffer "[cite:|@alpha; @beta]"
+    (let ((answers '("see" "p. 1" "also" "p. 2")))
+      (cl-letf (((symbol-function 'read-string)
+                 (lambda (_prompt &optional _initial _history _default _inherit)
+                   (pop answers))))
+        (refbox-org-update-prefix-suffix t)))
+    (should (equal (buffer-string)
+                   "[cite:see @alpha p. 1; also @beta p. 2]"))))
+
 (ert-deftest refbox-org-test-key-and-citation-at-point ()
   "Helpers should find citation and key locations."
   (refbox-org-test-with-buffer "[cite:@al|pha]"

@@ -48,7 +48,9 @@
                   (data types fun &optional info first-match no-recursion with-affiliated))
 (declare-function org-element-parse-buffer "org-element" (&optional granularity visible-only))
 (declare-function org-element-property "org-element" (property element))
+(declare-function org-element-interpret-data "org-element" (data))
 (declare-function org-cite-basic-activate "oc-basic" (citation))
+(declare-function embark-act "embark" (&optional target type action))
 
 (defgroup refbox-org nil
   "Org citation integration for refbox."
@@ -327,20 +329,40 @@ citation, a non-nil ARG requests an explicit citation style."
   (let ((suffix (string-trim (or suffix ""))))
     (if (string-empty-p suffix) "" (concat " " suffix))))
 
+(defun refbox-org--reference-suffix-end (reference)
+  "Return the end of REFERENCE's suffix without the citation separator."
+  (save-excursion
+    (goto-char (org-element-end reference))
+    (skip-chars-backward " \t")
+    (when (and (> (point) (org-element-begin reference))
+               (eq (char-before) ?\;))
+      (backward-char)
+      (skip-chars-backward " \t"))
+    (point)))
+
+(defun refbox-org--reference-prefix-begin (reference)
+  "Return the beginning of REFERENCE's editable prefix text."
+  (let ((begin (org-element-begin reference)))
+    (if (and (> begin (point-min))
+             (memq (char-before begin) '(?\;))
+             (memq (char-after begin) '(?\s ?\t ?\n)))
+        (1+ begin)
+      begin)))
+
 (defun refbox-org--set-reference-affix (reference side text)
   "Set REFERENCE affix SIDE to TEXT.
 
 SIDE is either `prefix' or `suffix'."
   (pcase-let* ((`(,key-begin . ,key-end) (org-cite-key-boundaries reference))
-               (begin (org-element-begin reference))
-               (end (org-element-end reference)))
+               (prefix-begin (refbox-org--reference-prefix-begin reference))
+               (suffix-end (refbox-org--reference-suffix-end reference)))
     (pcase side
       ('prefix
-       (delete-region begin key-begin)
-       (goto-char begin)
+       (delete-region prefix-begin key-begin)
+       (goto-char prefix-begin)
        (insert (refbox-org--normalize-prefix text)))
       ('suffix
-       (delete-region key-end end)
+       (delete-region key-end suffix-end)
        (goto-char key-end)
        (insert (refbox-org--normalize-suffix text)))
       (_ (error "Unknown citation affix side: %S" side)))))
@@ -363,17 +385,60 @@ SIDE is either `prefix' or `suffix'."
    'suffix
    suffix))
 
-;;;###autoload
-(defun refbox-org-update-prefix-suffix (prefix suffix)
-  "Set PREFIX and SUFFIX for the Org citation reference at point."
-  (interactive
-   (list (read-string "Reference prefix: ")
-         (read-string "Reference suffix: ")))
-  (let ((reference (refbox-org--reference-or-error)))
+(defun refbox-org--reference-affix-text (reference property)
+  "Return REFERENCE affix PROPERTY as plain prompt text."
+  (if-let ((value (org-element-property property reference)))
+      (string-trim (org-element-interpret-data value))
+    ""))
+
+(defun refbox-org--update-reference-prefix-suffix (reference)
+  "Prompt for and update REFERENCE's prefix and suffix."
+  (unless (eq 'citation-reference (org-element-type reference))
+    (user-error "Point is not on an Org citation reference"))
+  (let* ((key (org-element-property :key reference))
+         (label (propertize key 'face 'mode-line-emphasis))
+         (prefix (read-string (format "Prefix for %s: " label)
+                              (refbox-org--reference-affix-text
+                               reference
+                               :prefix)))
+         (suffix (read-string (format "Suffix for %s: " label)
+                              (refbox-org--reference-affix-text
+                               reference
+                               :suffix))))
     (refbox-org--set-reference-affix reference 'prefix prefix)
-    (refbox-org--set-reference-affix (refbox-org--reference-or-error)
-                                     'suffix
-                                     suffix)))
+    (refbox-org--set-reference-affix
+     (refbox-org--reference-or-error)
+     'suffix
+     suffix)))
+
+;;;###autoload
+(defun refbox-org-update-prefix-suffix (&optional arg)
+  "Update prefix and suffix text for Org citation references.
+
+With ARG, update every reference in the citation at point.  When
+point is on a citation but not on a specific reference, update
+every reference in that citation."
+  (interactive "P")
+  (let* ((datum (org-element-context))
+         (type (org-element-type datum))
+         (citation (pcase type
+                     ('citation datum)
+                     ('citation-reference (org-element-property :parent datum))
+                     (_ (user-error "Point is not on an Org citation or citation reference"))))
+         (references (org-cite-get-references citation)))
+    (save-excursion
+      (if (or arg (eq type 'citation))
+          (let ((citation-begin (org-element-begin citation)))
+            (dotimes (index (length references))
+              (goto-char citation-begin)
+              (let* ((current-citation (refbox-org--citation-or-error))
+                     (current-references
+                      (org-cite-get-references current-citation))
+                     (reference (nth index current-references)))
+                (when reference
+                  (goto-char (org-element-begin reference))
+                  (refbox-org--update-reference-prefix-suffix reference)))))
+        (refbox-org--update-reference-prefix-suffix datum)))))
 
 ;;;###autoload
 (defun refbox-org-delete-at-point ()

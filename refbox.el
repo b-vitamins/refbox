@@ -92,7 +92,8 @@ error instead."
               (const :tag "Create notes" :create-notes))
   :group 'refbox)
 
-(defcustom refbox-open-prompt '(refbox-open refbox-open-notes refbox-attach-files)
+(defcustom refbox-open-prompt
+  '(refbox-open refbox-open-note refbox-open-notes refbox-attach-files)
   "Commands that should prompt even when there is only one resource.
 
 When nil, commands open a single resource without prompting.  When
@@ -316,6 +317,7 @@ extension is not present in this alist,
   '((file
      :name "Notes"
      :items refbox-note-source-file-items
+     :all-items refbox-note-source-file-all-items
      :hasitems refbox-note-source-file-has-items
      :open refbox-note-source-file-open
      :create refbox-note-source-file-create
@@ -324,10 +326,12 @@ extension is not present in this alist,
   "Alist of note sources available to refbox.
 
 Each entry is (SOURCE . PLIST).  Recognized plist keys are
-`:items', `:hasitems', `:open', `:create', `:create-label', and
-`:transform'.  `:items' and `:hasitems' functions receive KEY and
-REFERENCE.  `:open' receives a note item.  `:create' and
-`:create-label' receive KEY and REFERENCE."
+`:items', `:all-items', `:hasitems', `:open', `:create',
+`:create-label', and `:transform'.  `:items' and `:hasitems'
+functions receive KEY and REFERENCE.  `:all-items' receives no
+arguments and returns note items directly openable by `:open'.
+`:open' receives a note item.  `:create' and `:create-label'
+receive KEY and REFERENCE."
   :type 'alist
   :group 'refbox)
 
@@ -396,6 +400,7 @@ REFERENCE.  `:open' receives a note item.  `:create' and
     (define-key map (kbd "k") #'refbox-insert-keys)
     (define-key map (kbd "l") #'refbox-open-links)
     (define-key map (kbd "n") #'refbox-open-notes)
+    (define-key map (kbd "N") #'refbox-open-note)
     (define-key map (kbd "o") #'refbox-open)
     (define-key map (kbd "r") #'refbox-copy-reference)
     (define-key map (kbd "R") #'refbox-insert-reference)
@@ -1209,6 +1214,21 @@ bibliography source files."
    refbox-note-file-extensions
    refbox-resource-additional-file-separator))
 
+(defun refbox-note-source-file-all-items ()
+  "Return all file-backed note items from configured note directories."
+  (apply
+   #'append
+   (mapcar
+    (lambda (dir)
+      (cl-loop
+       for file in (directory-files dir t directory-files-no-dot-files-regexp)
+       when (and (file-regular-p file)
+                 (refbox-resource--extension-allowed-p
+                  file
+                  refbox-note-file-extensions))
+       collect file))
+    (refbox-note--directories))))
+
 (defun refbox-note--filename-key (key)
   "Return KEY transformed for a single file name."
   (replace-regexp-in-string "[/\\]" "_" key))
@@ -1309,6 +1329,11 @@ bibliography source files."
       (refbox--listify
        (funcall (refbox-note-source--function :items) key reference)))))
 
+(defun refbox-note-source-all-items ()
+  "Return all items from the active note source."
+  (refbox--listify
+   (funcall (refbox-note-source--function :all-items))))
+
 (defun refbox-note-source-has-items-p (reference)
   "Return non-nil when REFERENCE has active note source items."
   (let ((key (refbox--reference-key reference)))
@@ -1405,7 +1430,7 @@ single choice is accepted without prompting."
 
 (defun refbox--resource-choice-label (type reference target)
   "Return display label for resource TYPE, REFERENCE, and TARGET."
-  (let ((key (refbox--reference-choice-key reference)))
+  (let ((key (and reference (refbox--reference-choice-key reference))))
     (if key
         (format "%-7s %-24s %s" type key target)
       (format "%-7s %s" type target))))
@@ -1469,6 +1494,18 @@ COMMAND controls `refbox-open-always-create-notes'."
                           "create" reference
                           create-label)))))))
 
+(defun refbox--all-note-choices ()
+  "Return note choices from the active note source."
+  (mapcar
+   (lambda (note)
+     (list :type 'note
+           :target note
+           :label (refbox--resource-choice-label
+                   "note"
+                   nil
+                   (refbox-note-source--display note))))
+   (delete-dups (refbox-note-source-all-items))))
+
 (defun refbox--open-resource-choice (choice)
   "Open resource CHOICE and return its target."
   (let ((target (plist-get choice :target)))
@@ -1528,6 +1565,19 @@ COMMAND controls `refbox-open-always-create-notes'."
      t
      'refbox-open-notes)
     'refbox-open-notes)))
+
+;;;###autoload
+(defun refbox-open-note (&optional note)
+  "Open NOTE, or select a note from all notes in the active source."
+  (interactive)
+  (refbox-note-source-open
+   (or note
+       (plist-get
+        (refbox--read-resource-choice
+         "Note: "
+         (refbox--all-note-choices)
+         'refbox-open-note)
+        :target))))
 
 ;;;###autoload
 (defun refbox-create-note (&optional candidate)
@@ -1889,6 +1939,32 @@ ARG is passed to the adapter command."
       (insert "\n"))
     file))
 
+(defun refbox--local-bibliography-extension ()
+  "Return the preferred extension for a generated local bibliography."
+  (let ((extension
+         (or (when-let ((file (car (refbox-local-bibliography-files))))
+               (file-name-extension file))
+             (when-let ((file (car refbox-bibliography-files)))
+               (file-name-extension file))
+             (car refbox-bibliography-extensions)
+             "bib")))
+    (if (refbox--blank-string-p extension)
+        "bib"
+      (string-remove-prefix "." extension))))
+
+;;;###autoload
+(defun refbox-export-local-bibliography (&optional file)
+  "Export the current buffer's citations to a local bibliography FILE."
+  (interactive)
+  (let ((file (or file
+                  (expand-file-name
+                   (format "local-bib.%s"
+                           (refbox--local-bibliography-extension))
+                   (or (and buffer-file-name
+                            (file-name-directory buffer-file-name))
+                       default-directory)))))
+    (refbox-export-bibliography file)))
+
 (defun refbox-csl--directories (dirs)
   "Return existing CSL DIRS."
   (refbox-resource--directory-list dirs nil))
@@ -2076,13 +2152,20 @@ ARG is passed to the adapter command."
           (string-remove-prefix "." extension)))
 
 (defun refbox-library--primary-directory ()
-  "Return the primary library directory, creating it if needed."
+  "Return a library destination directory, creating it if needed."
   (unless refbox-resource-library-paths
     (user-error "`refbox-resource-library-paths' must contain at least one directory"))
-  (let ((directory (file-name-as-directory
-                    (expand-file-name (car refbox-resource-library-paths)))))
+  (dolist (directory refbox-resource-library-paths)
+    (make-directory (file-name-as-directory (expand-file-name directory)) t))
+  (let* ((directories (refbox-resource--library-dirs))
+         (directory (if (cdr directories)
+                        (completing-read "Library directory: "
+                                         directories
+                                         nil
+                                         t)
+                      (car directories))))
     (make-directory directory t)
-    directory))
+    (file-name-as-directory (expand-file-name directory))))
 
 (defun refbox-library-destination-file (reference extension)
   "Return destination library file for REFERENCE and EXTENSION."

@@ -338,6 +338,8 @@
            `((mock
               :items ,(lambda (key _reference)
                         (list (format "note:%s" key)))
+              :all-items ,(lambda ()
+                            '("note:all" "note:orphan"))
               :hasitems ,(lambda (key _reference)
                            (equal key "smith2020"))
               :open ,(lambda (item)
@@ -355,7 +357,30 @@
                      "created:smith2020"))
       (refbox-open-notes refbox-test-reference-candidate)
       (should (equal created '("smith2020")))
-      (should (equal opened '("note:smith2020"))))))
+      (should (equal opened '("note:smith2020")))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt collection &rest _args)
+                   (cadr collection))))
+        (refbox-open-note))
+      (should (equal opened '("note:orphan" "note:smith2020"))))))
+
+(ert-deftest refbox-test-file_note_source_can_list_all_notes ()
+  "The file note source should support direct note browsing."
+  (let* ((root (make-temp-file "refbox-all-notes-" t))
+         (org-note (expand-file-name "alpha.org" root))
+         (md-note (expand-file-name "beta.md" root))
+         (ignored (expand-file-name "gamma.txt" root)))
+    (unwind-protect
+        (progn
+          (with-temp-file org-note)
+          (with-temp-file md-note)
+          (with-temp-file ignored)
+          (let ((refbox-note-paths (list root))
+                (refbox-note-file-extensions '("org" "md")))
+            (should (equal (mapcar #'file-name-nondirectory
+                                   (refbox-note-source-file-all-items))
+                           '("alpha.org" "beta.md")))))
+      (delete-directory root t))))
 
 (ert-deftest refbox-test-note_sources_can_be_registered_and_removed ()
   "Note source registration helpers should update the source table."
@@ -528,6 +553,27 @@
             (should-not (string-match-p "file = " (buffer-string)))))
       (delete-directory root t))))
 
+(ert-deftest refbox-test-export-local-bibliography_uses_buffer_directory ()
+  "Local bibliography export should use the conventional local-bib name."
+  (let* ((root (make-temp-file "refbox-local-export-" t))
+         (output (expand-file-name "local-bib.bib" root))
+         (raw "@article{alpha,\n  title = {Alpha}\n}"))
+    (unwind-protect
+        (let ((refbox-bibliography-files '("main.bib")))
+          (with-temp-buffer
+            (setq buffer-file-name (expand-file-name "paper.org" root))
+            (cl-letf (((symbol-function 'refbox-current-buffer-citation-keys)
+                       (lambda (&optional _buffer)
+                         '("alpha")))
+                      ((symbol-function 'refbox-rpc-request)
+                       (lambda (_method _params)
+                         (list :raw raw))))
+              (should (equal (refbox-export-local-bibliography) output))))
+          (with-temp-buffer
+            (insert-file-contents output)
+            (should (string-match-p "@article{alpha" (buffer-string)))))
+      (delete-directory root t))))
+
 (ert-deftest refbox-test-add-file-to-library_sources ()
   "Library add helpers should cover buffer, file, and URL-style sources."
   (let* ((root (make-temp-file "refbox-library-" t))
@@ -559,6 +605,24 @@
           (with-temp-buffer
             (insert-file-contents (expand-file-name "gamma.pdf" library))
             (should (equal (buffer-string) "url-pdf"))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-add-file-to-library_prompts_for_multiple_directories ()
+  "Library add helpers should let users choose among configured directories."
+  (let* ((root (make-temp-file "refbox-library-choice-" t))
+         (library-a (expand-file-name "library-a" root))
+         (library-b (expand-file-name "library-b" root)))
+    (unwind-protect
+        (let ((refbox-resource-library-paths (list library-a library-b)))
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (_prompt collection &rest _args)
+                       (cadr collection))))
+            (with-temp-buffer
+              (insert "buffer-pdf")
+              (should (equal (refbox-add-buffer-to-library "alpha" "pdf")
+                             (expand-file-name "alpha.pdf" library-b)))))
+          (should-not (file-exists-p (expand-file-name "alpha.pdf" library-a)))
+          (should (file-exists-p (expand-file-name "alpha.pdf" library-b))))
       (delete-directory root t))))
 
 (ert-deftest refbox-test-csl-style-metadata-and-selection ()
