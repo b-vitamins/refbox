@@ -450,6 +450,35 @@
     (should (eq (refbox-remove-note-source 'mock) 'mock))
     (should-not (alist-get 'mock refbox-note-sources))))
 
+(ert-deftest refbox-test-note_source_registration_validates_config ()
+  "Note source registration should reject broken adapters up front."
+  (let ((refbox-note-sources nil))
+    (should-error
+     (refbox-register-note-source
+      "mock" (list :items #'ignore :open #'ignore))
+     :type 'user-error)
+    (should-error
+     (refbox-register-note-source 'mock (list :items #'ignore))
+     :type 'user-error)
+    (should-error
+     (refbox-register-note-source 'mock (list :items #'ignore :open "no"))
+     :type 'user-error)
+    (should-error
+     (refbox-register-note-source
+      'mock (list :name 'bad :items #'ignore :open #'ignore))
+     :type 'user-error)
+    (let (warnings)
+      (cl-letf (((symbol-function 'display-warning)
+                 (lambda (type message &rest _args)
+                   (push (list type message) warnings))))
+        (should (eq (refbox-register-note-source
+                     'mock
+                     (list :items #'ignore :open #'ignore :extra t))
+                    'mock)))
+      (should (alist-get 'mock refbox-note-sources))
+      (should (equal (caar warnings) 'refbox))
+      (should (string-match-p "unknown property" (cadar warnings))))))
+
 (ert-deftest refbox-test-link-resource-formatting ()
   "Identifier and URL resources should format into openable links."
   (should (equal (refbox-resource-link-url '(:kind "doi" :value "{10.1000/refbox}"))
@@ -674,6 +703,91 @@
             (insert-file-contents (expand-file-name "gamma.pdf" library))
             (should (equal (buffer-string) "url-pdf"))))
       (delete-directory root t))))
+
+(ert-deftest refbox-test-add-file-to-library_uses_configured_sources ()
+  "The interactive add-file command should dispatch through configured sources."
+  (let* ((root (make-temp-file "refbox-custom-source-" t))
+         (library (expand-file-name "library" root))
+         called)
+    (unwind-protect
+        (let ((refbox-resource-library-paths (list library))
+              (refbox-add-file-sources
+               `((custom
+                  :name "Custom"
+                  :description "Use a test source"
+                  :function ,(lambda (reference)
+                                (setq called reference)
+                                (list :extension "pdf"
+                                      :write-file
+                                      (lambda (destination _overwrite)
+                                        (with-temp-file destination
+                                          (insert "custom-pdf")))))))))
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (_prompt collection &rest _args)
+                       (car collection))))
+            (should (equal (refbox-add-file-to-library "alpha")
+                           (expand-file-name "alpha.pdf" library))))
+          (with-temp-buffer
+            (insert-file-contents (expand-file-name "alpha.pdf" library))
+            (should (equal (buffer-string) "custom-pdf"))))
+      (delete-directory root t))
+    (should (equal called "alpha"))))
+
+(ert-deftest refbox-test-add-file-to-library_default_buffer_source ()
+  "The default buffer source should pass through the configured writer."
+  (let* ((root (make-temp-file "refbox-default-source-" t))
+         (library (expand-file-name "library" root)))
+    (unwind-protect
+        (let ((refbox-resource-library-paths (list library)))
+          (with-temp-buffer
+            (insert "buffer-pdf")
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (_prompt collection &rest _args)
+                         (car collection)))
+                      ((symbol-function 'read-buffer)
+                       (lambda (&rest _args)
+                         (buffer-name)))
+                      ((symbol-function 'read-string)
+                       (lambda (&rest _args)
+                         "pdf")))
+              (should (equal (refbox-add-file-to-library "alpha")
+                             (expand-file-name "alpha.pdf" library)))))
+          (with-temp-buffer
+            (insert-file-contents (expand-file-name "alpha.pdf" library))
+            (should (equal (buffer-string) "buffer-pdf"))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-add-file-to-library_uses_configured_writer ()
+  "The interactive add-file command should dispatch through the configured writer."
+  (let (called)
+    (let ((refbox-add-file-sources
+           `((custom
+              :name "Custom"
+              :function ,(lambda (_reference)
+                            (list :extension "pdf"
+                                  :write-file #'ignore)))))
+          (refbox-add-file-function
+           (lambda (reference source overwrite)
+             (setq called (list reference source overwrite))
+             "custom-destination")))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt collection &rest _args)
+                   (car collection))))
+        (should (equal (refbox-add-file-to-library "alpha")
+                       "custom-destination"))))
+    (should (equal (car called) "alpha"))
+    (should (equal (plist-get (cadr called) :extension) "pdf"))
+    (should (equal (caddr called) 1))))
+
+(ert-deftest refbox-test-add-file-to-library_rejects_empty_sources ()
+  "The interactive add-file command should fail at the source boundary."
+  (let ((refbox-add-file-sources nil))
+    (should-error (refbox-add-file-to-library "alpha") :type 'user-error)))
+
+(ert-deftest refbox-test-add-file-to-library_rejects_invalid_writer ()
+  "The interactive add-file command should fail on invalid writer config."
+  (let ((refbox-add-file-function nil))
+    (should-error (refbox-add-file-to-library "alpha") :type 'user-error)))
 
 (ert-deftest refbox-test-add-file-to-library_prompts_for_multiple_directories ()
   "Library add helpers should let users choose among configured directories."

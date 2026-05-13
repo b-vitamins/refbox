@@ -277,6 +277,39 @@ When nil, associated file lookup does not filter by extension."
                  regexp)
   :group 'refbox)
 
+(defcustom refbox-add-file-sources
+  '((buffer
+     :name "buffer"
+     :description "Save current buffer contents"
+     :function refbox-add-file-source-buffer)
+    (file
+     :name "file"
+     :description "Copy an existing file"
+     :function refbox-add-file-source-file)
+    (url
+     :name "url"
+     :description "Download from a URL"
+     :function refbox-add-file-source-url))
+  "Sources offered by `refbox-add-file-to-library'.
+
+Each source is an alist entry of the form (NAME . PLIST).  NAME
+is a symbol identifying the source.  PLIST recognizes `:name',
+`:description', and `:function'.  The function receives REFERENCE
+and returns a source plist with `:write-file' and optional
+`:extension'.  `:write-file' is a function of DESTINATION and
+OVERWRITE with the same overwrite convention as `copy-file'."
+  :type 'alist
+  :group 'refbox)
+
+(defcustom refbox-add-file-function #'refbox-save-file-to-library
+  "Function used by `refbox-add-file-to-library' to store a source.
+
+The function receives REFERENCE, a source plist returned by one
+of `refbox-add-file-sources', and OVERWRITE.  It should write the
+source and return the destination file name."
+  :type 'function
+  :group 'refbox)
+
 (defcustom refbox-resource-open-file-function #'find-file
   "Function used to open file resources."
   :type 'function
@@ -349,7 +382,8 @@ Each entry is (SOURCE . PLIST).  Recognized plist keys are
 functions receive KEY and REFERENCE.  `:all-items' receives no
 arguments and returns note items directly openable by `:open'.
 `:open' receives a note item.  `:create' and `:create-label'
-receive KEY and REFERENCE."
+receive KEY and REFERENCE.  `:items' and `:open' are required
+when registering a note source with `refbox-register-note-source'."
   :type 'alist
   :group 'refbox)
 
@@ -1343,12 +1377,52 @@ bibliography source files."
   (or (alist-get refbox-note-source refbox-note-sources)
       (user-error "Unknown refbox note source: %s" refbox-note-source)))
 
-(defun refbox-register-note-source (name config)
-  "Register note source NAME with CONFIG."
+(defconst refbox-note-source--required-properties
+  '(:items :open)
+  "Required plist properties for registered note sources.")
+
+(defconst refbox-note-source--function-properties
+  '(:items :all-items :hasitems :open :create :create-label :transform)
+  "Note source plist properties whose values must be callable.")
+
+(defconst refbox-note-source--known-properties
+  (append refbox-note-source--function-properties '(:name))
+  "Recognized note source plist properties.")
+
+(defun refbox-note-source-validate (name config)
+  "Signal when note source NAME has an invalid CONFIG plist."
   (unless (symbolp name)
     (user-error "refbox note source name must be a symbol"))
-  (unless (listp config)
+  (unless (and (proper-list-p config) (zerop (mod (length config) 2)))
     (user-error "refbox note source config must be a plist"))
+  (dolist (property refbox-note-source--required-properties)
+    (unless (plist-member config property)
+      (user-error "refbox note source %s is missing %s" name property)))
+  (cl-loop for (property value) on config by #'cddr
+           do
+           (unless (keywordp property)
+             (user-error "refbox note source %s has non-keyword property %S"
+                         name property))
+           (cond
+            ((memq property refbox-note-source--function-properties)
+             (unless (functionp value)
+               (user-error "refbox note source %s property %s is not callable"
+                           name property)))
+            ((eq property :name)
+             (unless (stringp value)
+               (user-error "refbox note source %s property :name is not a string"
+                           name)))
+            ((not (memq property refbox-note-source--known-properties))
+             (display-warning
+              'refbox
+              (format "refbox note source %s has unknown property %s"
+                      name property)
+              :warning))))
+  name)
+
+(defun refbox-register-note-source (name config)
+  "Register note source NAME with CONFIG."
+  (refbox-note-source-validate name config)
   (setf (alist-get name refbox-note-sources) config)
   name)
 
@@ -2312,30 +2386,100 @@ ARG is passed to the adapter command."
     (url-copy-file url destination overwrite)
     destination))
 
+(defun refbox-save-file-to-library (reference source &optional overwrite)
+  "Save SOURCE as a library resource for REFERENCE.
+
+SOURCE is a plist returned by one of `refbox-add-file-sources'.
+OVERWRITE follows the same convention as `copy-file'; an integer
+asks before replacing an existing file."
+  (let* ((extension (or (plist-get source :extension)
+                        (read-string "Extension: ")))
+         (write-file (plist-get source :write-file))
+         (destination (refbox-library-destination-file reference extension)))
+    (unless (functionp write-file)
+      (user-error "refbox add-file source has no callable :write-file"))
+    (funcall write-file destination overwrite)
+    destination))
+
+(defun refbox-add-file-source-buffer (_reference)
+  "Return an add-file source plist for a selected buffer."
+  (let ((buffer (get-buffer (read-buffer "Buffer: " (current-buffer) t))))
+    (list
+     :extension (when (buffer-file-name buffer)
+                  (file-name-extension (buffer-file-name buffer)))
+     :write-file
+     (lambda (destination overwrite)
+       (with-current-buffer buffer
+         (refbox-library--check-destination destination overwrite)
+         (write-region (point-min) (point-max) destination nil 'silent))))))
+
+(defun refbox-add-file-source-file (_reference)
+  "Return an add-file source plist for an existing file."
+  (let ((file (read-file-name "File: " nil nil t)))
+    (list
+     :extension (file-name-extension file)
+     :write-file
+     (lambda (destination overwrite)
+       (copy-file file destination overwrite)))))
+
+(defun refbox-add-file-source-url (_reference)
+  "Return an add-file source plist for a URL."
+  (let ((url (read-string "URL: ")))
+    (list
+     :write-file
+     (lambda (destination overwrite)
+       (url-copy-file url destination overwrite)))))
+
+(defun refbox-add-file-source--label (source)
+  "Return the completion label for add-file SOURCE."
+  (let* ((id (car source))
+         (plist (cdr source))
+         (name (plist-get plist :name)))
+    (cond
+     ((stringp name) name)
+     ((symbolp id) (symbol-name id))
+     (t (user-error "refbox add-file source name must be a symbol: %S" id)))))
+
+(defun refbox-add-file-source--function (source)
+  "Return the function configured for add-file SOURCE."
+  (let ((function (plist-get (cdr source) :function)))
+    (unless (functionp function)
+      (user-error "refbox add-file source %s has no callable :function"
+                  (car source)))
+    function))
+
+(defun refbox-add-file-source--read ()
+  "Prompt for and return a source from `refbox-add-file-sources'."
+  (unless refbox-add-file-sources
+    (user-error "Make sure `refbox-add-file-sources' is non-nil"))
+  (let ((table (make-hash-table :test 'equal))
+        choices)
+    (dolist (source refbox-add-file-sources)
+      (unless (and (consp source) (symbolp (car source)) (listp (cdr source)))
+        (user-error "Invalid refbox add-file source: %S" source))
+      (let* ((base (refbox-add-file-source--label source))
+             (label base)
+             (counter 2))
+        (while (gethash label table)
+          (setq label (format "%s <%d>" base counter)
+                counter (1+ counter)))
+        (puthash label source table)
+        (push label choices)))
+    (gethash
+     (completing-read "Add from: " (nreverse choices) nil t)
+     table)))
+
 ;;;###autoload
 (defun refbox-add-file-to-library (&optional reference)
-  "Add a buffer, file, or URL resource to REFERENCE's library files."
+  "Add a configured source resource to REFERENCE's library files."
   (interactive)
+  (unless (functionp refbox-add-file-function)
+    (user-error "refbox-add-file-function is not callable"))
   (let* ((reference (or reference (refbox-read-reference)))
-         (source (completing-read
-                  "Add from: "
-                  '("buffer" "file" "url")
-                  nil t)))
-    (pcase source
-      ("buffer"
-       (let* ((default (and buffer-file-name
-                            (file-name-extension buffer-file-name)))
-              (extension (read-string "Extension: " default)))
-         (refbox-add-buffer-to-library reference extension 1)))
-      ("file"
-       (refbox-add-file-to-library-from-file
-        reference
-        (read-file-name "File: ")
-        1))
-      ("url"
-       (let ((url (read-string "URL: "))
-             (extension (read-string "Extension: ")))
-         (refbox-add-file-to-library-from-url reference url extension 1))))))
+         (source (refbox-add-file-source--read))
+         (source-plist (funcall (refbox-add-file-source--function source)
+                                reference)))
+    (funcall refbox-add-file-function reference source-plist 1)))
 
 (defun refbox--completion-state (&optional limit source-paths)
   "Return fresh completion state using LIMIT and SOURCE-PATHS."
