@@ -367,13 +367,25 @@
      refbox-test-reference-candidate
      23)
     "Alpha Re|2020|SMITH2020"))
-  (should
-   (equal (refbox-reference-format-note refbox-test-reference-candidate)
-          "Alpha Reference Title"))
-  (should
-   (string-match-p
-    "refs/main\\.bib"
-    (refbox-reference-format-preview refbox-test-reference-candidate))))
+  (let ((refbox-templates
+         '((preview . "%{source_path}")
+           (note . "%{title}"))))
+    (should
+     (equal (refbox-reference-format-note refbox-test-reference-candidate)
+            "Alpha Reference Title"))
+    (should
+     (string-match-p
+      "refs/main\\.bib"
+      (refbox-reference-format-preview refbox-test-reference-candidate)))))
+
+(ert-deftest refbox-test-default_templates_use_familiar_fields ()
+  "Default templates should render cleaned reference metadata."
+  (should (string-match-p
+           "Smith[[:space:]]+2020[[:space:]]+Alpha Reference Title"
+           (refbox-reference-format-main refbox-test-reference-candidate 100)))
+  (should (string-match-p
+           "smith2020[[:space:]]+article"
+           (refbox-reference-format-suffix refbox-test-reference-candidate))))
 
 (ert-deftest refbox-test-template-formatting-supports_configured_ellipsis ()
   "Template field truncation should support a configured ellipsis marker."
@@ -383,7 +395,7 @@
                     refbox-test-reference-candidate)
                    "Alpha R..."))))
 
-(ert-deftest refbox-test-template-formatting-supports_citar_style_placeholders ()
+(ert-deftest refbox-test-template-formatting-supports_display_placeholders ()
   "Templates should support familiar ${field:width%transform} placeholders."
   (let ((candidate
          (append
@@ -427,9 +439,9 @@
 
 (ert-deftest refbox-test-completion-candidates-carry_metadata ()
   "Completion candidates should come from bounded RPC search and carry metadata."
-  (let ((refbox-reference-main-template "%{key} %{title!refbox-template-clean}")
-        (refbox-reference-suffix-template
-         "%{indicators} %{entry_type} %{source_path!file-name-nondirectory}")
+  (let ((refbox-templates
+         '((main . "%{key} %{title}")
+           (suffix . "%{indicators} %{entry_type} %{source_path!file-name-nondirectory}")))
         (refbox-reference-cited-predicate nil)
         calls)
     (cl-letf (((symbol-function 'refbox-rpc-request)
@@ -497,7 +509,7 @@
 
 (ert-deftest refbox-test-read-reference-contract-returns_candidate_payload ()
   "The chooser should return candidate metadata, not display strings."
-  (let ((refbox-reference-main-template "%{key} %{title!refbox-template-clean}")
+  (let ((refbox-templates '((main . "%{key} %{title}")))
         calls)
     (cl-letf (((symbol-function 'refbox-rpc-request)
                (lambda (method params)

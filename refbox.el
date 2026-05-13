@@ -213,36 +213,16 @@ adapter functions.  Supported adapter keys are `local-bib-files',
   :type 'alist
   :group 'refbox)
 
-(defcustom refbox-reference-main-template
-  "%{key:24} %{author|editor:28!refbox-template-clean} %{date|year:6!refbox-template-year} %{title:*!refbox-template-clean}"
-  "Template used for the main reference completion candidate text."
-  :type 'string
-  :group 'refbox)
-
-(defcustom refbox-reference-suffix-template
-  "%{indicators:4} %{entry_type:10} %{source_path!file-name-nondirectory}"
-  "Template used for reference completion annotations and suffixes."
-  :type 'string
-  :group 'refbox)
-
-(defcustom refbox-reference-preview-template
-  "%{title|key!refbox-template-clean}\n%{author|editor!refbox-template-clean}\n%{date|year!refbox-template-year}\n%{source_path}"
-  "Template used for preview-oriented reference rendering."
-  :type 'string
-  :group 'refbox)
-
-(defcustom refbox-reference-note-template
-  "%{title|key!refbox-template-clean}"
-  "Template used when deriving note-oriented reference text."
-  :type 'string
-  :group 'refbox)
-
-(defcustom refbox-templates nil
+(defcustom refbox-templates
+  '((main . "${author editor:30%sn}     ${date year issued:4}     ${title:48}")
+    (suffix . "          ${=key= id:15}    ${=type=:12}    ${tags keywords keywords:*}")
+    (preview . "${author editor:%etal} (${year issued date}) ${title}, ${journal journaltitle publisher container-title collection-title}.\n")
+    (note . "Notes on ${author editor:%etal}, ${title}"))
   "Reference display templates.
 
-When non-nil, this alist may contain `main', `suffix', `preview',
-and `note' entries.  Template strings may use `${field:width%transform}'
-or `%{field:width!function}' placeholders."
+This alist may contain `main', `suffix', `preview', and `note'
+entries.  Template strings may use `${field:width%transform}' or
+`%{field:width!function}' placeholders."
   :type '(alist :key-type symbol :value-type string)
   :group 'refbox)
 
@@ -794,11 +774,11 @@ computed property such as indicators, or an indexed bibliography field."
       candidate)
      ((stringp candidate)
       nil)
-     ((member field '("key" "citekey"))
+     ((member field '("key" "citekey" "id" "=key="))
       (refbox--candidate-value candidate :key))
      ((member field '("source_path" "source-path" "source" "path"))
       (refbox--candidate-value candidate :source_path :source-path))
-     ((member field '("entry_type" "entry-type" "type"))
+     ((member field '("entry_type" "entry-type" "type" "=type="))
       (refbox--candidate-value candidate :entry_type :entry-type))
      ((string= field "score")
       (let ((score (refbox--candidate-value candidate :score)))
@@ -1097,7 +1077,7 @@ reference key string."
 When TRUNCATE is an integer, include at most that many names and append
 \"et al.\" when names were omitted.  AND-STRING replaces the final comma
 between displayed names."
-  (let* ((names (split-string (or names "") " and "))
+  (let* ((names (split-string (refbox-template-clean names) " and "))
          (name-count (length names))
          (truncated-names (seq-take names (or truncate name-count)))
          (truncated-count (length truncated-names)))
@@ -1205,7 +1185,7 @@ direct function transform."
                 when (not (refbox--blank-string-p field-value))
                 return field-value))
         (transform (plist-get token :transform)))
-    (setq value (format "%s" (or value "")))
+    (setq value (refbox-template-clean value))
     (when transform
       (setq
        value
@@ -1285,16 +1265,16 @@ direct function transform."
 	       rendered
 	       ""))))
 
-(defun refbox--template (name fallback)
-  "Return configured template NAME or FALLBACK."
+(defun refbox--template (name)
+  "Return configured template NAME."
   (or (alist-get name refbox-templates)
-      fallback))
+      ""))
 
 (defun refbox-reference-format-main (candidate &optional width)
   "Return the main display string for CANDIDATE."
   (string-trim-right
    (refbox-template-format
-    (refbox--template 'main refbox-reference-main-template)
+    (refbox--template 'main)
     candidate
     (or width refbox-reference-display-width))))
 
@@ -1302,21 +1282,21 @@ direct function transform."
   "Return the suffix display string for CANDIDATE."
   (string-trim-right
    (refbox-template-format
-    (refbox--template 'suffix refbox-reference-suffix-template)
+    (refbox--template 'suffix)
     candidate
     width)))
 
 (defun refbox-reference-format-preview (candidate &optional width)
   "Return the preview display string for CANDIDATE."
   (refbox-template-format
-   (refbox--template 'preview refbox-reference-preview-template)
+   (refbox--template 'preview)
    candidate
    width))
 
 (defun refbox-reference-format-note (candidate &optional width)
   "Return note-oriented display text for CANDIDATE."
   (refbox-template-format
-   (refbox--template 'note refbox-reference-note-template)
+   (refbox--template 'note)
    candidate
    width))
 
