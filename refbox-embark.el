@@ -45,6 +45,7 @@
 (declare-function refbox-markdown--completion-bounds "refbox-markdown" ())
 
 (defvar embark-target-finders)
+(defvar embark-candidate-collectors)
 (defvar embark-keymap-alist)
 (defvar embark-multitarget-actions)
 
@@ -76,6 +77,7 @@
 
 (defvar refbox-embark-citation-map
   (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "i") #'refbox-embark-insert-edit)
     (define-key map (kbd "o") #'refbox-embark-open)
     (define-key map (kbd "f") #'refbox-embark-open-files)
     (define-key map (kbd "n") #'refbox-embark-open-notes)
@@ -89,6 +91,20 @@
     (define-key map (kbd "z") #'refbox-embark-open-in-zotero)
     map)
   "Embark actions for refbox citation targets.")
+
+(defvar refbox-embark--target-finders
+  '(refbox-embark-target-reference-candidate
+    refbox-embark-target-citation-at-point)
+  "Target finders installed by `refbox-embark-mode'.")
+
+(defvar refbox-embark--keymap-alist
+  '((refbox-reference . refbox-embark-reference-map)
+    (refbox-citation . refbox-embark-citation-map))
+  "Embark keymap entries installed by `refbox-embark-mode'.")
+
+(defvar refbox-embark--multitarget-actions
+  '(refbox-embark-copy-references)
+  "Embark multi-target actions installed by `refbox-embark-mode'.")
 
 (defun refbox-embark--target-string (reference)
   "Return an Embark target string for REFERENCE."
@@ -214,6 +230,11 @@
   (interactive "sReference: ")
   (refbox-add-file-to-library (refbox-embark-reference target)))
 
+(defun refbox-embark-insert-edit (_target)
+  "Edit the citation at point."
+  (interactive "sReference: ")
+  (refbox-insert-edit))
+
 (defun refbox-embark-attach-file (target)
   "Attach a file resource for TARGET."
   (interactive "sReference: ")
@@ -224,23 +245,46 @@
   (interactive "sReference: ")
   (refbox-open-in-zotero (refbox-embark-reference target)))
 
+(defun refbox-embark--enable ()
+  "Install refbox target finders and keymaps in Embark."
+  (unless (require 'embark nil t)
+    (user-error "Embark is not available"))
+  (dolist (finder (reverse refbox-embark--target-finders))
+    (add-hook 'embark-target-finders finder))
+  (pcase-dolist (`(,category . ,map) refbox-embark--keymap-alist)
+    (setf (alist-get category embark-keymap-alist) map))
+  (when (boundp 'embark-multitarget-actions)
+    (dolist (action refbox-embark--multitarget-actions)
+      (add-to-list 'embark-multitarget-actions action))))
+
+(defun refbox-embark--disable ()
+  "Remove refbox target finders and keymaps from Embark."
+  (dolist (finder refbox-embark--target-finders)
+    (remove-hook 'embark-target-finders finder))
+  (pcase-dolist (`(,category . ,_map) refbox-embark--keymap-alist)
+    (setq embark-keymap-alist
+          (assq-delete-all category embark-keymap-alist)))
+  (when (boundp 'embark-multitarget-actions)
+    (dolist (action refbox-embark--multitarget-actions)
+      (setq embark-multitarget-actions
+            (remq action embark-multitarget-actions)))))
+
 ;;;###autoload
 (defun refbox-embark-setup ()
   "Register refbox targets and action maps with Embark."
   (interactive)
-  (unless (require 'embark nil t)
-    (user-error "Embark is not available"))
-  (add-to-list 'embark-target-finders
-               #'refbox-embark-target-reference-candidate)
-  (add-to-list 'embark-target-finders
-               #'refbox-embark-target-citation-at-point)
-  (add-to-list 'embark-keymap-alist
-               '(refbox-reference . refbox-embark-reference-map))
-  (add-to-list 'embark-keymap-alist
-               '(refbox-citation . refbox-embark-citation-map))
-  (when (boundp 'embark-multitarget-actions)
-    (add-to-list 'embark-multitarget-actions
-                 #'refbox-embark-copy-references)))
+  (refbox-embark--enable))
+
+;;;###autoload
+(define-minor-mode refbox-embark-mode
+  "Toggle Embark integration for refbox."
+  :group 'refbox-embark
+  :global t
+  :init-value nil
+  :lighter " refbox-embark"
+  (if refbox-embark-mode
+      (refbox-embark--enable)
+    (refbox-embark--disable)))
 
 (provide 'refbox-embark)
 

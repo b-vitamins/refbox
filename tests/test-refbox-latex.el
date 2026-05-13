@@ -70,6 +70,27 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
         (should (equal (buffer-string)
                        "Before \\parencite{alpha, beta} after"))))))
 
+(ert-deftest refbox-latex-test-insertion_scopes_selection_to_local_bibliography ()
+  "LaTeX insertion should pass discovered bibliography files to selection."
+  (let* ((root (make-temp-file "refbox-latex-scope-" t))
+         (bib (expand-file-name "refs/main.bib" root))
+         calls)
+    (unwind-protect
+        (let ((default-directory root)
+              (refbox-latex-default-command "cite")
+              (refbox-latex-prompt-for-command nil)
+              (refbox-latex-default-optional-arguments nil))
+          (make-directory (file-name-directory bib) t)
+          (write-region "" nil bib)
+          (refbox-latex-test-with-buffer "\\bibliography{refs/main}\n|"
+            (cl-letf (((symbol-function 'refbox-read-references)
+                       (lambda (&rest args)
+                         (push args calls)
+                         (list (refbox-latex-test-candidate "alpha")))))
+              (refbox-latex-insert-citation)
+              (should (equal (nth 4 (car calls)) (list bib))))))
+      (delete-directory root t))))
+
 (ert-deftest refbox-latex-test-prompts-for-command-and-optional-arguments ()
   "Prompt settings should drive command and optional argument selection."
   (refbox-latex-test-with-buffer "|"

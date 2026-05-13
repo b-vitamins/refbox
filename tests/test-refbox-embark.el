@@ -76,6 +76,26 @@
     (should (memq #'refbox-embark-copy-references
                   embark-multitarget-actions))))
 
+(ert-deftest refbox-embark-test-mode_can_disable_registered_surface ()
+  "The global mode should be reversible."
+  (skip-unless (require 'embark nil t))
+  (let ((embark-target-finders nil)
+        (embark-keymap-alist nil)
+        (embark-multitarget-actions nil)
+        refbox-embark-mode)
+    (refbox-embark-mode 1)
+    (should (memq #'refbox-embark-target-reference-candidate
+                  embark-target-finders))
+    (should (assq 'refbox-reference embark-keymap-alist))
+    (should (memq #'refbox-embark-copy-references
+                  embark-multitarget-actions))
+    (refbox-embark-mode -1)
+    (should-not (memq #'refbox-embark-target-reference-candidate
+                      embark-target-finders))
+    (should-not (assq 'refbox-reference embark-keymap-alist))
+    (should-not (memq #'refbox-embark-copy-references
+                      embark-multitarget-actions))))
+
 (ert-deftest refbox-embark-test-actions-use-stable-reference_identity ()
   "Actions should pass stable reference plists through to core commands."
   (let ((target (refbox-embark--target-string

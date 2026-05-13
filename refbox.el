@@ -2144,9 +2144,10 @@ ARG is passed to the adapter command."
              (extension (read-string "Extension: ")))
          (refbox-add-file-to-library-from-url reference url extension))))))
 
-(defun refbox--completion-state (&optional limit)
-  "Return fresh completion state using LIMIT."
+(defun refbox--completion-state (&optional limit source-paths)
+  "Return fresh completion state using LIMIT and SOURCE-PATHS."
   (list :limit (refbox-rpc--search-limit limit)
+        :source-paths source-paths
         :input nil
         :candidates nil
         :map (make-hash-table :test 'equal)))
@@ -2177,7 +2178,8 @@ ARG is passed to the adapter command."
                       (refbox--completion-candidate-display candidate seen))
                     (refbox-search-references
                      input
-                     (plist-get state :limit))))))
+                     (plist-get state :limit)
+                     (plist-get state :source-paths))))))
   (plist-get state :candidates))
 
 (defun refbox--completion-filter (candidates predicate)
@@ -2238,9 +2240,13 @@ ARG is passed to the adapter command."
       (when-let ((candidate (get-text-property 0 'refbox-candidate completion)))
         (funcall predicate candidate)))))
 
-(defun refbox--read-reference (prompt preset limit allow-empty &optional predicate)
-  "Read one reference with PROMPT, PRESET, LIMIT, ALLOW-EMPTY, and PREDICATE."
-  (let* ((state (refbox--completion-state limit))
+(defun refbox--read-reference
+    (prompt preset limit allow-empty &optional predicate source-paths)
+  "Read one reference.
+
+PROMPT, PRESET, LIMIT, ALLOW-EMPTY, PREDICATE, and SOURCE-PATHS
+control completion and validation."
+  (let* ((state (refbox--completion-state limit source-paths))
          (selection (completing-read
                      prompt
                      (refbox--completion-table state)
@@ -2266,32 +2272,35 @@ ARG is passed to the adapter command."
     (insert (completing-read "Preset: " refbox-presets nil t))))
 
 ;;;###autoload
-(defun refbox-read-reference (&optional prompt preset limit predicate)
+(defun refbox-read-reference (&optional prompt preset limit predicate source-paths)
   "Read and return a single indexed reference candidate.
 
 PRESET is inserted as the initial minibuffer search text.  LIMIT
 bounds each daemon search request.  PREDICATE, when non-nil, is
 called with each candidate and should return non-nil for
-selectable references."
+selectable references.  SOURCE-PATHS restricts searches to those
+bibliography source files."
   (interactive)
   (let ((candidate (refbox--read-reference
                     (or prompt "Reference: ")
                     preset
                     limit
                     nil
-                    predicate)))
+                    predicate
+                    source-paths)))
     (when (called-interactively-p 'interactive)
       (message "refbox: %s" (refbox-reference-field candidate "key")))
     candidate))
 
 ;;;###autoload
-(defun refbox-read-references (&optional prompt preset limit predicate)
+(defun refbox-read-references (&optional prompt preset limit predicate source-paths)
   "Read and return multiple indexed reference candidates.
 
 Each selection performs a bounded daemon search for the current
 minibuffer input.  An empty selection finishes the read.  PREDICATE,
 when non-nil, is called with each candidate and should return
-non-nil for selectable references."
+non-nil for selectable references.  SOURCE-PATHS restricts
+searches to those bibliography source files."
   (interactive)
   (let ((prompt (or prompt "Reference (empty when done): "))
         (next-preset preset)
@@ -2299,7 +2308,7 @@ non-nil for selectable references."
         candidate)
     (while (setq candidate
                  (refbox--read-reference
-                  prompt next-preset limit t predicate))
+                  prompt next-preset limit t predicate source-paths))
       (push candidate selected)
       (setq next-preset nil))
     (setq selected (nreverse selected))

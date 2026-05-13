@@ -48,6 +48,25 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
       (should (equal (buffer-string)
                      "Alpha [cite:@alpha; @beta]omega")))))
 
+(ert-deftest refbox-org-test-insertion_scopes_selection_to_local_bibliography ()
+  "Org insertion should pass local bibliography files to reference selection."
+  (let* ((root (make-temp-file "refbox-org-scope-" t))
+         (bib (expand-file-name "refs/main.bib" root))
+         calls)
+    (unwind-protect
+        (let ((default-directory root)
+              (org-cite-global-bibliography nil))
+          (make-directory (file-name-directory bib) t)
+          (write-region "" nil bib)
+          (refbox-org-test-with-buffer "#+bibliography: refs/main.bib\n\n|"
+            (cl-letf (((symbol-function 'refbox-read-references)
+                       (lambda (&rest args)
+                         (push args calls)
+                         (list (refbox-org-test-candidate "alpha")))))
+              (refbox-org-insert-citation)
+              (should (equal (nth 4 (car calls)) (list bib))))))
+      (delete-directory root t))))
+
 (ert-deftest refbox-org-test-replaces-existing-reference ()
   "Org insertion on a reference key should replace that one reference."
   (refbox-org-test-with-buffer "[cite:@al|pha; @beta]"
@@ -76,6 +95,23 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
       (refbox-org-insert-citation)
       (should (equal (buffer-string)
                      "[cite/text:@alpha]")))))
+
+(ert-deftest refbox-org-test-style_selection_uses_org_supported_styles ()
+  "Style completion should use Org's supported style registry by default."
+  (let ((refbox-org-citation-styles nil))
+    (cl-letf (((symbol-function 'org-cite-supported-styles)
+               (lambda (&optional _targets)
+                 '((("nil") ("/b"))
+                   (("text") ("/f")))))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _args)
+                 (car (all-completions "text" collection)))))
+      (should (equal (refbox-org-select-style) "text"))))
+  (let ((refbox-org-citation-styles '("author")))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _args)
+                 (car (all-completions "" collection)))))
+      (should (equal (refbox-org-select-style) "author")))))
 
 (ert-deftest refbox-org-test-delete-and-kill-citation-elements ()
   "Deletion and kill commands should use Org citation boundaries."
@@ -116,6 +152,11 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
     (should (eq (org-element-type (refbox-org-reference-at-point))
                 'citation-reference))))
 
+(ert-deftest refbox-org-test-key-at-point_reads_node_property_refs ()
+  "Org key helper should find @KEY references in property drawers."
+  (refbox-org-test-with-buffer ":PROPERTIES:\n:ROAM_REFS: @smi|th2020\n:END:\n"
+    (should (equal (refbox-org-key-at-point) "smith2020"))))
+
 (ert-deftest refbox-org-test-follow-at-citation-and-reference-locations ()
   "Follow should dispatch the key through the configured action."
   (dolist (fixture '("[ci|te:@alpha]" "[cite:@al|pha]"))
@@ -140,12 +181,14 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
   (let ((root (make-temp-file "refbox-org-bib-" t)))
     (unwind-protect
         (let ((default-directory root)
-              (org-cite-global-bibliography nil))
+              (global-bib (expand-file-name "global.bib" root)))
           (make-directory (expand-file-name "refs" root))
           (write-region "" nil (expand-file-name "refs/main.bib" root))
+          (write-region "" nil global-bib)
           (refbox-org-test-with-buffer "#+bibliography: refs/main.bib\n\n|Body"
-            (should (equal (refbox-org-bibliography-files)
-                           (list (expand-file-name "refs/main.bib" root))))))
+            (let ((org-cite-global-bibliography (list global-bib)))
+              (should (equal (refbox-org-bibliography-files)
+                             (list (expand-file-name "refs/main.bib" root)))))))
       (delete-directory root t))))
 
 (ert-deftest refbox-org-test-lists-current-buffer-keys ()

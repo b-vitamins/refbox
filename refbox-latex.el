@@ -258,7 +258,12 @@
   (mapcar (lambda (candidate)
             (or (plist-get candidate :key)
                 (user-error "refbox candidate has no key")))
-          (refbox-read-references "References: ")))
+          (refbox-read-references
+           "References: "
+           nil
+           nil
+           nil
+           (refbox-latex-bibliography-files))))
 
 (defun refbox-latex--new-keys (keys existing)
   "Return KEYS that are not already present in EXISTING."

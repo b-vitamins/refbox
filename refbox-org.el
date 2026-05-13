@@ -36,6 +36,7 @@
 (require 'oc-basic nil t)
 (require 'org)
 (require 'org-element)
+(require 'seq)
 (require 'subr-x)
 (require 'refbox)
 
@@ -59,10 +60,19 @@
   :type '(choice (const :tag "No explicit style" nil) string)
   :group 'refbox-org)
 
-(defcustom refbox-org-citation-styles
-  '("author" "text" "nocite" "noauthor")
-  "Citation styles offered by `refbox-org--select-style'."
-  :type '(repeat string)
+(defcustom refbox-org-citation-styles nil
+  "Citation styles offered by `refbox-org-select-style'.
+
+When nil, styles are read from Org's supported citation styles."
+  :type '(choice (const :tag "Use Org supported styles" nil)
+                 (repeat string))
+  :group 'refbox-org)
+
+(defcustom refbox-org-style-targets nil
+  "Org citation export processors used to limit style completion.
+
+When nil, all styles reported by Org are offered."
+  :type '(repeat symbol)
   :group 'refbox-org)
 
 (defcustom refbox-org-follow-action #'refbox-org-open-source
@@ -84,6 +94,18 @@ Each function receives the citation datum."
 
 (defvar refbox-org-style-history nil
   "Minibuffer history for Org citation styles.")
+
+(defconst refbox-org--key-regexp "[[:alnum:]_:.#$%&+?<>~/=-]+"
+  "Regexp matching a refbox citation key in Org buffers.")
+
+(defvar refbox-org-style-preview-alist
+  '(("/" . "(de Villiers et al, 2019)")
+    ("/b" . "de Villiers et al, 2019")
+    ("text" . "de Villiers et al (2019)")
+    ("author" . "de Villiers et al")
+    ("noauthor" . "(2019)")
+    ("nocite" . "No bibliography citation"))
+  "Example previews for common Org citation styles.")
 
 (defvar refbox-org-citation-map
   (let ((map (make-sparse-keymap)))
@@ -112,24 +134,96 @@ Each function receives the citation datum."
 
 When MULTIPLE is non-nil, return a list of keys.  Otherwise return
 a single key."
-  (if multiple
-      (mapcar #'refbox-org--candidate-key
-              (refbox-read-references "References: "))
-    (refbox-org--candidate-key
-     (refbox-read-reference "Reference: "))))
+  (let ((source-paths (refbox-org-bibliography-files)))
+    (if multiple
+        (mapcar #'refbox-org--candidate-key
+                (refbox-read-references
+                 "References: "
+                 nil
+                 nil
+                 nil
+                 source-paths))
+      (refbox-org--candidate-key
+       (refbox-read-reference
+        "Reference: "
+        nil
+        nil
+        nil
+        source-paths)))))
+
+(defun refbox-org--flat-styles (&optional targets)
+  "Return flat Org citation styles for TARGETS."
+  (let (styles)
+    (dolist (style-variants (org-cite-supported-styles targets))
+      (seq-let (style &rest variants) style-variants
+        (let ((style-name (if (string= "nil" (car style)) "/" (car style))))
+          (push style-name styles)
+          (dolist (variant variants)
+            (let ((variant-name (format "%s" (or (cadr variant) (car variant)))))
+              (push (concat style-name
+                            (unless (string= "/" style-name) "/")
+                            (string-remove-prefix "/" variant-name))
+                    styles))))))
+    (delete-dups (nreverse styles))))
+
+(defun refbox-org-style-candidates ()
+  "Return Org citation style completion candidates."
+  (or refbox-org-citation-styles
+      (sort (refbox-org--flat-styles refbox-org-style-targets)
+            #'string-lessp)))
+
+(defun refbox-org--style-group (style transform)
+  "Return group metadata for STYLE.
+
+When TRANSFORM is non-nil, return the displayed candidate."
+  (let* ((style (string-trim style))
+         (base (if (string-prefix-p "/" style)
+                   "default"
+                 (car (split-string style "/")))))
+    (if transform
+        (concat "  " (truncate-string-to-width style 20 nil 32))
+      (pcase base
+        ("author" "Author")
+        ("locators" "Locators")
+        ("text" "Textual")
+        ("nocite" "No Cite")
+        ("year" "Year")
+        ("noauthor" "No Author")
+        (_ (upcase-initials base))))))
+
+(defun refbox-org--style-annotation (style)
+  "Return preview annotation for STYLE."
+  (let ((preview (or (cdr (assoc style refbox-org-style-preview-alist)) "")))
+    (truncate-string-to-width preview 50 nil 32)))
+
+;;;###autoload
+(defun refbox-org-select-style ()
+  "Complete an Org citation style."
+  (interactive)
+  (let* ((candidates (refbox-org-style-candidates))
+         (style (completing-read
+                 "Citation style: "
+                 (lambda (string predicate action)
+                   (if (eq action 'metadata)
+                       '(metadata
+                         (annotation-function . refbox-org--style-annotation)
+                         (group-function . refbox-org--style-group))
+                     (complete-with-action
+                      action candidates string predicate)))
+                 nil
+                 nil
+                 nil
+                 'refbox-org-style-history
+                 refbox-org-default-style))
+         (style (string-trim style)))
+    (cond
+     ((string-empty-p style) nil)
+     ((string= style "/") "")
+     (t style))))
 
 (defun refbox-org--select-style (_citation)
   "Read an Org citation style."
-  (let ((style (completing-read
-                "Citation style: "
-                refbox-org-citation-styles
-                nil
-                nil
-                nil
-                'refbox-org-style-history
-                refbox-org-default-style)))
-    (unless (string-empty-p style)
-      style)))
+  (refbox-org-select-style))
 
 (defun refbox-org--insert-processor ()
   "Return the refbox Org citation insert processor."
@@ -190,9 +284,20 @@ citation, a non-nil ARG requests an explicit citation style."
 
 (defun refbox-org-key-at-point (&optional datum)
   "Return the Org citation key at point or in DATUM."
-  (let ((reference (refbox-org-reference-at-point datum)))
-    (when reference
-      (org-element-property :key reference))))
+  (or (let ((reference (refbox-org-reference-at-point datum)))
+        (when reference
+          (org-element-property :key reference)))
+      (refbox-org-property-key-at-point datum)))
+
+(defun refbox-org-property-key-at-point (&optional datum)
+  "Return an @KEY citation key from an Org node property at point."
+  (let ((context (or datum (org-element-context))))
+    (when (and (eq (org-element-type context) 'node-property)
+               (org-in-regexp
+                (concat "[[:space:]]@\\("
+                        refbox-org--key-regexp
+                        "\\)")))
+      (match-string-no-properties 1))))
 
 (defun refbox-org--reference-or-error ()
   "Return the citation reference at point or signal a user error."
@@ -423,7 +528,10 @@ DIRECTION is -1 for left and 1 for right."
 
 Relative paths are expanded against the buffer's `default-directory'."
   (with-current-buffer (or buffer (current-buffer))
-    (mapcar #'expand-file-name (org-cite-list-bibliography-files))))
+    (seq-difference
+     (mapcar #'expand-file-name (org-cite-list-bibliography-files))
+     (mapcar #'expand-file-name org-cite-global-bibliography)
+     #'equal)))
 
 (provide 'refbox-org)
 
