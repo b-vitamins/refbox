@@ -36,7 +36,7 @@ fn stdio_rpc_contract_covers_success_and_error_shapes() {
     assert!(sync["diagnostic_count"].as_u64().expect("diagnostics") >= 1);
 
     let status = rpc.result(2, METHOD_STATUS, json!({}));
-    assert_eq!(status["schema_version"], 5);
+    assert_eq!(status["schema_version"], 6);
     assert_eq!(status["counts"]["file_count"], 5);
     assert!(status["counts"]["entry_count"].as_u64().expect("entries") >= 5);
 

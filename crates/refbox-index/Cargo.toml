@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+bibtex-parser.workspace = true
 globset.workspace = true
 refbox-core = { path = "../refbox-core" }
 sha2.workspace = true

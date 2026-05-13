@@ -255,7 +255,7 @@ pub struct SourcePosition {
 }
 
 impl SourcePosition {
-    /// Creates a source position with a byte offset, 1-based line, and 0-based column.
+    /// Creates a source position with a byte offset, 1-based line, and 1-based column.
     #[must_use]
     pub fn new(byte: u64, line: u32, column: u32) -> Self {
         Self { byte, line, column }
@@ -292,7 +292,28 @@ pub enum ResourceKind {
     Doi,
     Pmid,
     Pmcid,
+    Isbn,
+    Issn,
+    Eprint,
+    Arxiv,
     Crossref,
+}
+
+impl From<bibtex_parser::ResourceKind> for ResourceKind {
+    fn from(kind: bibtex_parser::ResourceKind) -> Self {
+        match kind {
+            bibtex_parser::ResourceKind::File => Self::File,
+            bibtex_parser::ResourceKind::Url => Self::Url,
+            bibtex_parser::ResourceKind::Doi => Self::Doi,
+            bibtex_parser::ResourceKind::Pmid => Self::Pmid,
+            bibtex_parser::ResourceKind::Pmcid => Self::Pmcid,
+            bibtex_parser::ResourceKind::Isbn => Self::Isbn,
+            bibtex_parser::ResourceKind::Issn => Self::Issn,
+            bibtex_parser::ResourceKind::Eprint => Self::Eprint,
+            bibtex_parser::ResourceKind::Arxiv => Self::Arxiv,
+            bibtex_parser::ResourceKind::Crossref => Self::Crossref,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -374,15 +395,7 @@ pub fn normalize_lookup_name(name: &str) -> String {
 
 #[must_use]
 pub fn resource_kind_for_lookup_name(lookup_name: &str) -> Option<ResourceKind> {
-    match lookup_name {
-        "file" => Some(ResourceKind::File),
-        "url" => Some(ResourceKind::Url),
-        "doi" => Some(ResourceKind::Doi),
-        "pmid" => Some(ResourceKind::Pmid),
-        "pmcid" => Some(ResourceKind::Pmcid),
-        "crossref" => Some(ResourceKind::Crossref),
-        _ => None,
-    }
+    bibtex_parser::classify_resource_field(lookup_name).map(ResourceKind::from)
 }
 
 #[must_use]
@@ -563,6 +576,10 @@ mod tests {
             ("doi", ResourceKind::Doi),
             ("pmid", ResourceKind::Pmid),
             ("pmcid", ResourceKind::Pmcid),
+            ("isbn", ResourceKind::Isbn),
+            ("issn", ResourceKind::Issn),
+            ("eprint", ResourceKind::Eprint),
+            ("arxiv", ResourceKind::Arxiv),
             ("crossref", ResourceKind::Crossref),
         ];
 

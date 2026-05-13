@@ -11,7 +11,7 @@ use refbox_core::{
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params, params_from_iter};
 use thiserror::Error;
 
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
@@ -747,6 +747,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (3, MIGRATION_003),
     (4, MIGRATION_004),
     (5, MIGRATION_005),
+    (6, MIGRATION_006),
 ];
 
 const MIGRATION_001: &str = r#"
@@ -949,6 +950,32 @@ FROM entry_fts;
 
 DROP TABLE entry_fts;
 ALTER TABLE entry_fts_v5 RENAME TO entry_fts;
+"#;
+
+const MIGRATION_006: &str = r#"
+UPDATE entries
+SET source_start_column = source_start_column + 1,
+    source_end_column = source_end_column + 1;
+
+UPDATE fields
+SET source_start_column = source_start_column + 1,
+    source_end_column = source_end_column + 1
+WHERE source_start_column IS NOT NULL;
+
+UPDATE names
+SET source_start_column = source_start_column + 1,
+    source_end_column = source_end_column + 1
+WHERE source_start_column IS NOT NULL;
+
+UPDATE resources
+SET source_start_column = source_start_column + 1,
+    source_end_column = source_end_column + 1
+WHERE source_start_column IS NOT NULL;
+
+UPDATE diagnostics
+SET source_start_column = source_start_column + 1,
+    source_end_column = source_end_column + 1
+WHERE source_start_column IS NOT NULL;
 "#;
 
 fn delete_existing_file(tx: &Transaction<'_>, path: &str) -> Result<()> {
@@ -1460,6 +1487,10 @@ fn resource_kind_name(kind: ResourceKind) -> &'static str {
         ResourceKind::Doi => "doi",
         ResourceKind::Pmid => "pmid",
         ResourceKind::Pmcid => "pmcid",
+        ResourceKind::Isbn => "isbn",
+        ResourceKind::Issn => "issn",
+        ResourceKind::Eprint => "eprint",
+        ResourceKind::Arxiv => "arxiv",
         ResourceKind::Crossref => "crossref",
     }
 }

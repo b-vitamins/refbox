@@ -352,6 +352,7 @@ extension is not present in this alist,
 (defcustom refbox-resource-link-templates
   '((url . "%s")
     (doi . "https://doi.org/%s")
+    (arxiv . "https://arxiv.org/abs/%s")
     (pmid . "https://pubmed.ncbi.nlm.nih.gov/%s/")
     (pmcid . "https://www.ncbi.nlm.nih.gov/pmc/articles/%s/"))
   "Alist mapping resource kinds to URL format strings."
@@ -884,8 +885,8 @@ loaded for CANDIDATE."
 (defconst refbox-search--tag-resource-kinds
   '(("has:file" . ("file"))
     ("has:files" . ("file"))
-    ("has:link" . ("url" "doi" "pmid" "pmcid"))
-    ("has:links" . ("url" "doi" "pmid" "pmcid")))
+    ("has:link" . ("url" "doi" "arxiv" "pmid" "pmcid"))
+    ("has:links" . ("url" "doi" "arxiv" "pmid" "pmcid")))
   "Search tags that can be pushed into the daemon resource filter.")
 
 (defconst refbox-search--post-filter-tags
@@ -1920,7 +1921,7 @@ COMMAND controls `refbox-open-always-create-notes'."
       (when line
         (forward-line (1- line)))
       (when column
-        (move-to-column column)))
+        (move-to-column (max 0 (1- column)))))
     location))
 
 (defun refbox-zotero-url (reference)

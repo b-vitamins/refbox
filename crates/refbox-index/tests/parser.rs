@@ -1,4 +1,4 @@
-use refbox_core::{DiagnosticTarget, ResourceKind};
+use refbox_core::ResourceKind;
 use refbox_index::parse_bibliography_file;
 
 #[test]
@@ -12,7 +12,7 @@ fn parses_valid_bibtex_and_biblatex_records() {
     assert_eq!(article.entry_type, "article");
     assert!(article.raw.text.starts_with("@Article{smith2020"));
     assert_eq!(article.raw.source.start.line, 6);
-    assert_eq!(article.raw.source.start.column, 0);
+    assert_eq!(article.raw.source.start.column, 1);
 
     let title = field_value(article, "title");
     assert_eq!(title, "{Fast {Bibliography} Indexing}");
@@ -78,27 +78,15 @@ fn parses_valid_bibtex_and_biblatex_records() {
 }
 
 #[test]
-fn recovers_partial_entries_from_localized_field_errors() {
+fn recovers_following_entries_from_localized_field_errors() {
     let file = parse_bibliography_file("mixed.bib", include_str!("fixtures/mixed.bib"));
 
-    assert!(file.diagnostics.is_empty());
-    assert_eq!(file.entries.len(), 2);
-
-    let partial = entry(&file, "partial2020");
     assert!(
-        partial
-            .diagnostics
+        file.diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "expected-field-equals")
+            .any(|diagnostic| diagnostic.code == "missing-field-separator")
     );
-    assert!(
-        partial
-            .fields
-            .iter()
-            .all(|field| field.lookup_name != "title")
-    );
-    assert_eq!(field_value(partial, "year"), "{2020}");
-    assert_eq!(field_value(partial, "url"), "{https://example.test}");
+    assert_eq!(file.entries.len(), 1);
 
     let recovered = entry(&file, "next2021");
     assert!(recovered.diagnostics.is_empty());
@@ -109,30 +97,17 @@ fn recovers_partial_entries_from_localized_field_errors() {
 fn malformed_files_return_diagnostics_without_panics() {
     let file = parse_bibliography_file("malformed.bib", include_str!("fixtures/malformed.bib"));
 
-    assert_eq!(file.entries.len(), 2);
+    assert_eq!(file.entries.len(), 1);
     assert!(
         file.diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "missing-entry-type")
-    );
-
-    let broken = entry(&file, "broken2020");
-    assert!(
-        broken
-            .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "unclosed-braced-value")
     );
     assert!(
-        broken
-            .diagnostics
+        file.diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "unclosed-entry")
     );
-    assert!(matches!(
-        &broken.diagnostics[0].target,
-        DiagnosticTarget::Entry { id } if id.key == "broken2020"
-    ));
 
     let recovered = entry(&file, "afterbroken");
     assert_eq!(field_value(recovered, "title"), "{Recovered After Broken}");

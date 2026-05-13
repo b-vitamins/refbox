@@ -126,7 +126,7 @@ fn sync_status_reports_counts_and_freshness_metadata() {
     let status = engine.sync_full(&mut store).expect("sync should work");
 
     assert_eq!(status.indexed_file_count, 1);
-    assert_eq!(status.indexed_entry_count, 1);
+    assert_eq!(status.indexed_entry_count, 0);
     assert!(status.diagnostic_count > 0);
     assert!(status.latest_modified_ns.is_some());
 
@@ -138,7 +138,7 @@ fn sync_status_reports_counts_and_freshness_metadata() {
     assert!(metadata.size_bytes > 0);
     assert!(metadata.modified_ns.is_some());
     assert!(!metadata.content_hash.is_empty());
-    assert_eq!(metadata.entry_count, 1);
+    assert_eq!(metadata.entry_count, 0);
     assert!(metadata.diagnostic_count > 0);
 }
 

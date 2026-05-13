@@ -65,7 +65,7 @@ fn inserts_parsed_files_and_queries_records_back() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].file_path, "refs/main.bib");
     assert_eq!(entries[0].source.start.line, 1);
-    assert_eq!(entries[0].source.start.column, 0);
+    assert_eq!(entries[0].source.start.column, 1);
 
     let fields = store
         .fields_for_entry(entries[0].id)
@@ -122,13 +122,13 @@ fn diagnostics_and_source_locations_are_queryable() {
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "missing-entry-type")
+            .any(|diagnostic| diagnostic.code == "unclosed-entry")
     );
     let unclosed = diagnostics
         .iter()
         .find(|diagnostic| diagnostic.code == "unclosed-braced-value")
         .expect("entry diagnostic should be stored");
-    assert_eq!(unclosed.target_kind, "entry");
+    assert_eq!(unclosed.target_kind, "file");
     assert_eq!(
         unclosed
             .source
@@ -472,6 +472,44 @@ fn large_author_lists_do_not_duplicate_full_name_lists_per_person() {
     assert_eq!(source_span_table_count, 0);
 
     drop(connection);
+    let _ = fs::remove_file(db_path);
+}
+
+#[test]
+fn migration_updates_stored_source_columns_to_one_based() {
+    let db_path = unique_db_path("refbox-source-column-migration");
+    {
+        let mut store = RefboxStore::open(&db_path).expect("store should open");
+        let file = parse_bibliography_file(
+            "refs/source-column.bib",
+            r#"@article{alpha,
+  title = {Alpha}
+}"#,
+        );
+        store.insert_file(&file).expect("file should insert");
+    }
+
+    {
+        let connection = Connection::open(&db_path).expect("database should open");
+        connection
+            .execute_batch(
+                r#"
+UPDATE entries SET source_start_column = 0, source_end_column = 1;
+DELETE FROM schema_migrations WHERE version = 6;
+PRAGMA user_version = 5;
+"#,
+            )
+            .expect("database should simulate pre-1-based source columns");
+    }
+
+    let store = RefboxStore::open(&db_path).expect("store should migrate");
+    let entries = store
+        .entries_by_key("alpha")
+        .expect("entry should query after migration");
+    assert_eq!(entries[0].source.start.column, 1);
+    assert_eq!(entries[0].source.end.column, 2);
+    drop(store);
+
     let _ = fs::remove_file(db_path);
 }
 

@@ -651,7 +651,7 @@
                        (should (equal params (list :key "alpha")))
                        `(:key "alpha"
                          :source_path ,source-file
-                         :source (:start (:line 2 :column 2))))))
+                         :source (:start (:line 2 :column 3))))))
             (refbox-open-source "alpha")
             (should (equal (buffer-file-name) source-file))
             (should (= (line-number-at-pos) 2))

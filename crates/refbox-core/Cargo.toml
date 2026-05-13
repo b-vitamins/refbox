@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+bibtex-parser.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
