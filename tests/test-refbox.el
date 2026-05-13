@@ -961,8 +961,9 @@
         (progn
           (with-temp-file file)
           (let ((candidate (copy-tree refbox-test-reference-candidate))
-                (refbox-file-open-function
-                 (lambda (target) (push (cons 'file target) opened)))
+                (refbox-file-open-functions
+                 `((t . ,(lambda (target)
+                           (push (cons 'file target) opened)))))
                 (refbox-link-open-function
                  (lambda (target) (push (cons 'link target) opened)))
                 (refbox-open-note-function
@@ -999,6 +1000,12 @@
                      "/tmp/refbox-test.html"))
       (should (equal opened "/tmp/refbox-test.html")))))
 
+(ert-deftest refbox-test-file_openers_require_matching_dispatch ()
+  "File opening should fail when no extension or default opener matches."
+  (let ((refbox-file-open-functions nil))
+    (should-error (refbox-file-open "/tmp/refbox-test.pdf")
+                  :type 'user-error)))
+
 (ert-deftest refbox-test-open_without_note_paths_does_not_offer_uncreatable_notes ()
   "Resource opening should not fail while building unavailable note choices."
   (let ((candidate '(:key "empty2020" :fields nil :resources nil))
@@ -1020,11 +1027,11 @@
           (dolist (file (list pdf html))
             (with-temp-file file))
           (let ((candidate (copy-tree refbox-test-reference-candidate))
-                (refbox-file-open-function
-                 (lambda (target) (push (cons 'default target) opened)))
                 (refbox-file-open-functions
                  `(("html" . ,(lambda (target)
-                                (push (cons 'html target) opened)))))
+                                (push (cons 'html target) opened)))
+                   (t . ,(lambda (target)
+                           (push (cons 'default target) opened)))))
                 (refbox-open-prompt nil))
             (setq candidate
                   (plist-put candidate :resources

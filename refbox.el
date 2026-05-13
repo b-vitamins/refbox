@@ -502,19 +502,17 @@ source and return the destination file name."
   :type 'function
   :group 'refbox)
 
-(defcustom refbox-file-open-function #'find-file
-  "Function used to open file resources."
-  :type 'function
-  :group 'refbox)
-
 (defcustom refbox-file-open-functions
-  '(("html" . refbox-file-open-external))
+  '(("html" . refbox-file-open-external)
+    (t . find-file))
   "Alist mapping file extensions to resource opening functions.
 
-Keys are extension strings without a leading dot.  When a file's
-extension is not present in this alist,
-`refbox-file-open-function' is used."
-  :type '(alist :key-type string :value-type function)
+Keys are extension strings without a leading dot.  The entry with key
+t is used as the default when no extension entry matches."
+  :type '(repeat (cons
+                  (choice (string :tag "Extension")
+                          (symbol :tag "Default" t))
+                  (function :tag "Function")))
   :group 'refbox)
 
 (defcustom refbox-link-open-function #'browse-url
@@ -2293,13 +2291,18 @@ single choice is accepted without prompting."
 
 (defun refbox-file-open (file)
   "Open FILE using the configured resource opener."
-  (let* ((extension (file-name-extension file))
-         (function (and extension
-                        (alist-get (downcase extension)
-                                   refbox-file-open-functions
-                                   nil nil #'equal))))
+  (let* ((file (expand-file-name file))
+         (extension (file-name-extension file))
+         (function (cdr (or (and extension
+                                  (assoc-string extension
+                                                refbox-file-open-functions
+                                                'case-fold))
+                            (assq t refbox-file-open-functions)))))
+    (unless function
+      (user-error "Could not find extension in `refbox-file-open-functions': %s"
+                  extension))
     (refbox--open-target
-     (or function refbox-file-open-function)
+     function
      file)))
 
 (defun refbox-file-open-external (file)
