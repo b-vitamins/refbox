@@ -41,8 +41,12 @@
   :prefix "refbox-latex-")
 
 (defcustom refbox-latex-citation-commands
-  '("cite" "citet" "citep" "citealp" "citealt" "citeauthor" "citeyear"
-    "parencite" "textcite" "autocite" "footcite" "supercite")
+  '("cite" "Cite" "citet" "Citet" "citep" "Citep" "citealp" "citealt"
+    "parencite" "Parencite" "footcite" "footcitetext" "textcite"
+    "Textcite" "smartcite" "Smartcite" "autocite" "Autocite"
+    "citeauthor" "Citeauthor" "citetitle" "citeyear" "citedate"
+    "citeurl" "fullcite" "footfullcite" "notecite" "Notecite"
+    "pnotecite" "Pnotecite" "fnotecite" "nocite" "supercite")
   "LaTeX citation commands recognized by refbox."
   :type '(repeat string)
   :group 'refbox-latex)

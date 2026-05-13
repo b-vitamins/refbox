@@ -56,6 +56,17 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
       (should (equal (plist-get citation :keys) '("alpha" "beta")))
       (should (equal (refbox-latex-key-at-point) "beta")))))
 
+(ert-deftest refbox-latex-test-recognizes_extended_citation_commands ()
+  "Default command recognition should cover common BibLaTeX and Natbib forms."
+  (refbox-latex-test-with-buffer "\\footfullcite{al|pha}"
+    (let ((citation (refbox-latex-citation-at-point)))
+      (should (equal (plist-get citation :command) "footfullcite"))
+      (should (equal (plist-get citation :keys) '("alpha")))))
+  (refbox-latex-test-with-buffer "\\Citep*{be|ta}"
+    (let ((citation (refbox-latex-citation-at-point)))
+      (should (equal (plist-get citation :command) "Citep*"))
+      (should (equal (plist-get citation :keys) '("beta"))))))
+
 (ert-deftest refbox-latex-test-inserts-default-command ()
   "Insertion should honor the configured default command."
   (refbox-latex-test-with-buffer "Before | after"

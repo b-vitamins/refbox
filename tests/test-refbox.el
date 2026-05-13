@@ -167,6 +167,14 @@
     "refs/main\\.bib"
     (refbox-reference-format-preview refbox-test-reference-candidate))))
 
+(ert-deftest refbox-test-template-formatting-supports_configured_ellipsis ()
+  "Template field truncation should support a configured ellipsis marker."
+  (let ((refbox-template-ellipsis "..."))
+    (should (equal (refbox-template-format
+                    "%{title:10!refbox-template-clean}"
+                    refbox-test-reference-candidate)
+                   "Alpha R..."))))
+
 (ert-deftest refbox-test-completion-candidates-carry_metadata ()
   "Completion candidates should come from bounded RPC search and carry metadata."
   (let ((refbox-reference-main-template "%{key} %{title!refbox-template-clean}")
@@ -316,6 +324,33 @@
                     '("paper.pdf" "smith2020.pdf" "smith2020-extra.pdf")))))
       (delete-directory root t))))
 
+(ert-deftest refbox-test-local_resource_lookup_uses_crossref_parent_keys ()
+  "File lookup should include parent keys declared by cross-reference fields."
+  (let* ((root (make-temp-file "refbox-crossref-files-" t))
+         (library (expand-file-name "library" root))
+         (candidate
+          (list :key "child2021"
+                :fields '((:raw_name "crossref" :lookup_name "crossref"
+                            :value "{parent2020}")))))
+    (unwind-protect
+        (progn
+          (make-directory library t)
+          (with-temp-file (expand-file-name "parent2020.pdf" library))
+          (let ((refbox-resource-library-paths (list library))
+                (refbox-resource-library-file-extensions '("pdf")))
+            (should (equal (refbox-reference-crossref-keys candidate)
+                           '("parent2020")))
+            (should (equal (mapcar #'file-name-nondirectory
+                                   (refbox-reference-files
+                                    candidate
+                                    (refbox--candidate-resources candidate)))
+                           '("parent2020.pdf")))
+            (cl-letf (((symbol-function 'refbox-rpc-request)
+                       (lambda (&rest _args)
+                         (error "unexpected RPC"))))
+              (should (refbox-reference-has-files-p candidate)))))
+      (delete-directory root t))))
+
 (ert-deftest refbox-test-note-filename-uses-existing-or-default_path ()
   "Note filename generation should prefer existing notes and create stable names."
   (let* ((root (make-temp-file "refbox-notes-" t))
@@ -328,6 +363,28 @@
             (should (equal (refbox-note-filename "smith2020") existing))
             (should (equal (refbox-note-filename "doe/2021")
                            (expand-file-name "doe_2021.org" root)))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-file_notes_use_crossref_parent_keys ()
+  "File-backed note lookup should include cross-reference parent keys."
+  (let* ((root (make-temp-file "refbox-crossref-notes-" t))
+         (candidate
+          (list :key "child2021"
+                :fields '((:raw_name "crossref" :lookup_name "crossref"
+                            :value "{parent2020}"))))
+         (note (expand-file-name "parent2020.org" root)))
+    (unwind-protect
+        (progn
+          (with-temp-file note)
+          (let ((refbox-note-paths (list root))
+                (refbox-note-file-extensions '("org")))
+            (should (equal (refbox-note-source-file-items
+                            "child2021"
+                            candidate)
+                           (list note)))
+            (should (refbox-note-source-file-has-items
+                     "child2021"
+                     candidate))))
       (delete-directory root t))))
 
 (ert-deftest refbox-test-note_sources_are_swappable ()
@@ -435,6 +492,17 @@
           (should (member (cons 'note (expand-file-name "smith2020.org" root))
                           opened)))
       (delete-directory root t))))
+
+(ert-deftest refbox-test-file_openers_default_html_to_external_opener ()
+  "HTML resources should use the external file opener by default."
+  (let ((opened nil))
+    (cl-letf (((symbol-function 'refbox-resource-open-file-externally)
+               (lambda (file)
+                 (setq opened file)
+                 file)))
+      (should (equal (refbox-resource-open-file "/tmp/refbox-test.html")
+                     "/tmp/refbox-test.html"))
+      (should (equal opened "/tmp/refbox-test.html")))))
 
 (ert-deftest refbox-test-open_without_note_paths_does_not_offer_uncreatable_notes ()
   "Resource opening should not fail while building unavailable note choices."
@@ -623,6 +691,27 @@
                              (expand-file-name "alpha.pdf" library-b)))))
           (should-not (file-exists-p (expand-file-name "alpha.pdf" library-a)))
           (should (file-exists-p (expand-file-name "alpha.pdf" library-b))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-add-buffer-to-library_confirms_before_overwrite ()
+  "Buffer-backed library saves should confirm before replacing files."
+  (let* ((root (make-temp-file "refbox-library-overwrite-" t))
+         (library (expand-file-name "library" root))
+         (destination (expand-file-name "alpha.pdf" library)))
+    (unwind-protect
+        (let ((refbox-resource-library-paths (list library)))
+          (make-directory library t)
+          (with-temp-file destination
+            (insert "old"))
+          (cl-letf (((symbol-function 'yes-or-no-p)
+                     (lambda (_prompt) t)))
+            (with-temp-buffer
+              (insert "new")
+              (should (equal (refbox-add-buffer-to-library "alpha" "pdf" 1)
+                             destination))))
+          (with-temp-buffer
+            (insert-file-contents destination)
+            (should (equal (buffer-string) "new"))))
       (delete-directory root t))))
 
 (ert-deftest refbox-test-csl-style-metadata-and-selection ()

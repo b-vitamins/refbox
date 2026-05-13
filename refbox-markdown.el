@@ -65,7 +65,19 @@
   :type 'string
   :group 'refbox-markdown)
 
-(defconst refbox-markdown--key-regexp "-?@[[:alnum:]_:.#$%&+?<>~/=-]+")
+(defconst refbox-markdown--key-regexp
+  (concat "-?@"
+          "\\(?:"
+          "{\\([^}\n]+\\)}"
+          "\\|"
+          "\\([[:alnum:]_:.#$%&+?<>~/=-]+\\)"
+          "\\)")
+  "Regexp matching a Pandoc citation key.")
+
+(defun refbox-markdown--match-key ()
+  "Return the citation key captured by `refbox-markdown--key-regexp'."
+  (or (match-string-no-properties 1)
+      (match-string-no-properties 2)))
 
 (defun refbox-markdown--selected-keys ()
   "Read selected reference keys for Markdown."
@@ -113,11 +125,7 @@
           spans)
       (goto-char (plist-get citation :body-begin))
       (while (re-search-forward refbox-markdown--key-regexp end t)
-        (push (list (string-remove-prefix
-                     "@"
-                     (string-remove-prefix
-                      "-"
-                      (match-string-no-properties 0)))
+        (push (list (refbox-markdown--match-key)
                     (match-beginning 0)
                     (match-end 0))
               spans))
@@ -183,9 +191,8 @@
   (let ((position 0)
         keys)
     (while (string-match refbox-markdown--key-regexp string position)
-      (push (string-remove-prefix
-             "@"
-             (string-remove-prefix "-" (match-string 0 string)))
+      (push (or (match-string 1 string)
+                (match-string 2 string))
             keys)
       (setq position (match-end 0)))
     (nreverse keys)))
@@ -201,12 +208,7 @@
                                   t)
           (when (and (<= (match-beginning 0) point)
                      (<= point (match-end 0)))
-            (throw 'key
-                   (string-remove-prefix
-                    "@"
-                    (string-remove-prefix
-                     "-"
-                     (match-string-no-properties 0))))))
+            (throw 'key (refbox-markdown--match-key))))
         nil))))
 
 (defun refbox-markdown--completion-bounds ()
@@ -271,10 +273,7 @@ citation instead of replacing it."
       (save-excursion
         (goto-char (point-min))
         (while (re-search-forward refbox-markdown--key-regexp nil t)
-          (push (string-remove-prefix
-                 "@"
-                 (string-remove-prefix "-" (match-string-no-properties 0)))
-                keys)))
+          (push (refbox-markdown--match-key) keys)))
       (delete-dups (nreverse keys)))))
 
 (provide 'refbox-markdown)

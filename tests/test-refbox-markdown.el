@@ -60,6 +60,16 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
   (refbox-markdown-test-with-buffer "See [@alpha; -@be|ta]."
     (should (equal (refbox-markdown-key-at-point) "beta"))))
 
+(ert-deftest refbox-markdown-test-detects_braced_pandoc_keys ()
+  "Markdown helpers should understand Pandoc brace-delimited keys."
+  (refbox-markdown-test-with-buffer "See [@alpha; @{braced-key}; -@{ne|g key}]."
+    (should (equal (refbox-markdown-key-at-point) "neg key"))
+    (should (equal (plist-get (refbox-markdown-citation-at-point) :keys)
+                   '("alpha" "braced-key" "neg key"))))
+  (refbox-markdown-test-with-buffer "Text @{braced-key} and [-@{neg key}]."
+    (should (equal (refbox-markdown-list-keys)
+                   '("braced-key" "neg key")))))
+
 (ert-deftest refbox-markdown-test-detects-citation-at-point ()
   "Citation helper should return bracketed citation metadata."
   (refbox-markdown-test-with-buffer "See [see @al|pha pp. 1-2; @beta]."
@@ -126,6 +136,28 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
           (should (equal (substring-no-properties candidate) "alpha"))
           (should (equal (car calls)
                          (list :query "al" :limit 11))))))))
+
+(ert-deftest refbox-markdown-test-capf-completes_braced_citation_keys ()
+  "Markdown CAPF should complete inside brace-delimited Pandoc keys."
+  (let ((refbox-capf-limit 11))
+    (refbox-markdown-test-with-buffer "See [@{al|}]."
+      (cl-letf (((symbol-function 'refbox-rpc-request)
+                 (lambda (method params)
+                   (should (equal method refbox-rpc-method-search-entries))
+                   (should (equal params (list :query "al" :limit 11)))
+                   (list :entries
+                         (list (refbox-markdown-test-search-candidate
+                                "alpha"
+                                "/tmp/refs.bib"))))))
+        (let* ((capf (refbox-markdown-completion-at-point))
+               (start (nth 0 capf))
+               (end (nth 1 capf))
+               (table (nth 2 capf))
+               (candidate (car (all-completions
+                                (buffer-substring-no-properties start end)
+                                table))))
+          (should (equal (buffer-substring-no-properties start end) "al"))
+          (should (equal (substring-no-properties candidate) "alpha")))))))
 
 (ert-deftest refbox-markdown-test-capf-setup-is-buffer-local ()
   "Markdown CAPF setup should install a buffer-local completion function."

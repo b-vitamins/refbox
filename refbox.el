@@ -177,6 +177,14 @@ adapter functions.  Supported adapter keys are `local-bib-files',
   :type 'natnum
   :group 'refbox)
 
+(defcustom refbox-template-ellipsis nil
+  "String used to mark truncated template fields.
+
+When nil, truncated fields end at the configured display width
+without adding a marker."
+  :type '(choice (const :tag "No marker" nil) string)
+  :group 'refbox)
+
 (defcustom refbox-capf-limit 50
   "Maximum number of reference candidates requested for CAPF completion."
   :type 'natnum
@@ -224,6 +232,15 @@ adapter functions.  Supported adapter keys are `local-bib-files',
   :type '(choice (const :tag "Disabled" nil) function)
   :group 'refbox)
 
+(defcustom refbox-crossref-field-names '("crossref")
+  "Field names whose values name parent references.
+
+Parent keys are used when resolving local file and note resources
+that are discovered from configured directories rather than
+returned directly by the daemon."
+  :type '(repeat string)
+  :group 'refbox)
+
 (defcustom refbox-resource-library-paths nil
   "Directories searched for files associated with references."
   :type '(repeat directory)
@@ -265,7 +282,8 @@ When nil, associated file lookup does not filter by extension."
   :type 'function
   :group 'refbox)
 
-(defcustom refbox-resource-open-file-functions nil
+(defcustom refbox-resource-open-file-functions
+  '(("html" . refbox-resource-open-file-externally))
   "Alist mapping file extensions to resource opening functions.
 
 Keys are extension strings without a leading dot.  When a file's
@@ -541,11 +559,60 @@ computed property such as indicators, or an indexed bibliography field."
              (refbox-reference-has-resource-kind-p candidate kind))
            kinds))
 
+(defun refbox--reference-key-list (value)
+  "Return bibliography keys parsed from VALUE."
+  (let ((value (refbox-resource--clean-value value)))
+    (cl-remove-if
+     #'refbox--blank-string-p
+     (mapcar #'string-trim
+             (split-string value "[,;[:space:]\n]+" t)))))
+
+(defun refbox-reference-crossref-keys (candidate &optional resources)
+  "Return parent reference keys declared by CANDIDATE.
+
+RESOURCES, when non-nil, supplies indexed resources already
+loaded for CANDIDATE."
+  (let ((names (mapcar #'refbox--field-name-normalize
+                       refbox-crossref-field-names))
+        keys)
+    (dolist (field (refbox--candidate-fields candidate))
+      (let ((lookup (refbox--field-lookup-name field))
+            (raw (refbox--field-raw-name field)))
+        (when (or (and lookup (member lookup names))
+                  (and raw
+                       (member (refbox--field-name-normalize raw) names)))
+          (setq keys
+                (append keys
+                        (refbox--reference-key-list
+                         (refbox--field-value field)))))))
+    (dolist (resource (or resources (refbox--candidate-resources candidate)))
+      (let ((lookup (refbox--resource-lookup-name resource))
+            (kind (refbox--resource-kind resource)))
+        (when (or (equal kind "crossref")
+                  (and lookup (member lookup names)))
+          (setq keys
+                (append keys
+                        (refbox--reference-key-list
+                         (refbox--resource-value resource)))))))
+    (delete-dups keys)))
+
+(defun refbox-reference-related-keys (candidate &optional resources)
+  "Return CANDIDATE's key followed by configured parent keys."
+  (delete-dups
+   (cl-remove-if
+    #'refbox--blank-string-p
+    (cons (refbox--reference-key candidate)
+          (refbox-reference-crossref-keys candidate resources)))))
+
 (defun refbox-reference-has-files-p (candidate)
-  "Return non-nil when CANDIDATE has an indexed file resource."
+  "Return non-nil when CANDIDATE has an associated file resource."
   (or (refbox-reference-has-resource-kind-p candidate "file")
       (refbox-reference-has-any-field-p
-       candidate refbox-reference-resource-field-names)))
+       candidate refbox-reference-resource-field-names)
+      (and refbox-resource-library-paths
+           (not (null (refbox-reference-files
+                       candidate
+                       (refbox--candidate-resources candidate)))))))
 
 (defun refbox-reference-has-links-p (candidate)
   "Return non-nil when CANDIDATE has an indexed link resource."
@@ -693,7 +760,13 @@ computed property such as indicators, or an indexed bibliography field."
   "Fit VALUE into WIDTH display columns."
   (if (null width)
       value
-    (let ((truncated (truncate-string-to-width value width)))
+    (let ((truncated
+           (truncate-string-to-width
+            value
+            width
+            nil
+            nil
+            refbox-template-ellipsis)))
       (if (< (string-width truncated) width)
           (string-pad truncated width)
         truncated))))
@@ -866,8 +939,11 @@ bibliography source files."
 (defun refbox-capf-key-bounds-after-at (&optional begin end)
   "Return citation key bounds after an @ marker between BEGIN and END."
   (when-let ((bounds (refbox-capf-key-bounds begin end)))
-    (when (and (> (car bounds) (or begin (point-min)))
-               (eq (char-before (car bounds)) ?@))
+    (when (or (and (> (car bounds) (or begin (point-min)))
+                   (eq (char-before (car bounds)) ?@))
+              (and (> (car bounds) (1+ (or begin (point-min))))
+                   (eq (char-before (car bounds)) ?{)
+                   (eq (char-before (1- (car bounds))) ?@)))
       bounds)))
 
 (defun refbox-capf--state (&optional limit source-paths)
@@ -1150,10 +1226,13 @@ bibliography source files."
                     (push file found)))))))))
     (nreverse (delete-dups found))))
 
-(defun refbox-reference-files (candidate &optional resources)
+(cl-defun refbox-reference-files
+    (candidate &optional (resources nil resources-supplied-p))
   "Return existing file resources for CANDIDATE."
-  (let* ((resources (or resources (refbox-reference-resources candidate)))
-         (key (refbox--reference-key candidate))
+  (let* ((resources (if resources-supplied-p
+                        resources
+                      (refbox-reference-resources candidate)))
+         (keys (refbox-reference-related-keys candidate resources))
          (extensions refbox-resource-library-file-extensions)
          (field-files
           (cl-loop
@@ -1173,9 +1252,9 @@ bibliography source files."
        field-files
        (append source-dirs library-dirs)
        extensions)
-      (when key
+      (when keys
         (refbox-resource--files-for-keys
-         (list key)
+         keys
          library-dirs
          extensions
          refbox-resource-additional-file-separator))))))
@@ -1208,8 +1287,12 @@ bibliography source files."
 
 (defun refbox-note-files (key)
   "Return existing note files for KEY."
+  (refbox-note-files-for-keys (list key)))
+
+(defun refbox-note-files-for-keys (keys)
+  "Return existing note files for KEYS."
   (refbox-resource--files-for-keys
-   (list key)
+   keys
    (refbox-note--directories)
    refbox-note-file-extensions
    refbox-resource-additional-file-separator))
@@ -1289,13 +1372,16 @@ bibliography source files."
       (funcall transform item)
     (format "%s" item)))
 
-(defun refbox-note-source-file-items (key _reference)
+(defun refbox-note-source-file-items (key reference)
   "Return file-backed note items for KEY."
-  (refbox-note-files key))
+  (refbox-note-files-for-keys
+   (if (and (listp reference) (plist-member reference :key))
+       (refbox-reference-related-keys reference)
+     (list key))))
 
-(defun refbox-note-source-file-has-items (key _reference)
+(defun refbox-note-source-file-has-items (key reference)
   "Return non-nil when KEY has file-backed notes."
-  (not (null (refbox-note-files key))))
+  (not (null (refbox-note-source-file-items key reference))))
 
 (defun refbox-note-source-file-open (item)
   "Open file-backed note ITEM."
@@ -1423,6 +1509,23 @@ single choice is accepted without prompting."
     (refbox--open-target
      (or function refbox-resource-open-file-function)
      file)))
+
+(defun refbox-resource-open-file-externally (file)
+  "Open FILE using the platform's external file opener."
+  (let ((file (expand-file-name file)))
+    (if (and (eq system-type 'windows-nt)
+             (fboundp 'w32-shell-execute))
+        (w32-shell-execute "open" file)
+      (call-process
+       (pcase system-type
+         ('darwin "open")
+         ('cygwin "cygstart")
+         (_ "xdg-open"))
+       nil
+       0
+       nil
+       file)))
+  file)
 
 (defun refbox--reference-choice-key (reference)
   "Return a display key for REFERENCE."
@@ -2179,8 +2282,14 @@ ARG is passed to the adapter command."
 
 (defun refbox-library--check-destination (destination overwrite)
   "Signal when DESTINATION exists and OVERWRITE is nil."
-  (when (and (file-exists-p destination) (not overwrite))
-    (user-error "Library file already exists: %s" destination)))
+  (when (file-exists-p destination)
+    (cond
+     ((integerp overwrite)
+      (unless (yes-or-no-p
+               (format "Library file exists: %s; overwrite? " destination))
+        (user-error "Library file already exists: %s" destination)))
+     ((not overwrite)
+      (user-error "Library file already exists: %s" destination)))))
 
 (defun refbox-add-buffer-to-library (reference extension &optional overwrite)
   "Save current buffer contents as REFERENCE's library file with EXTENSION."
@@ -2217,15 +2326,16 @@ ARG is passed to the adapter command."
        (let* ((default (and buffer-file-name
                             (file-name-extension buffer-file-name)))
               (extension (read-string "Extension: " default)))
-         (refbox-add-buffer-to-library reference extension)))
+         (refbox-add-buffer-to-library reference extension 1)))
       ("file"
        (refbox-add-file-to-library-from-file
         reference
-        (read-file-name "File: ")))
+        (read-file-name "File: ")
+        1))
       ("url"
        (let ((url (read-string "URL: "))
              (extension (read-string "Extension: ")))
-         (refbox-add-file-to-library-from-url reference url extension))))))
+         (refbox-add-file-to-library-from-url reference url extension 1))))))
 
 (defun refbox--completion-state (&optional limit source-paths)
   "Return fresh completion state using LIMIT and SOURCE-PATHS."
