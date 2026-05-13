@@ -179,6 +179,16 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
           (refbox-org-follow-at-point :arg)
           (should (equal (caar calls) "alpha")))))))
 
+(ert-deftest refbox-org-test-default_follow_runs_default_action ()
+  "The default Org follow action should run the normal reference action."
+  (refbox-org-test-with-buffer "[cite:|@alpha]"
+    (let (seen)
+      (let ((refbox-default-action
+             (lambda (references)
+               (setq seen references))))
+        (refbox-org-follow-at-point nil))
+      (should (equal seen '("alpha"))))))
+
 (ert-deftest refbox-org-test-activation-installs-keymap ()
   "Activation should install the refbox citation keymap on citation text."
   (refbox-org-test-with-buffer "[cite:|@alpha]"
