@@ -55,6 +55,12 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
       (refbox-markdown-insert-citation)
       (should (equal (buffer-string) "Alpha [@alpha; @beta]omega")))))
 
+(ert-deftest refbox-markdown-test-inserts_supplied_citation_keys ()
+  "Citation insertion should accept direct key lists."
+  (refbox-markdown-test-with-buffer "Alpha |omega"
+    (refbox-markdown-insert-citation '("alpha" "beta"))
+    (should (equal (buffer-string) "Alpha [@alpha; @beta]omega"))))
+
 (ert-deftest refbox-markdown-test-detects-key-at-point ()
   "Key helper should find keys inside bracketed citations."
   (refbox-markdown-test-with-buffer "See [@alpha; -@be|ta]."

@@ -218,7 +218,7 @@ When TRANSFORM is non-nil, return the displayed candidate."
      'face 'refbox-org-style-preview)))
 
 ;;;###autoload
-(defun refbox-org-select-style ()
+(defun refbox-org-select-style (&optional _arg)
   "Complete an Org citation style."
   (interactive)
   (let* ((candidates (refbox-org-style-candidates))
@@ -242,6 +242,48 @@ When TRANSFORM is non-nil, return the displayed candidate."
      ((string= style "/") "")
      (t style))))
 
+(defun refbox-org--style-fragment (style)
+  "Return Org citation style fragment for STYLE."
+  (let ((style (cond
+                ((stringp style) style)
+                (style (refbox-org-select-style))
+                (t nil))))
+    (cond
+     ((null style) "")
+     ((string-empty-p style) "")
+     (t (concat "/" style)))))
+
+(defun refbox-org--key-string (keys)
+  "Return Org citation reference text for KEYS."
+  (mapconcat (lambda (key) (concat "@" key)) keys "; "))
+
+(defun refbox-org--insert-supplied-citation (keys &optional style)
+  "Insert KEYS in Org citation syntax, optionally using STYLE."
+  (let ((context (org-element-context)))
+    (if-let ((citation (refbox-org-citation-at-point context)))
+        (let* ((existing (org-cite-get-references citation t))
+               (keys (seq-difference keys existing #'equal))
+               (key-string (refbox-org--key-string keys))
+               (begin (org-element-property :contents-begin citation)))
+          (when (and keys begin)
+            (if (<= (point) begin)
+                (save-excursion
+                  (goto-char begin)
+                  (insert key-string ";"))
+              (let ((reference (refbox-org-reference-at-point)))
+                (save-excursion
+                  (goto-char (or (and reference (org-element-end reference))
+                                 (org-element-property :contents-end citation)))
+                  (if (eq (char-before) ?\;)
+                      (insert-before-markers key-string ";")
+                    (insert-before-markers ";" key-string)))))))
+      (if (org-cite--allowed-p context)
+          (insert
+           (format "[cite%s:%s]"
+                   (refbox-org--style-fragment style)
+                   (refbox-org--key-string keys)))
+        (user-error "Cannot insert an Org citation here")))))
+
 (defun refbox-org--select-style (_citation)
   "Read an Org citation style."
   (refbox-org-select-style))
@@ -263,28 +305,30 @@ When TRANSFORM is non-nil, return the displayed candidate."
    :activate #'refbox-org-activate))
 
 ;;;###autoload
-(defun refbox-org-insert-citation (&optional arg)
+(defun refbox-org-insert-citation (&optional keys style)
   "Insert or edit an Org citation at point.
 
-ARG follows Org's citation insertion convention: when point is on a
-citation or citation reference, a non-nil ARG deletes it; away from a
-citation, a non-nil ARG requests an explicit citation style."
-  (interactive "P")
-  (let ((context (org-element-context))
-        (insert (refbox-org--insert-processor)))
-    (cond
-     ((org-element-type-p context '(citation citation-reference))
-      (funcall insert context arg))
-	     ((org-cite--allowed-p context)
-	      (funcall insert nil arg))
-	     (t
-	      (user-error "Cannot insert an Org citation here")))))
+KEYS, when non-nil, supplies citation keys directly.  When KEYS is nil,
+STYLE is forwarded to Org's insertion processor as the raw prefix
+argument."
+  (interactive (list nil current-prefix-arg))
+  (if keys
+      (refbox-org--insert-supplied-citation keys style)
+    (let ((context (org-element-context))
+          (insert (refbox-org--insert-processor)))
+      (cond
+       ((org-element-type-p context '(citation citation-reference))
+        (funcall insert context style))
+       ((org-cite--allowed-p context)
+        (funcall insert nil style))
+       (t
+        (user-error "Cannot insert an Org citation here"))))))
 
 ;;;###autoload
 (defun refbox-org-insert-edit (&optional arg)
   "Insert or edit an Org citation at point."
   (interactive "P")
-  (refbox-org-insert-citation arg))
+  (refbox-org-insert-citation nil arg))
 
 (defun refbox-org-reference-at-point (&optional datum)
   "Return the Org citation reference at point or in DATUM."

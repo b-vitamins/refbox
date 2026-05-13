@@ -48,6 +48,13 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
       (should (equal (buffer-string)
                      "Alpha [cite:@alpha; @beta]omega")))))
 
+(ert-deftest refbox-org-test-inserts_supplied_citation_keys ()
+  "Org insertion should accept direct key lists and explicit styles."
+  (refbox-org-test-with-buffer "Alpha |omega"
+    (refbox-org-insert-citation '("alpha" "beta") "text")
+    (should (equal (buffer-string)
+                   "Alpha [cite/text:@alpha; @beta]omega"))))
+
 (ert-deftest refbox-org-test-insertion_scopes_selection_to_local_bibliography ()
   "Org insertion should pass local bibliography files to reference selection."
   (let* ((root (make-temp-file "refbox-org-scope-" t))

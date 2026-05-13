@@ -223,18 +223,24 @@
             nil
             t))
 
-(defun refbox-latex--read-command ()
-  "Read or return the configured LaTeX citation command."
-  (if refbox-latex-prompt-for-cite-style
-      (completing-read
-       "Citation command: "
-       refbox-latex-cite-commands
-       nil
-       nil
-       nil
-       'refbox-latex-cite-command-history
-       refbox-latex-default-cite-command)
-    refbox-latex-default-cite-command))
+(defun refbox-latex--read-command (&optional invert-prompt command)
+  "Read or return the configured LaTeX citation command.
+
+COMMAND, when non-nil, is returned directly.  INVERT-PROMPT reverses
+`refbox-latex-prompt-for-cite-style'."
+  (or command
+      (if (if invert-prompt
+              (not refbox-latex-prompt-for-cite-style)
+            refbox-latex-prompt-for-cite-style)
+          (completing-read
+           "Citation command: "
+           refbox-latex-cite-commands
+           nil
+           nil
+           nil
+           'refbox-latex-cite-command-history
+           refbox-latex-default-cite-command)
+        refbox-latex-default-cite-command)))
 
 (defun refbox-latex--read-optional-arguments ()
   "Read or return configured optional LaTeX citation arguments."
@@ -302,19 +308,22 @@
         (insert refbox-latex-key-separator text))))))
 
 ;;;###autoload
-(defun refbox-latex-insert-citation (&optional _arg)
+(defun refbox-latex-insert-citation (&optional keys invert-prompt command)
   "Insert a LaTeX citation at point.
 
 When point is already in a citation command, add selected keys to
-that citation instead of replacing it."
+that citation instead of replacing it.  KEYS, when non-nil, supplies
+citation keys directly.  INVERT-PROMPT reverses
+`refbox-latex-prompt-for-cite-style'.  COMMAND, when non-nil, selects
+the citation command directly."
   (interactive)
   (let* ((citation (refbox-latex-citation-at-point))
-         (keys (refbox-latex--selected-keys)))
+         (keys (or keys (refbox-latex--selected-keys))))
     (unless keys
       (user-error "No references selected"))
     (if citation
         (refbox-latex--insert-keys-into-citation citation keys)
-      (let* ((command (refbox-latex--read-command))
+      (let* ((command (refbox-latex--read-command invert-prompt command))
              (optional-args (refbox-latex--read-optional-arguments)))
         (insert (refbox-latex-format-citation
                  command keys optional-args))))))
@@ -323,7 +332,7 @@ that citation instead of replacing it."
 (defun refbox-latex-insert-edit (&optional arg)
   "Insert or edit a LaTeX citation at point."
   (interactive "P")
-  (refbox-latex-insert-citation arg))
+  (refbox-latex-insert-citation nil arg))
 
 (defun refbox-latex--bib-file (path)
   "Return PATH with a .bib extension when it has no extension."

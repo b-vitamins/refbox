@@ -95,9 +95,11 @@ Captures the actual key in group 1.")
   (or (plist-get (refbox-read-reference "Reference: ") :key)
       (user-error "refbox candidate has no key")))
 
-(defun refbox-markdown--read-affixes ()
+(defun refbox-markdown--read-affixes (&optional invert-prompt)
   "Read or return configured Markdown citation affixes."
-  (if refbox-markdown-prompt-for-extra-arguments
+  (if (if invert-prompt
+          (not refbox-markdown-prompt-for-extra-arguments)
+        refbox-markdown-prompt-for-extra-arguments)
       (let ((prefix (read-string "Citation prefix: "))
             (suffix (read-string "Citation suffix: ")))
         (cons (unless (string-empty-p prefix) prefix)
@@ -249,19 +251,21 @@ Captures the actual key in group 1.")
   (insert (mapconcat (lambda (key) (concat "@" key)) keys "; ")))
 
 ;;;###autoload
-(defun refbox-markdown-insert-citation (&optional _arg)
+(defun refbox-markdown-insert-citation (&optional keys invert-prompt)
   "Insert a bracketed Pandoc Markdown citation at point.
 
 When point is already in a citation, add selected keys to that
-citation instead of replacing it."
+citation instead of replacing it.  KEYS, when non-nil, supplies citation
+keys directly.  INVERT-PROMPT reverses
+`refbox-markdown-prompt-for-extra-arguments'."
   (interactive)
   (let* ((citation (refbox-markdown-citation-at-point))
-         (keys (refbox-markdown--selected-keys)))
+         (keys (or keys (refbox-markdown--selected-keys))))
     (unless keys
       (user-error "No references selected"))
     (if citation
         (refbox-markdown--insert-keys-into-citation citation keys)
-      (let* ((affixes (refbox-markdown--read-affixes)))
+      (let* ((affixes (refbox-markdown--read-affixes invert-prompt)))
         (insert (refbox-markdown-format-citation
                  keys
                  (car affixes)
@@ -271,7 +275,7 @@ citation instead of replacing it."
 (defun refbox-markdown-insert-edit (&optional arg)
   "Insert or edit a Markdown citation at point."
   (interactive "P")
-  (refbox-markdown-insert-citation arg))
+  (refbox-markdown-insert-citation nil arg))
 
 ;;;###autoload
 (defun refbox-markdown-list-keys (&optional buffer)

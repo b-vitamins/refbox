@@ -861,9 +861,30 @@ computed property such as indicators, or an indexed bibliography field."
    ((and (listp citekey-or-entry) (plist-member citekey-or-entry :key))
     (refbox-reference-entry-alist citekey-or-entry))
    ((and (listp citekey-or-entry)
-         (or (null citekey-or-entry) (consp (car citekey-or-entry))))
+	         (or (null citekey-or-entry) (consp (car citekey-or-entry))))
     citekey-or-entry)
    (t nil)))
+
+(defun refbox--entry-candidate (key entry)
+  "Return an indexed-candidate-shaped plist for KEY and ENTRY alist."
+  (let ((entry (refbox--entry-alist entry)))
+    (list :key key
+          :entry_type (or (cdr (assoc-string "=type=" entry t))
+                          (cdr (assoc-string "entry_type" entry t))
+                          (cdr (assoc-string "entry-type" entry t))
+                          (cdr (assoc-string "type" entry t)))
+          :fields
+          (cl-loop for (name . value) in entry
+                   unless (member
+                           (downcase (format "%s" name))
+                           '("key" "citekey" "id" "=key="
+                             "type" "=type=" "entry_type" "entry-type"
+                             "source_path" "source-path"))
+                   collect (list :raw_name (format "%s" name)
+                                 :lookup_name
+                                 (refbox--field-name-normalize (format "%s" name))
+                                 :value value))
+          :resources nil)))
 
 (defun refbox-reference-has-resource-kind-p (candidate kind)
   "Return non-nil when CANDIDATE has an indexed resource of KIND."
@@ -2454,10 +2475,20 @@ COMMAND controls `refbox-open-always-create-notes'."
         :target))))
 
 ;;;###autoload
-(defun refbox-create-note (&optional candidate)
-  "Create or open the note for CANDIDATE."
+(defun refbox-create-note (&optional key entry)
+  "Create or open the note for KEY.
+
+KEY may be a reference key string or an indexed candidate.  ENTRY, when
+non-nil, is a bibliography entry alist used as candidate metadata."
   (interactive)
-  (refbox-note-source-create (or candidate (refbox-read-reference))))
+  (refbox-note-source-create
+   (cond
+    ((and (listp key) (plist-member key :key)) key)
+    ((stringp key)
+     (or (and entry (refbox--entry-candidate key entry))
+         (refbox-entry-by-key key)))
+    (t
+     (refbox-read-reference)))))
 
 ;;;###autoload
 (defun refbox-open (&optional references)
@@ -2779,22 +2810,28 @@ insertion."
      keys)))
 
 ;;;###autoload
-(defun refbox-insert-citation (&optional arg)
+(defun refbox-insert-citation (&optional references arg)
   "Insert or edit a citation using the current major-mode adapter.
 
-ARG is passed to the adapter command."
-  (interactive "P")
+REFERENCES, when non-nil, supplies reference keys or candidates.  ARG is
+passed to the adapter command."
+  (interactive (list nil current-prefix-arg))
   (unless (refbox--get-major-mode-function 'insert-citation)
     (user-error "Citation insertion is not supported for %s" major-mode))
-  (refbox--major-mode-function 'insert-citation #'ignore arg))
+  (refbox--major-mode-function
+   'insert-citation
+   #'ignore
+   (and references
+        (refbox--references-keys (refbox--reference-list references)))
+   arg))
 
 ;;;###autoload
 (defun refbox-insert-edit (&optional arg)
   "Edit the citation at point using the current major-mode adapter."
   (interactive "P")
-  (if (refbox--get-major-mode-function 'insert-edit)
-      (refbox--major-mode-function 'insert-edit #'ignore arg)
-    (refbox-insert-citation arg)))
+	(if (refbox--get-major-mode-function 'insert-edit)
+	    (refbox--major-mode-function 'insert-edit #'ignore arg)
+    (refbox-insert-citation nil arg)))
 
 ;;;###autoload
 (defun refbox-run-default-action (&optional references)

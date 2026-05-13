@@ -285,22 +285,29 @@
                (lambda () nil))
               ((symbol-function 'refbox-test-citation-at-point)
                (lambda () (list :keys ["alpha" "beta"])))
+              ((symbol-function 'refbox-test-insert-citation)
+               (lambda (keys arg)
+                 (insert (format "%s/%s" (string-join keys "|") arg))))
               ((symbol-function 'refbox-read-references)
                (lambda (&rest _args)
                  (list (list :key "alpha")
                        (list :key "beta")))))
       (let ((refbox-major-mode-functions
              '(((refbox-test-mode) .
-                ((insert-keys . refbox-test-insert-keys)
-                 (key-at-point . refbox-test-key-at-point)
-                 (citation-at-point . refbox-test-citation-at-point))))))
-        (with-temp-buffer
-          (refbox-test-mode)
-          (refbox-insert-keys)
-          (should (equal (buffer-string) "alpha|beta"))
-          (let ((refbox-default-action
-                 (lambda (references)
-                   (setq default-action-refs references))))
+	               ((insert-keys . refbox-test-insert-keys)
+                 (insert-citation . refbox-test-insert-citation)
+	                (key-at-point . refbox-test-key-at-point)
+	                (citation-at-point . refbox-test-citation-at-point))))))
+	        (with-temp-buffer
+	          (refbox-test-mode)
+	          (refbox-insert-keys)
+	          (should (equal (buffer-string) "alpha|beta"))
+            (erase-buffer)
+            (refbox-insert-citation '("gamma" "delta") 'style)
+            (should (equal (buffer-string) "gamma|delta/style"))
+	          (let ((refbox-default-action
+	                 (lambda (references)
+	                   (setq default-action-refs references))))
             (refbox-dwim)
             (should (equal default-action-refs '("alpha" "beta")))))))))
 
@@ -788,6 +795,27 @@
             (should (equal (refbox-note-filename "doe/2021")
                            (expand-file-name "doe_2021.org" root)))))
       (delete-directory root t))))
+
+(ert-deftest refbox-test-create_note_accepts_key_and_entry ()
+  "Note creation should accept an explicit key and entry alist."
+  (let (seen)
+    (let ((refbox-notes-source 'mock)
+          (refbox-notes-sources
+           `((mock
+              :items ,#'ignore
+              :open ,#'ignore
+              :create ,(lambda (key reference)
+                         (setq seen (list key reference)))))))
+      (refbox-create-note
+       "alpha"
+       '(("title" . "Alpha Reference")
+         ("author" . "Smith, Jane")
+         ("=type=" . "article"))))
+    (should (equal (car seen) "alpha"))
+    (should (equal (refbox-reference-field (cadr seen) "title")
+                   "Alpha Reference"))
+    (should (equal (refbox-reference-field (cadr seen) "entry_type")
+                   "article"))))
 
 (ert-deftest refbox-test-file_notes_use_crossref_parent_keys ()
   "File-backed note lookup should include cross-reference parent keys."

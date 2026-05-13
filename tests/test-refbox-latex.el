@@ -81,6 +81,14 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
         (should (equal (buffer-string)
                        "Before \\parencite{alpha, beta} after"))))))
 
+(ert-deftest refbox-latex-test-inserts_supplied_citation_keys ()
+  "Citation insertion should accept direct key lists and command overrides."
+  (refbox-latex-test-with-buffer "Before | after"
+    (let ((refbox-latex-prompt-for-extra-arguments nil))
+      (refbox-latex-insert-citation '("alpha" "beta") nil "textcite")
+      (should (equal (buffer-string)
+                     "Before \\textcite{alpha, beta} after")))))
+
 (ert-deftest refbox-latex-test-insertion_scopes_selection_to_local_bibliography ()
   "LaTeX insertion should pass discovered bibliography files to selection."
   (let* ((root (make-temp-file "refbox-latex-scope-" t))
