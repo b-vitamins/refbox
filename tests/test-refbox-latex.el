@@ -62,9 +62,9 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
     (let ((citation (refbox-latex-citation-at-point)))
       (should (equal (plist-get citation :command) "footfullcite"))
       (should (equal (plist-get citation :keys) '("alpha")))))
-  (refbox-latex-test-with-buffer "\\Citep*{be|ta}"
+  (refbox-latex-test-with-buffer "\\citeauthor*{be|ta}"
     (let ((citation (refbox-latex-citation-at-point)))
-      (should (equal (plist-get citation :command) "Citep*"))
+      (should (equal (plist-get citation :command) "citeauthor*"))
       (should (equal (plist-get citation :keys) '("beta"))))))
 
 (ert-deftest refbox-latex-test-inserts-default-command ()
@@ -121,13 +121,31 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                  (lambda (&rest _args) "textcite"))
                 ((symbol-function 'read-string)
                  (lambda (prompt &rest _args)
-                   (if (string-prefix-p "First" prompt) "see" "p. 2")))
+                   (if (string-prefix-p "Prenote" prompt) "see" "p. 2")))
                 ((symbol-function 'refbox-read-references)
                  (lambda (&rest _args)
                    (list (refbox-latex-test-candidate "alpha")))))
         (refbox-latex-insert-citation)
         (should (equal (buffer-string)
                        "\\textcite[see][p. 2]{alpha}"))))))
+
+(ert-deftest refbox-latex-test-command_specs_control_optional_prompts ()
+  "Citation command specs should decide which optional arguments are prompted."
+  (refbox-latex-test-with-buffer "|"
+    (let ((refbox-latex-prompt-for-cite-style nil)
+          (refbox-latex-default-cite-command "nocite")
+          (refbox-latex-prompt-for-extra-arguments t)
+          prompted)
+      (cl-letf (((symbol-function 'read-string)
+                 (lambda (&rest _args)
+                   (setq prompted t)
+                   "unused"))
+                ((symbol-function 'refbox-read-references)
+                 (lambda (&rest _args)
+                   (list (refbox-latex-test-candidate "alpha")))))
+        (refbox-latex-insert-citation)
+        (should-not prompted)
+        (should (equal (buffer-string) "\\nocite{alpha}"))))))
 
 (ert-deftest refbox-latex-test-adds-to-existing-citation ()
   "Insertion at an existing citation should add selected keys."

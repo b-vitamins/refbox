@@ -32,6 +32,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'seq)
 (require 'subr-x)
 (require 'refbox)
 
@@ -41,14 +42,23 @@
   :prefix "refbox-latex-")
 
 (defcustom refbox-latex-cite-commands
-  '("cite" "Cite" "citet" "Citet" "citep" "Citep" "citealp" "citealt"
-    "parencite" "Parencite" "footcite" "footcitetext" "textcite"
-    "Textcite" "smartcite" "Smartcite" "autocite" "Autocite"
-    "citeauthor" "Citeauthor" "citetitle" "citeyear" "citedate"
-    "citeurl" "fullcite" "footfullcite" "notecite" "Notecite"
-    "pnotecite" "Pnotecite" "fnotecite" "nocite" "supercite")
-  "LaTeX citation commands recognized by refbox."
-  :type '(repeat string)
+  '((("cite" "Cite" "citet" "Citet" "citep" "Citep" "parencite"
+      "Parencite" "footcite" "footcitetext" "textcite" "Textcite"
+      "smartcite" "Smartcite" "cite*" "parencite*" "autocite"
+      "Autocite" "autocite*" "Autocite*" "citeauthor" "Citeauthor"
+      "citeauthor*" "Citeauthor*" "citetitle" "citetitle*" "citeyear"
+      "citeyear*" "citedate" "citedate*" "citeurl" "fullcite"
+      "footfullcite" "notecite" "Notecite" "pnotecite" "Pnotecite"
+      "fnotecite")
+     . (["Prenote"] ["Postnote"] t))
+    (("nocite" "supercite") . nil))
+  "LaTeX citation commands recognized by refbox.
+
+Each alist key is a list of command names.  The value describes the
+command argument prompts; vector entries are prompted as optional
+arguments and `t' marks the citation-key argument."
+  :type '(alist :key-type (repeat string)
+                :value-type sexp)
   :group 'refbox-latex)
 
 (defcustom refbox-latex-default-cite-command "cite"
@@ -79,9 +89,26 @@
 (defvar refbox-latex-cite-command-history nil
   "Minibuffer history for LaTeX citation commands.")
 
+(defun refbox-latex--command-names ()
+  "Return configured LaTeX citation command names."
+  (if (and (listp refbox-latex-cite-commands)
+           (cl-every #'stringp refbox-latex-cite-commands))
+      refbox-latex-cite-commands
+    (seq-mapcat #'car refbox-latex-cite-commands)))
+
+(defun refbox-latex--command-entry (command)
+  "Return configured citation command entry for COMMAND."
+  (if (and (listp refbox-latex-cite-commands)
+           (cl-every #'stringp refbox-latex-cite-commands))
+      (and (member command refbox-latex-cite-commands)
+           (cons (list command) nil))
+    (seq-find (lambda (entry)
+                (member command (car entry)))
+              refbox-latex-cite-commands)))
+
 (defun refbox-latex--command-regexp ()
   "Return a regexp matching configured LaTeX citation commands."
-  (concat "\\\\\\(" (regexp-opt refbox-latex-cite-commands) "\\*?\\)"))
+  (concat "\\\\\\(" (regexp-opt (refbox-latex--command-names)) "\\)"))
 
 (defun refbox-latex--scan-braced-group (position)
   "Return bounds of braced group at POSITION, or nil."
@@ -234,7 +261,7 @@ COMMAND, when non-nil, is returned directly.  INVERT-PROMPT reverses
             refbox-latex-prompt-for-cite-style)
           (completing-read
            "Citation command: "
-           refbox-latex-cite-commands
+           (refbox-latex--command-names)
            nil
            nil
            nil
@@ -242,14 +269,20 @@ COMMAND, when non-nil, is returned directly.  INVERT-PROMPT reverses
            refbox-latex-default-cite-command)
         refbox-latex-default-cite-command)))
 
-(defun refbox-latex--read-optional-arguments ()
-  "Read or return configured optional LaTeX citation arguments."
+(defun refbox-latex--argument-prompts (command)
+  "Return optional argument prompts configured for COMMAND."
+  (cl-loop for spec in (cdr (refbox-latex--command-entry command))
+           when (vectorp spec)
+           collect (or (aref spec 0) "Optional argument")))
+
+(defun refbox-latex--read-optional-arguments (command)
+  "Read or return configured optional LaTeX citation arguments for COMMAND."
   (if refbox-latex-prompt-for-extra-arguments
-      (let ((first (read-string "First optional argument: "))
-            (second (read-string "Second optional argument: ")))
-        (delq nil
-              (list (unless (string-empty-p first) first)
-                    (unless (string-empty-p second) second))))
+      (delq nil
+            (mapcar (lambda (prompt)
+                      (let ((value (read-string (format "%s: " prompt))))
+                        (unless (string-empty-p value) value)))
+                    (refbox-latex--argument-prompts command)))
     refbox-latex-default-optional-arguments))
 
 (defun refbox-latex-format-citation (command keys &optional optional-args)
@@ -324,7 +357,7 @@ the citation command directly."
     (if citation
         (refbox-latex--insert-keys-into-citation citation keys)
       (let* ((command (refbox-latex--read-command invert-prompt command))
-             (optional-args (refbox-latex--read-optional-arguments)))
+             (optional-args (refbox-latex--read-optional-arguments command)))
         (insert (refbox-latex-format-citation
                  command keys optional-args))))))
 
