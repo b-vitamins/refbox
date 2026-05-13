@@ -1281,20 +1281,20 @@
             (insert "<style><info><title>APA Test</title>"
                     "<id>http://www.zotero.org/styles/apa-test</id>"
                     "</info></style>"))
-          (should (equal (refbox-csl-style-metadata style-file)
+          (should (equal (refbox-citeproc-csl-metadata style-file)
                          (list :file style-file
                                :id "http://www.zotero.org/styles/apa-test"
                                :title "APA Test")))
-          (let ((refbox-csl-style-directories (list style-dir))
-                refbox-csl-style)
+          (let ((refbox-citeproc-csl-styles-dir (list style-dir))
+                refbox-citeproc-csl-style)
             (cl-letf (((symbol-function 'completing-read)
                        (lambda (_prompt collection &rest _args)
                          (car (all-completions "" collection)))))
-              (should (equal (refbox-select-csl-style) style-file))
-              (should (equal refbox-csl-style style-file))))
-          (let ((refbox-csl-style-directories (list style-dir))
-                (refbox-csl-style "http://www.zotero.org/styles/apa-test"))
-            (should (equal (refbox-csl-style-file) style-file))))
+              (should (equal (refbox-citeproc-select-csl-style) style-file))
+              (should (equal refbox-citeproc-csl-style style-file))))
+          (let ((refbox-citeproc-csl-styles-dir (list style-dir))
+                (refbox-citeproc-csl-style "http://www.zotero.org/styles/apa-test"))
+            (should (equal (refbox-csl--style-file) style-file))))
       (delete-directory root t))))
 
 (ert-deftest refbox-test-format-references-uses-daemon-and-csl_configuration ()
@@ -1307,8 +1307,8 @@
         (progn
           (with-temp-file style)
           (with-temp-file locale)
-          (let ((refbox-csl-style style)
-                (refbox-csl-locale locale))
+          (let ((refbox-citeproc-csl-style style)
+                (refbox-citeproc-csl-locale locale))
             (cl-letf (((symbol-function 'refbox-rpc-request)
                        (lambda (method params)
                          (push (list method params) calls)
@@ -1318,6 +1318,9 @@
                                      (list :key "beta"
                                            :text "Formatted Beta"))))))
 	              (should (equal (refbox-format-references '("alpha" "beta"))
+	                             '("Formatted Alpha" "Formatted Beta")))
+	              (should (equal (refbox-citeproc-format-reference
+                                   '("alpha" "beta"))
 	                             '("Formatted Alpha" "Formatted Beta")))
 	              (should (equal (refbox-format-reference '("alpha" "beta"))
 	                             "Formatted Alpha\n\nFormatted Beta"))))
@@ -1345,25 +1348,25 @@
   "Missing style and locale configuration should fail directly."
   (should
    (string-match-p
-    "refbox-csl-style"
+    "refbox-citeproc-csl-style"
     (error-message-string
-     (should-error (let ((refbox-csl-style nil))
-                     (refbox-csl-style-file))
+     (should-error (let ((refbox-citeproc-csl-style nil))
+                     (refbox-csl--style-file))
                    :type 'user-error))))
   (should
    (string-match-p
     "locale not found"
     (error-message-string
-     (should-error (let ((refbox-csl-locale "missing")
-                         (refbox-csl-locale-directories nil))
-                     (refbox-csl-locale-file))
+     (should-error (let ((refbox-citeproc-csl-locale "missing")
+                         (refbox-citeproc-csl-locales-dir nil))
+                     (refbox-csl--locale-file))
                    :type 'user-error))))
   (should
    (string-match-p
-    "refbox-csl-locale"
+    "refbox-citeproc-csl-locale"
     (error-message-string
-     (should-error (let ((refbox-csl-locale nil))
-                     (refbox-csl-locale-file))
+     (should-error (let ((refbox-citeproc-csl-locale nil))
+                     (refbox-csl--locale-file))
                    :type 'user-error)))))
 
 (ert-deftest refbox-test-csl-locale-resolution_accepts_locale_ids ()
@@ -1376,9 +1379,9 @@
           (make-directory locale-dir t)
           (with-temp-file locale-file
             (insert "<locale></locale>"))
-          (let ((refbox-csl-locale-directories (list locale-dir))
-                (refbox-csl-locale "en-US"))
-            (should (equal (refbox-csl-locale-file) locale-file))))
+          (let ((refbox-citeproc-csl-locales-dir (list locale-dir))
+                (refbox-citeproc-csl-locale "en-US"))
+            (should (equal (refbox-csl--locale-file) locale-file))))
       (delete-directory root t))))
 
 (ert-deftest refbox-test-read-references_repeats_bounded_single_reads ()

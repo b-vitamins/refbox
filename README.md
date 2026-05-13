@@ -63,10 +63,10 @@ Useful resource, note, and formatting options:
 (setq refbox-library-paths-recursive t)
 (setq refbox-note-paths '("~/notes/references"))
 
-(setq refbox-csl-style-directories '("~/csl/styles"))
-(setq refbox-csl-locale-directories '("~/csl/locales"))
-(setq refbox-csl-style "apa")
-(setq refbox-csl-locale "en-US")
+(setq refbox-citeproc-csl-styles-dir '("~/csl/styles"))
+(setq refbox-citeproc-csl-locales-dir '("~/csl/locales"))
+(setq refbox-citeproc-csl-style "apa")
+(setq refbox-citeproc-csl-locale "en-US")
 ```
 
 ## First Sync
@@ -121,12 +121,12 @@ M-x refbox-insert-raw-entry
 M-x refbox-export-bibliography
 ```
 
-Formatted references require `refbox-csl-style`, `refbox-csl-locale`, and their
+Formatted references require `refbox-citeproc-csl-style`, `refbox-citeproc-csl-locale`, and their
 directories, unless `refbox-format-reference-function` supplies custom
 formatting:
 
 ```text
-M-x refbox-select-csl-style
+M-x refbox-citeproc-select-csl-style
 M-x refbox-insert-reference
 M-x refbox-copy-reference
 ```

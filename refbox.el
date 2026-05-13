@@ -560,22 +560,22 @@ when registering a note source with `refbox-register-notes-source'."
   :type '(repeat string)
   :group 'refbox)
 
-(defcustom refbox-csl-style-directories nil
+(defcustom refbox-citeproc-csl-styles-dir nil
   "Directories containing CSL style files."
   :type '(repeat directory)
   :group 'refbox)
 
-(defcustom refbox-csl-locale-directories nil
+(defcustom refbox-citeproc-csl-locales-dir nil
   "Directories containing CSL locale files."
   :type '(repeat directory)
   :group 'refbox)
 
-(defcustom refbox-csl-style nil
+(defcustom refbox-citeproc-csl-style nil
   "Selected CSL style file or style id."
   :type '(choice (const :tag "Unset" nil) string)
   :group 'refbox)
 
-(defcustom refbox-csl-locale nil
+(defcustom refbox-citeproc-csl-locale nil
   "Selected CSL locale file or locale id."
   :type '(choice (const :tag "Unset" nil) string)
   :group 'refbox)
@@ -632,6 +632,20 @@ is non-nil."
     (define-key map (kbd "RET") #'refbox-run-default-action)
     map)
   "Keymap for refbox reference actions.")
+
+(defvar refbox-citation-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "i") #'refbox-insert-edit)
+    (define-key map (kbd "o") #'refbox-open)
+    (define-key map (kbd "e") #'refbox-open-entry)
+    (define-key map (kbd "l") #'refbox-open-links)
+    (define-key map (kbd "n") #'refbox-open-notes)
+    (define-key map (kbd "f") #'refbox-open-files)
+    (define-key map (kbd "b") #'refbox-insert-bibtex)
+    (define-key map (kbd "r") #'refbox-copy-reference)
+    (define-key map (kbd "RET") #'refbox-run-default-action)
+    map)
+  "Keymap for refbox citation actions.")
 
 (defconst refbox-template--placeholder-regexp "%{\\([^}\n]+\\)}")
 
@@ -2734,7 +2748,7 @@ ARG is passed to the adapter command."
   (and (file-regular-p file)
        (file-readable-p file)))
 
-(defun refbox-csl-style-files ()
+(defun refbox-csl--style-files ()
   "Return configured CSL style files."
   (apply
    #'append
@@ -2742,9 +2756,9 @@ ARG is passed to the adapter command."
              (cl-remove-if-not
               #'refbox-csl--readable-file-p
               (directory-files dir t "\\.csl\\'")))
-           (refbox-csl--directories refbox-csl-style-directories))))
+           (refbox-csl--directories refbox-citeproc-csl-styles-dir))))
 
-(defun refbox-csl-locale-files ()
+(defun refbox-csl--locale-files ()
   "Return configured CSL locale files."
   (apply
    #'append
@@ -2752,7 +2766,7 @@ ARG is passed to the adapter command."
              (cl-remove-if-not
               #'refbox-csl--readable-file-p
               (directory-files dir t "\\.xml\\'")))
-           (refbox-csl--directories refbox-csl-locale-directories))))
+           (refbox-csl--directories refbox-citeproc-csl-locales-dir))))
 
 (defun refbox-csl--node-children (node)
   "Return XML NODE children."
@@ -2773,7 +2787,7 @@ ARG is passed to the adapter command."
               (refbox-csl--node-children node)
               "")))
 
-(defun refbox-csl-style-metadata (file)
+(defun refbox-citeproc-csl-metadata (file)
   "Return metadata plist for CSL style FILE."
   (let* ((root (car (xml-parse-file file)))
          (info-node (and root (refbox-csl--child-node root 'info)))
@@ -2798,7 +2812,7 @@ ARG is passed to the adapter command."
 (defun refbox-csl--style-match-p (file value)
   "Return non-nil when CSL style FILE matches VALUE."
   (or (refbox-csl--name-match-p file value ".csl")
-      (equal (plist-get (ignore-errors (refbox-csl-style-metadata file)) :id)
+      (equal (plist-get (ignore-errors (refbox-citeproc-csl-metadata file)) :id)
              value)))
 
 (defun refbox-csl--locale-match-p (file value)
@@ -2810,7 +2824,7 @@ ARG is passed to the adapter command."
   "Resolve VALUE against FILES for KIND using MATCH-FUNCTION."
   (cond
    ((refbox--blank-string-p value)
-    (user-error "`refbox-csl-%s' is not configured" kind))
+    (user-error "`refbox-citeproc-csl-%s' is not configured" kind))
    (t
     (let ((match (cl-find-if
                   (lambda (file)
@@ -2827,30 +2841,30 @@ ARG is passed to the adapter command."
         (user-error "refbox CSL %s not found in configured directories: %s"
                     kind value)))))))
 
-(defun refbox-csl-style-file ()
+(defun refbox-csl--style-file ()
   "Return the selected CSL style file or signal an actionable error."
   (refbox-csl--resolve-file
-   refbox-csl-style
-   (refbox-csl-style-files)
+   refbox-citeproc-csl-style
+   (refbox-csl--style-files)
    "style"
    #'refbox-csl--style-match-p))
 
-(defun refbox-csl-locale-file ()
+(defun refbox-csl--locale-file ()
   "Return the selected CSL locale file or signal an actionable error."
   (refbox-csl--resolve-file
-   refbox-csl-locale
-   (refbox-csl-locale-files)
+   refbox-citeproc-csl-locale
+   (refbox-csl--locale-files)
    "locale"
    #'refbox-csl--locale-match-p))
 
 ;;;###autoload
-(defun refbox-select-csl-style ()
-  "Select a CSL style from `refbox-csl-style-directories'."
+(defun refbox-citeproc-select-csl-style ()
+  "Select a CSL style from `refbox-citeproc-csl-styles-dir'."
   (interactive)
-  (let ((metadata (mapcar #'refbox-csl-style-metadata
-                          (refbox-csl-style-files))))
+  (let ((metadata (mapcar #'refbox-citeproc-csl-metadata
+                          (refbox-csl--style-files))))
     (unless metadata
-      (user-error "`refbox-csl-style-directories' contains no readable CSL styles"))
+      (user-error "`refbox-citeproc-csl-styles-dir' contains no readable CSL styles"))
     (let ((table (make-hash-table :test 'equal)))
       (dolist (item metadata)
         (let* ((title (plist-get item :title))
@@ -2861,28 +2875,36 @@ ARG is passed to the adapter command."
           (puthash label item table)))
       (let* ((choice (completing-read "CSL style: " table nil t))
              (item (gethash choice table)))
-        (setq refbox-csl-style (plist-get item :file))
+        (setq refbox-citeproc-csl-style (plist-get item :file))
         (message "refbox CSL style: %s" (plist-get item :title))
-        refbox-csl-style))))
+        refbox-citeproc-csl-style))))
 
-(defun refbox-format-references (references)
-  "Return formatted reference strings for REFERENCES."
+(defun refbox-citeproc-format-reference (references &optional style)
+  "Return formatted reference strings for REFERENCES.
+
+STYLE, when non-nil, overrides `refbox-citeproc-csl-style'."
   (let ((references (refbox--reference-list references)))
     (unless references
       (user-error "No references selected"))
     (if refbox-format-reference-function
         (funcall refbox-format-reference-function references)
-      (let* ((style-path (refbox-csl-style-file))
-             (locale-path (refbox-csl-locale-file))
-             (response
-              (refbox-rpc-request
-               refbox-rpc-method-format-references
-               (list :keys (vconcat (mapcar #'refbox--reference-key references))
-                     :style_path style-path
-                     :locale_path locale-path))))
-        (mapcar (lambda (item)
-                  (plist-get item :text))
-                (refbox--listify (plist-get response :references)))))))
+      (let ((refbox-citeproc-csl-style
+             (or style refbox-citeproc-csl-style)))
+        (let* ((style-path (refbox-csl--style-file))
+               (locale-path (refbox-csl--locale-file))
+               (response
+                (refbox-rpc-request
+                 refbox-rpc-method-format-references
+                 (list :keys (vconcat (mapcar #'refbox--reference-key references))
+                       :style_path style-path
+                       :locale_path locale-path))))
+          (mapcar (lambda (item)
+                    (plist-get item :text))
+                  (refbox--listify (plist-get response :references))))))))
+
+(defun refbox-format-references (references)
+  "Return formatted reference strings for REFERENCES."
+  (refbox-citeproc-format-reference references))
 
 (defun refbox-format-reference (references)
   "Return formatted reference text for REFERENCES."
