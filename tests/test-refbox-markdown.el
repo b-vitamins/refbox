@@ -60,6 +60,13 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
   (refbox-markdown-test-with-buffer "See [@alpha; -@be|ta]."
     (should (equal (refbox-markdown-key-at-point) "beta"))))
 
+(ert-deftest refbox-markdown-test-public_key_regexp_captures_group_one ()
+  "The public Pandoc key regexp should capture citation keys in group one."
+  (should (string-match refbox-markdown-citation-key-regexp "-@doe-2020"))
+  (should (equal (match-string 1 "-@doe-2020") "doe-2020"))
+  (should (string-match refbox-markdown-citation-key-regexp "@{doe key}"))
+  (should (equal (match-string 1 "@{doe key}") "doe key")))
+
 (ert-deftest refbox-markdown-test-detects_braced_pandoc_keys ()
   "Markdown helpers should understand Pandoc brace-delimited keys."
   (refbox-markdown-test-with-buffer "See [@alpha; @{braced-key}; -@{ne|g key}]."

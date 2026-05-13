@@ -65,19 +65,23 @@
   :type 'string
   :group 'refbox-markdown)
 
-(defconst refbox-markdown--key-regexp
+(defconst refbox-markdown-citation-key-regexp
   (concat "-?@"
           "\\(?:"
-          "{\\([^}\n]+\\)}"
+          "{\\(?1:.*?\\)}"
           "\\|"
-          "\\([[:alnum:]_:.#$%&+?<>~/=-]+\\)"
+          "\\(?1:[[:alnum:]_][[:alnum:]]*\\(?:[:.#$%&+?<>~/-][[:alnum:]]+\\)*\\)"
           "\\)")
+  "Regular expression for a Pandoc citation key.
+
+Captures the actual key in group 1.")
+
+(defconst refbox-markdown--key-regexp refbox-markdown-citation-key-regexp
   "Regexp matching a Pandoc citation key.")
 
 (defun refbox-markdown--match-key ()
   "Return the citation key captured by `refbox-markdown--key-regexp'."
-  (or (match-string-no-properties 1)
-      (match-string-no-properties 2)))
+  (match-string-no-properties 1))
 
 (defun refbox-markdown--selected-keys ()
   "Read selected reference keys for Markdown."
@@ -191,9 +195,7 @@
   (let ((position 0)
         keys)
     (while (string-match refbox-markdown--key-regexp string position)
-      (push (or (match-string 1 string)
-                (match-string 2 string))
-            keys)
+      (push (match-string 1 string) keys)
       (setq position (match-end 0)))
     (nreverse keys)))
 

@@ -134,6 +134,30 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
     (should (equal (buffer-string)
                    "[cite:@alpha; @gamma; @beta]"))))
 
+(ert-deftest refbox-org-test-cite-swap_swaps_list_positions ()
+  "Citation swap helper should swap two list positions in place."
+  (let ((items '("alpha" "beta" "gamma")))
+    (should (equal (refbox-org-cite-swap 0 2 items)
+                   '("gamma" "beta" "alpha")))
+    (should (equal items '("gamma" "beta" "alpha")))))
+
+(ert-deftest refbox-org-test-roam_preamble_adds_at_ref_when_available ()
+  "Org-roam preamble helper should add an @KEY ref in Org-roam buffers."
+  (refbox-org-test-with-buffer "|* Alpha\n"
+    (let (refs id-created)
+      (cl-letf (((symbol-function 'org-roam-buffer-p)
+                 (lambda () t))
+                ((symbol-function 'org-roam-ref-add)
+                 (lambda (ref)
+                   (push ref refs)))
+                ((symbol-function 'org-id-get-create)
+                 (lambda (&optional _force)
+                   (setq id-created t)
+                   "id-1")))
+        (refbox-org-roam-make-preamble "alpha")
+        (should id-created)
+        (should (equal refs '("@alpha")))))))
+
 (ert-deftest refbox-org-test-prefix-and-suffix-updates ()
   "Prefix and suffix commands should edit citation-reference affixes."
   (refbox-org-test-with-buffer "[cite:|@alpha]"

@@ -61,8 +61,9 @@ Useful resource, note, and formatting options:
 ```elisp
 (setq refbox-library-paths '("~/papers"))
 (setq refbox-library-paths-recursive t)
-(setq refbox-note-paths '("~/notes/references"))
+(setq refbox-notes-paths '("~/notes/references"))
 
+;; Optional CSL formatting through citeproc.
 (setq refbox-citeproc-csl-styles-dir '("~/csl/styles"))
 (setq refbox-citeproc-csl-locales-dir '("~/csl/locales"))
 (setq refbox-citeproc-csl-style "apa")
@@ -121,9 +122,9 @@ M-x refbox-insert-raw-entry
 M-x refbox-export-bibliography
 ```
 
-Formatted references require `refbox-citeproc-csl-style`, `refbox-citeproc-csl-locale`, and their
-directories, unless `refbox-format-reference-function` supplies custom
-formatting:
+Formatted references use the `preview` entry in `refbox-templates` by default.
+For CSL output, set `refbox-format-reference-function` to
+`refbox-citeproc-format-reference` and configure citeproc:
 
 ```text
 M-x refbox-citeproc-select-csl-style

@@ -369,6 +369,28 @@
                     refbox-test-reference-candidate)
                    "Alpha R..."))))
 
+(ert-deftest refbox-test-template-formatting-supports_citar_style_placeholders ()
+  "Templates should support familiar ${field:width%transform} placeholders."
+  (let ((candidate
+         (append
+          (list :key "alpha"
+                :entry_type "article"
+                :fields '((:lookup_name "author"
+                            :value "Smith, Jane and Doe, John and Public, Ann and Roe, Richard")
+                           (:lookup_name "year" :value "2020")
+                           (:lookup_name "title" :value "Alpha Reference Title"))
+                :resources nil)
+          nil)))
+    (should (equal (refbox-template-format
+                    "${author editor:%etal} (${year date}) ${title:5}"
+                    candidate)
+                   "Smith, Doe & Public et al. (2020) Alpha"))
+    (should (equal (refbox-get-display-value
+                    '("author")
+                    (refbox-reference-entry-alist candidate)
+                    '(refbox--shorten-names 1))
+                   "Smith et al."))))
+
 (ert-deftest refbox-test-template-formatting_supports_template_alist ()
   "Template alists should configure the standard reference display slots."
   (let ((refbox-templates
@@ -414,10 +436,10 @@
         (should (string-match-p "smith2020" candidate-string))
         (should (equal (plist-get candidate :key) "smith2020"))
         (should (string-match-p
-                 "F @ +article main\\.bib"
+                 "F L +article main\\.bib"
                  annotation))
         (should (string-match-p
-                 "F @ +article main\\.bib"
+                 "F L +article main\\.bib"
                  (nth 2 affixation)))))))
 
 (ert-deftest refbox-test-search-tags-use_daemon_resource_filters ()
@@ -741,6 +763,17 @@
                          (error "unexpected RPC"))))
               (should (refbox-reference-has-files-p candidate)))))
       (delete-directory root t))))
+
+(ert-deftest refbox-test-file_variable_participates_in_file_resource_lookup ()
+  "The conventional file field variable should be part of file lookup."
+  (let ((candidate
+         '(:key "alpha"
+           :fields ((:lookup_name "pdf" :value "alpha.pdf"))
+           :resources nil))
+        (refbox-file-variable "pdf")
+        (refbox-resource-file-field-names nil)
+        (refbox-reference-resource-field-names nil))
+    (should (refbox-reference-has-files-p candidate))))
 
 (ert-deftest refbox-test-note-filename-uses-existing-or-default_path ()
   "Note filename generation should prefer existing notes and create stable names."
@@ -1297,8 +1330,24 @@
             (should (equal (refbox-csl--style-file) style-file))))
       (delete-directory root t))))
 
-(ert-deftest refbox-test-format-references-uses-daemon-and-csl_configuration ()
-  "Reference formatting should call the daemon with selected style and locale."
+(ert-deftest refbox-test-format-reference-default_uses_preview_template ()
+  "Default reference formatting should use the configured preview template."
+  (let ((refbox-templates
+         '((preview . "${author:%sn} (${year}) ${title}")))
+        (candidate
+         '(:key "alpha"
+           :entry_type "article"
+           :fields ((:lookup_name "author" :value "Smith, Jane")
+                    (:lookup_name "year" :value "2020")
+                    (:lookup_name "title" :value "Alpha Reference"))
+           :resources nil)))
+    (should (equal (refbox-format-references (list candidate))
+                   '("Smith (2020) Alpha Reference")))
+    (should (equal (refbox-format-reference (list candidate))
+                   "Smith (2020) Alpha Reference"))))
+
+(ert-deftest refbox-test-citeproc-format-reference-uses-daemon-and-csl_configuration ()
+  "CSL reference formatting should call the daemon with selected style and locale."
   (let* ((root (make-temp-file "refbox-format-" t))
          (style (expand-file-name "style.csl" root))
          (locale (expand-file-name "locales-en-US.xml" root))
@@ -1317,12 +1366,11 @@
                                            :text "Formatted Alpha")
                                      (list :key "beta"
                                            :text "Formatted Beta"))))))
-	              (should (equal (refbox-format-references '("alpha" "beta"))
+	              (should (equal (refbox-citeproc--format-references
+                                   '("alpha" "beta"))
 	                             '("Formatted Alpha" "Formatted Beta")))
 	              (should (equal (refbox-citeproc-format-reference
                                    '("alpha" "beta"))
-	                             '("Formatted Alpha" "Formatted Beta")))
-	              (should (equal (refbox-format-reference '("alpha" "beta"))
 	                             "Formatted Alpha\n\nFormatted Beta"))))
           (should (equal (caar calls) refbox-rpc-method-format-references))
           (should (equal (cadar calls)
@@ -1333,16 +1381,16 @@
 
 (ert-deftest refbox-test-insert-and-copy-formatted_references ()
   "Insert and copy commands should use formatted reference text."
-  (let ((formatted '("Alpha Reference" "Beta Reference")))
-    (cl-letf (((symbol-function 'refbox-format-references)
-               (lambda (_references) formatted)))
+  (let ((refbox-format-reference-function
+         (lambda (_references)
+           "Alpha Reference\n\nBeta Reference")))
       (with-temp-buffer
         (refbox-insert-reference '("alpha" "beta"))
         (should (equal (buffer-string)
                        "Alpha Reference\n\nBeta Reference")))
       (should (equal (refbox-copy-reference '("alpha" "beta"))
                      "Alpha Reference\n\nBeta Reference"))
-      (should (equal (current-kill 0) "Alpha Reference\n\nBeta Reference")))))
+      (should (equal (current-kill 0) "Alpha Reference\n\nBeta Reference"))))
 
 (ert-deftest refbox-test-formatting_configuration_errors_are_actionable ()
   "Missing style and locale configuration should fail directly."

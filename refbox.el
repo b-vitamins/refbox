@@ -241,9 +241,28 @@ adapter functions.  Supported adapter keys are `local-bib-files',
   "Reference display templates.
 
 When non-nil, this alist may contain `main', `suffix', `preview',
-and `note' entries.  Template strings use Refbox's `%{field}'
-placeholder syntax."
+and `note' entries.  Template strings may use `${field:width%transform}'
+or `%{field:width!function}' placeholders."
   :type '(alist :key-type symbol :value-type string)
+  :group 'refbox)
+
+(defcustom refbox-additional-fields nil
+  "Additional bibliography fields expected by local configuration.
+
+Refbox indexes all parsed fields, so these names do not limit ingestion;
+they document fields referenced by display, resource, or downstream
+configuration."
+  :type '(repeat string)
+  :group 'refbox)
+
+(defcustom refbox-display-transform-functions
+  '((sn . (refbox--shorten-names))
+    (etal . (refbox--shorten-names 3 "&")))
+  "Alist mapping template transform keys to function calls.
+
+Each entry is (KEY . FORM), where FORM is a list whose car is called
+with the field value and whose cdr supplies additional arguments."
+  :type '(alist :key-type symbol :value-type sexp)
   :group 'refbox)
 
 (defcustom refbox-reference-display-width 100
@@ -269,7 +288,7 @@ without adding a marker."
   :type 'string
   :group 'refbox)
 
-(defcustom refbox-reference-link-indicator "@"
+(defcustom refbox-reference-link-indicator "L"
   "Indicator used when a reference has external link fields."
   :type 'string
   :group 'refbox)
@@ -279,7 +298,7 @@ without adding a marker."
   :type 'string
   :group 'refbox)
 
-(defcustom refbox-reference-cited-indicator "*"
+(defcustom refbox-reference-cited-indicator "C"
   "Indicator used when `refbox-reference-cited-predicate' matches."
   :type 'string
   :group 'refbox)
@@ -306,6 +325,22 @@ without adding a marker."
   :type '(choice (const :tag "Disabled" nil) function)
   :group 'refbox)
 
+(defcustom refbox-symbols
+  '((file . ("F" . " "))
+    (note . ("N" . " "))
+    (link . ("L" . " ")))
+  "Alist of simple present/absent symbols for file, note, and link indicators."
+  :type '(alist :key-type symbol
+                :value-type (cons (string :tag "Present")
+                                  (string :tag "Absent"))
+                :options (file note link))
+  :group 'refbox)
+
+(defcustom refbox-symbol-separator " "
+  "Padding inserted between simple indicator symbols."
+  :type 'string
+  :group 'refbox)
+
 (cl-defstruct
     (refbox-indicator (:constructor refbox-indicator-create)
                       (:copier nil))
@@ -321,7 +356,7 @@ without adding a marker."
   (refbox-indicator-create
    :symbol refbox-reference-resource-indicator
    :function #'refbox-has-files
-   :tag "has:file")
+   :tag "has:files")
   "Default indicator for references with files.")
 
 (defvar refbox-indicator-links
@@ -390,6 +425,11 @@ while resolving related local files and notes."
 When nil, associated file lookup does not filter by extension."
   :type '(choice (const :tag "Any extension" nil)
                  (repeat string))
+  :group 'refbox)
+
+(defcustom refbox-file-variable "file"
+  "Bibliography field name used for local file declarations."
+  :type 'string
   :group 'refbox)
 
 (defcustom refbox-resource-file-field-names '("file")
@@ -580,9 +620,12 @@ when registering a note source with `refbox-register-notes-source'."
   :type '(choice (const :tag "Unset" nil) string)
   :group 'refbox)
 
-(defcustom refbox-format-reference-function nil
-  "Optional function used instead of daemon reference formatting."
-  :type '(choice (const :tag "Use daemon formatter" nil) function)
+(defcustom refbox-format-reference-function #'refbox-format-reference
+  "Function used by reference insertion and copy commands.
+
+The function receives a list of reference keys or candidates and returns
+the formatted reference text."
+  :type 'function
   :group 'refbox)
 
 (defcustom refbox-library-file-name-function
@@ -647,7 +690,9 @@ is non-nil."
     map)
   "Keymap for refbox citation actions.")
 
-(defconst refbox-template--placeholder-regexp "%{\\([^}\n]+\\)}")
+(defconst refbox-template--placeholder-regexp
+  "\\(?:%{\\([^}\n]+\\)}\\|\\${\\([^}\n]+\\)}\\)"
+  "Regexp matching supported refbox template placeholders.")
 
 (defun refbox--plist-get-any (plist &rest keys)
   "Return the first value in PLIST matching one of KEYS."
@@ -729,6 +774,15 @@ is non-nil."
     #'refbox--blank-string-p
     (append refbox-crossref-field-names
             (list refbox-crossref-variable)))))
+
+(defun refbox--file-field-names ()
+  "Return field names used for local file declarations."
+  (delete-dups
+   (cl-remove-if
+    #'refbox--blank-string-p
+    (append refbox-resource-file-field-names
+            refbox-reference-resource-field-names
+            (list refbox-file-variable)))))
 
 (defun refbox-reference-field (candidate field)
   "Return FIELD from CANDIDATE.
@@ -1010,9 +1064,68 @@ reference key string."
   "Return VALUE reduced to a year and propertized as a year."
   (propertize (refbox-template-year value) 'face 'refbox-year))
 
-(defun refbox-template--parse-field (body)
-  "Parse placeholder BODY into a field token."
-  (let* ((parts (split-string (string-trim body) "!"))
+(defun refbox--shorten-name-position (names name)
+  "Return NAME position in NAMES."
+  (1+ (or (seq-position names name) -1)))
+
+(defun refbox--shorten-name (name)
+  "Return family name from NAME when it is written as \"family, given\"."
+  (car (split-string name ", ")))
+
+(defun refbox--shorten-names (names &optional truncate and-string)
+  "Return shortened family names from BibTeX-style NAMES.
+
+When TRUNCATE is an integer, include at most that many names and append
+\"et al.\" when names were omitted.  AND-STRING replaces the final comma
+between displayed names."
+  (let* ((names (split-string (or names "") " and "))
+         (name-count (length names))
+         (truncated-names (seq-take names (or truncate name-count)))
+         (truncated-count (length truncated-names)))
+    (mapconcat
+     (lambda (name)
+       (let* ((short-name (refbox--shorten-name name))
+              (position (refbox--shorten-name-position truncated-names name))
+              (suffix
+               (cond
+                ((equal position truncated-count)
+                 (if (< truncated-count name-count) " et al." ""))
+                ((and and-string (equal position (1- truncated-count)))
+                 (concat " " and-string " "))
+                (t ", "))))
+         (concat short-name suffix)))
+     truncated-names
+     "")))
+
+(defun refbox-template--field-width (width)
+  "Return normalized template WIDTH."
+  (cond
+   ((or (null width) (string-empty-p width) (string= width "0")) nil)
+   ((string= width "*") '*)
+   (t (string-to-number width))))
+
+(defun refbox-template--split-fields (fields separator)
+  "Return normalized FIELDS split using SEPARATOR."
+  (let ((fields
+         (if separator
+             (split-string fields separator t "[[:space:]\n]+")
+           (split-string-and-unquote fields))))
+    (mapcar #'refbox--field-name-normalize fields)))
+
+(defun refbox-template--display-transform (transform)
+  "Return display transform call for TRANSFORM key."
+  (unless (refbox--blank-string-p transform)
+    (cdr (assoc (intern (string-trim transform))
+                refbox-display-transform-functions))))
+
+(defun refbox-template--parse-field (body &optional display-transform)
+  "Parse placeholder BODY into a field token.
+
+When DISPLAY-TRANSFORM is non-nil, parse `%TRANSFORM' through
+`refbox-display-transform-functions'.  Otherwise parse `!FUNCTION' as a
+direct function transform."
+  (let* ((separator (if display-transform "%" "!"))
+         (parts (split-string (string-trim body) separator))
          (field-part (car parts))
          (transform-part (cadr parts))
          width)
@@ -1022,20 +1135,27 @@ reference key string."
       (user-error "refbox template field is empty"))
     (when (and transform-part (string-empty-p (string-trim transform-part)))
       (user-error "refbox template transform is empty: %s" body))
-    (when (string-match "\\`\\(.+\\):\\([0-9]+\\|\\*\\)\\'" field-part)
+    (when (string-match "\\`\\(.*?\\):[[:blank:]]*\\([0-9]+\\|\\*\\)[[:blank:]]*\\'"
+                        field-part)
       (setq width (match-string 2 field-part)
             field-part (match-string 1 field-part)))
-    (let ((fields (mapcar #'refbox--field-name-normalize
-                          (split-string field-part "|" t "[[:space:]\n]+"))))
+    (when (and display-transform
+               (string-suffix-p ":" (string-trim-right field-part)))
+      (setq field-part
+            (string-remove-suffix ":" (string-trim-right field-part))))
+    (let ((fields (refbox-template--split-fields
+                   field-part
+                   (unless display-transform "|"))))
       (when (null fields)
         (user-error "refbox template field is empty"))
       (list :fields fields
-            :width (cond
-                    ((null width) nil)
-                    ((string= width "*") '*)
-                    (t (string-to-number width)))
-            :transform (when transform-part
-                         (intern (string-trim transform-part)))))))
+            :width (refbox-template--field-width width)
+            :transform (cond
+                        (display-transform
+                         (refbox-template--display-transform transform-part))
+                        (transform-part
+                         (intern (string-trim transform-part)))
+                        (t nil))))))
 
 (defun refbox-template-parse (template)
   "Parse TEMPLATE into literal strings and field tokens."
@@ -1046,10 +1166,13 @@ reference key string."
     (while (string-match refbox-template--placeholder-regexp template position)
       (let ((match-start (match-beginning 0))
             (match-end (match-end 0))
-            (field-body (match-string 1 template)))
+            (field-body (or (match-string 1 template)
+                            (match-string 2 template)))
+            (display-transform (match-beginning 2)))
         (when (> match-start position)
           (push (substring template position match-start) tokens))
-        (push (refbox-template--parse-field field-body) tokens)
+        (push (refbox-template--parse-field field-body display-transform)
+              tokens)
         (setq position match-end)))
     (when (< position (length template))
       (push (substring template position) tokens))
@@ -1065,9 +1188,27 @@ reference key string."
         (transform (plist-get token :transform)))
     (setq value (format "%s" (or value "")))
     (when transform
-      (unless (fboundp transform)
-        (user-error "refbox template transform is not defined: %s" transform))
-      (setq value (format "%s" (or (funcall transform value) ""))))
+      (setq
+       value
+       (format
+        "%s"
+        (or
+         (pcase transform
+           ((pred symbolp)
+            (unless (fboundp transform)
+              (user-error "refbox template transform is not defined: %s"
+                          transform))
+            (funcall transform value))
+           (`(,function . ,args)
+            (unless (or (functionp function)
+                        (and (symbolp function) (fboundp function)))
+              (user-error "refbox template transform is not defined: %s"
+                          function))
+            (apply function value args))
+           (_
+            (user-error "refbox template transform is invalid: %S"
+                        transform)))
+         ""))))
     value))
 
 (defun refbox-template--fit (value width)
@@ -1720,7 +1861,7 @@ callable."
            for lookup = (refbox--resource-lookup-name resource)
            when (or (equal kind "file")
                     (and lookup
-                         (member lookup refbox-resource-file-field-names)))
+                         (member lookup (refbox--file-field-names))))
            append (refbox-resource--parse-file-field
                    (refbox--resource-value resource))))
          (source-dirs (refbox-resource--source-dirs candidate resources))
@@ -1735,16 +1876,14 @@ callable."
   (or (refbox-reference-has-resource-kind-p candidate "file")
       (refbox-reference-has-any-field-p
        candidate
-       (delete-dups
-        (append refbox-resource-file-field-names
-                refbox-reference-resource-field-names)))
+       (refbox--file-field-names))
       (cl-some
        (lambda (resource)
          (let ((kind (refbox--resource-kind resource))
                (lookup (refbox--resource-lookup-name resource)))
            (or (equal kind "file")
                (and lookup
-                    (member lookup refbox-resource-file-field-names)))))
+                    (member lookup (refbox--file-field-names))))))
        resources)))
 
 (defun refbox-resource-file-source-library-items (candidate resources)
@@ -2879,48 +3018,62 @@ ARG is passed to the adapter command."
         (message "refbox CSL style: %s" (plist-get item :title))
         refbox-citeproc-csl-style))))
 
-(defun refbox-citeproc-format-reference (references &optional style)
-  "Return formatted reference strings for REFERENCES.
+(defun refbox-citeproc--format-references (references &optional style)
+  "Return CSL-formatted reference strings for REFERENCES.
 
 STYLE, when non-nil, overrides `refbox-citeproc-csl-style'."
   (let ((references (refbox--reference-list references)))
     (unless references
       (user-error "No references selected"))
-    (if refbox-format-reference-function
-        (funcall refbox-format-reference-function references)
-      (let ((refbox-citeproc-csl-style
-             (or style refbox-citeproc-csl-style)))
-        (let* ((style-path (refbox-csl--style-file))
-               (locale-path (refbox-csl--locale-file))
-               (response
-                (refbox-rpc-request
-                 refbox-rpc-method-format-references
-                 (list :keys (vconcat (mapcar #'refbox--reference-key references))
-                       :style_path style-path
-                       :locale_path locale-path))))
-          (mapcar (lambda (item)
-                    (plist-get item :text))
-                  (refbox--listify (plist-get response :references))))))))
+    (when (or current-prefix-arg
+              (and (null style)
+                   (refbox--blank-string-p refbox-citeproc-csl-style)))
+      (refbox-citeproc-select-csl-style))
+    (let ((refbox-citeproc-csl-style
+           (or style refbox-citeproc-csl-style)))
+      (let* ((style-path (refbox-csl--style-file))
+             (locale-path (refbox-csl--locale-file))
+             (response
+              (refbox-rpc-request
+               refbox-rpc-method-format-references
+               (list :keys (vconcat (mapcar #'refbox--reference-key references))
+                     :style_path style-path
+                     :locale_path locale-path))))
+        (mapcar (lambda (item)
+                  (plist-get item :text))
+                (refbox--listify (plist-get response :references)))))))
+
+(defun refbox-citeproc-format-reference (references &optional style)
+  "Return CSL-formatted reference text for REFERENCES.
+
+STYLE, when non-nil, overrides `refbox-citeproc-csl-style'."
+  (string-join (refbox-citeproc--format-references references style) "\n\n"))
 
 (defun refbox-format-references (references)
-  "Return formatted reference strings for REFERENCES."
-  (refbox-citeproc-format-reference references))
+  "Return template-formatted reference strings for REFERENCES."
+  (mapcar #'refbox-reference-format-preview
+          (refbox--reference-list references)))
 
 (defun refbox-format-reference (references)
   "Return formatted reference text for REFERENCES."
   (string-join (refbox-format-references references) "\n\n"))
 
+(defun refbox--format-reference-text (references)
+  "Return formatted reference text for REFERENCES using configured formatter."
+  (funcall (or refbox-format-reference-function #'refbox-format-reference)
+           references))
+
 ;;;###autoload
 (defun refbox-insert-reference (&optional references)
   "Insert formatted references for REFERENCES."
   (interactive)
-  (insert (refbox-format-reference references)))
+  (insert (refbox--format-reference-text references)))
 
 ;;;###autoload
 (defun refbox-copy-reference (&optional references)
   "Copy formatted references for REFERENCES to the kill ring."
   (interactive)
-  (let ((text (refbox-format-reference references)))
+  (let ((text (refbox--format-reference-text references)))
     (kill-new text)
     (when (called-interactively-p 'interactive)
       (message "refbox: copied formatted reference%s"

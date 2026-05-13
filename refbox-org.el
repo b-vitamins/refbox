@@ -36,6 +36,7 @@
 (require 'oc-basic nil t)
 (require 'org)
 (require 'org-element)
+(require 'org-id nil t)
 (require 'seq)
 (require 'subr-x)
 (require 'refbox)
@@ -50,6 +51,9 @@
 (declare-function org-element-property "org-element" (property element))
 (declare-function org-element-interpret-data "org-element" (data))
 (declare-function org-cite-basic-activate "oc-basic" (citation))
+(declare-function org-id-get-create "org-id" (&optional force))
+(declare-function org-roam-buffer-p "org-roam" ())
+(declare-function org-roam-ref-add "org-roam" (ref))
 (declare-function embark-act "embark" (&optional target type action))
 
 (defgroup refbox-org nil
@@ -322,6 +326,29 @@ citation, a non-nil ARG requests an explicit citation style."
                         "\\)")))
       (match-string-no-properties 1))))
 
+(defun refbox-org--id-get-create (&optional force)
+  "Call `org-id-get-create' while maintaining point.
+
+With FORCE, force creation of a new ID."
+  (unless (fboundp 'org-id-get-create)
+    (user-error "`org-id-get-create' is not available"))
+  (let ((point (point-marker)))
+    (set-marker-insertion-type point t)
+    (unwind-protect
+        (org-id-get-create force)
+      (goto-char point)
+      (set-marker point nil))))
+
+;;;###autoload
+(defun refbox-org-roam-make-preamble (key)
+  "Add an Org-roam note preamble for citation KEY."
+  (when (and (derived-mode-p 'org-mode)
+             (fboundp 'org-roam-buffer-p)
+             (org-roam-buffer-p))
+    (ignore-errors (refbox-org--id-get-create))
+    (when (fboundp 'org-roam-ref-add)
+      (ignore-errors (org-roam-ref-add (concat "@" key))))))
+
 (defun refbox-org--reference-or-error ()
   "Return the citation reference at point or signal a user error."
   (or (refbox-org-reference-at-point)
@@ -497,13 +524,20 @@ every reference in that citation."
   (mapcar
    (lambda (reference)
      (replace-regexp-in-string
-      ";\\'"
-      ""
-      (string-trim
+	      ";\\'"
+	      ""
+	      (string-trim
        (buffer-substring-no-properties
         (org-element-begin reference)
         (org-element-end reference)))))
    references))
+
+(defun refbox-org-cite-swap (i j list)
+  "Swap indexes I and J in LIST and return LIST."
+  (let ((item-i (nth i list)))
+    (setf (nth i list) (nth j list))
+    (setf (nth j list) item-i))
+  list)
 
 (defun refbox-org--shift-reference (direction)
   "Shift citation reference at point in DIRECTION.
