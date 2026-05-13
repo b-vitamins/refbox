@@ -450,35 +450,29 @@ file association more cheaply than materializing all items."
   :group 'refbox)
 
 (defcustom refbox-add-file-sources
-  '((buffer
-     :name "buffer"
-     :description "Save current buffer contents"
-     :function refbox-add-file-source-buffer)
-    (file
-     :name "file"
-     :description "Copy an existing file"
-     :function refbox-add-file-source-file)
-    (url
-     :name "url"
-     :description "Download from a URL"
-     :function refbox-add-file-source-url))
+  '((?b "buffer" "Current buffer" refbox-add-file-source-buffer)
+    (?f "file" "Existing file" refbox-add-file-source-file)
+    (?u "url" "Download from URL" refbox-add-file-source-url))
   "Sources offered by `refbox-add-file-to-library'.
 
-Each source is an alist entry of the form (NAME . PLIST).  NAME
-is a symbol identifying the source.  PLIST recognizes `:name',
-`:description', and `:function'.  The function receives REFERENCE
-and returns a source plist with `:write-file' and optional
-`:extension'.  `:write-file' is a function of DESTINATION and
-OVERWRITE with the same overwrite convention as `copy-file'."
-  :type 'alist
+Each source is a list containing a shortcut character, short name,
+description, and function.  The function receives REFERENCE and returns
+a source plist with `:write-file' and optional `:extension'.
+`:write-file' is a function of DESTINATION and OVERWRITE with the same
+overwrite convention as `copy-file'."
+  :type '(repeat :tag "Sources for `refbox-add-file-to-library'"
+                 (group (character :tag "Shortcut")
+                        (string :tag "Name")
+                        (string :tag "Description")
+                        (function :tag "Source function")))
   :group 'refbox)
 
 (defcustom refbox-add-file-function #'refbox-save-file-to-library
   "Function used by `refbox-add-file-to-library' to store a source.
 
-The function receives REFERENCE, a source plist returned by one
-of `refbox-add-file-sources', and OVERWRITE.  It should write the
-source and return the destination file name."
+The function receives REFERENCE and a source plist returned by one of
+`refbox-add-file-sources'.  It should write the source and return the
+destination file name."
   :type 'function
   :group 'refbox)
 
@@ -3174,7 +3168,8 @@ STYLE, when non-nil, overrides `refbox-citeproc-csl-style'."
 SOURCE is a plist returned by one of `refbox-add-file-sources'.
 OVERWRITE follows the same convention as `copy-file'; an integer
 asks before replacing an existing file."
-  (let* ((extension (or (plist-get source :extension)
+  (let* ((overwrite (or overwrite 1))
+         (extension (or (plist-get source :extension)
                         (read-string "Extension: ")))
          (write-file (plist-get source :write-file))
          (destination (refbox-library-destination-file reference extension)))
@@ -3212,44 +3207,27 @@ asks before replacing an existing file."
      (lambda (destination overwrite)
        (url-copy-file url destination overwrite)))))
 
-(defun refbox-add-file-source--label (source)
-  "Return the completion label for add-file SOURCE."
-  (let* ((id (car source))
-         (plist (cdr source))
-         (name (plist-get plist :name)))
-    (cond
-     ((stringp name) name)
-     ((symbolp id) (symbol-name id))
-     (t (user-error "refbox add-file source name must be a symbol: %S" id)))))
-
 (defun refbox-add-file-source--function (source)
   "Return the function configured for add-file SOURCE."
-  (let ((function (plist-get (cdr source) :function)))
+  (unless (and (listp source)
+               (= (length source) 4)
+               (characterp (nth 0 source))
+               (stringp (nth 1 source))
+               (stringp (nth 2 source)))
+    (user-error "Invalid refbox add-file source: %S" source))
+  (let ((function (nth 3 source)))
     (unless (functionp function)
-      (user-error "refbox add-file source %s has no callable :function"
-                  (car source)))
+      (user-error "refbox add-file source %s has no callable function"
+                  (nth 1 source)))
     function))
 
 (defun refbox-add-file-source--read ()
   "Prompt for and return a source from `refbox-add-file-sources'."
   (unless refbox-add-file-sources
     (user-error "Make sure `refbox-add-file-sources' is non-nil"))
-  (let ((table (make-hash-table :test 'equal))
-        choices)
-    (dolist (source refbox-add-file-sources)
-      (unless (and (consp source) (symbolp (car source)) (listp (cdr source)))
-        (user-error "Invalid refbox add-file source: %S" source))
-      (let* ((base (refbox-add-file-source--label source))
-             (label base)
-             (counter 2))
-        (while (gethash label table)
-          (setq label (format "%s <%d>" base counter)
-                counter (1+ counter)))
-        (puthash label source table)
-        (push label choices)))
-    (gethash
-     (completing-read "Add from: " (nreverse choices) nil t)
-     table)))
+  (dolist (source refbox-add-file-sources)
+    (refbox-add-file-source--function source))
+  (read-multiple-choice "Add file from" refbox-add-file-sources))
 
 ;;;###autoload
 (defun refbox-add-file-to-library (&optional reference)
@@ -3261,7 +3239,7 @@ asks before replacing an existing file."
          (source (refbox-add-file-source--read))
          (source-plist (funcall (refbox-add-file-source--function source)
                                 reference)))
-    (funcall refbox-add-file-function reference source-plist 1)))
+    (funcall refbox-add-file-function reference source-plist)))
 
 (defun refbox--completion-state (&optional limit source-paths)
   "Return fresh completion state using LIMIT and SOURCE-PATHS."

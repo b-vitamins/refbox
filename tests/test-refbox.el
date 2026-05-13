@@ -1257,19 +1257,17 @@
     (unwind-protect
         (let ((refbox-library-paths (list library))
               (refbox-add-file-sources
-               `((custom
-                  :name "Custom"
-                  :description "Use a test source"
-                  :function ,(lambda (reference)
-                                (setq called reference)
-                                (list :extension "pdf"
-                                      :write-file
-                                      (lambda (destination _overwrite)
-                                        (with-temp-file destination
-                                          (insert "custom-pdf")))))))))
-          (cl-letf (((symbol-function 'completing-read)
-                     (lambda (_prompt collection &rest _args)
-                       (car collection))))
+               `((?c "custom" "Use a test source"
+                  ,(lambda (reference)
+                     (setq called reference)
+                     (list :extension "pdf"
+                           :write-file
+                           (lambda (destination _overwrite)
+                             (with-temp-file destination
+                               (insert "custom-pdf")))))))))
+          (cl-letf (((symbol-function 'read-multiple-choice)
+                     (lambda (_prompt choices)
+                       (car choices))))
             (should (equal (refbox-add-file-to-library "alpha")
                            (expand-file-name "alpha.pdf" library))))
           (with-temp-buffer
@@ -1286,9 +1284,9 @@
         (let ((refbox-library-paths (list library)))
           (with-temp-buffer
             (insert "buffer-pdf")
-            (cl-letf (((symbol-function 'completing-read)
-                       (lambda (_prompt collection &rest _args)
-                         (car collection)))
+            (cl-letf (((symbol-function 'read-multiple-choice)
+                       (lambda (_prompt choices)
+                         (car choices)))
                       ((symbol-function 'read-buffer)
                        (lambda (&rest _args)
                          (buffer-name)))
@@ -1306,23 +1304,21 @@
   "The interactive add-file command should dispatch through the configured writer."
   (let (called)
     (let ((refbox-add-file-sources
-           `((custom
-              :name "Custom"
-              :function ,(lambda (_reference)
-                            (list :extension "pdf"
-                                  :write-file #'ignore)))))
+           `((?c "custom" "Use a test source"
+              ,(lambda (_reference)
+                 (list :extension "pdf"
+                       :write-file #'ignore)))))
           (refbox-add-file-function
-           (lambda (reference source overwrite)
-             (setq called (list reference source overwrite))
+           (lambda (reference source)
+             (setq called (list reference source))
              "custom-destination")))
-      (cl-letf (((symbol-function 'completing-read)
-                 (lambda (_prompt collection &rest _args)
-                   (car collection))))
+      (cl-letf (((symbol-function 'read-multiple-choice)
+                 (lambda (_prompt choices)
+                   (car choices))))
         (should (equal (refbox-add-file-to-library "alpha")
                        "custom-destination"))))
     (should (equal (car called) "alpha"))
-    (should (equal (plist-get (cadr called) :extension) "pdf"))
-    (should (equal (caddr called) 1))))
+    (should (equal (plist-get (cadr called) :extension) "pdf"))))
 
 (ert-deftest refbox-test-add-file-to-library_rejects_empty_sources ()
   "The interactive add-file command should fail at the source boundary."
