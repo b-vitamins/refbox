@@ -1956,11 +1956,17 @@ whose cdr is passed as additional arguments."
                     "\\(?:" additional-sep ".*\\)?\\'")
             base))))
 
-(defun refbox-resource--files-for-keys-from-index
-    (keys roots recursive extensions additional-sep)
-  "Return files for KEYS by scanning a cached ROOTS file index."
-  (let ((index (refbox-resource--file-index roots recursive extensions))
-        found)
+(defun refbox-resource--normalized-key-list (keys)
+  "Return non-empty string keys from KEYS."
+  (cl-remove-if #'string-empty-p
+                (mapcar (lambda (key)
+                          (format "%s" (or key "")))
+                        keys)))
+
+(defun refbox-resource--files-for-keys-in-index
+    (keys index additional-sep)
+  "Return files matching KEYS from file INDEX."
+  (let (found)
     (dolist (entry index)
       (let ((base (car entry))
             (file (cdr entry)))
@@ -1972,56 +1978,60 @@ whose cdr is passed as additional arguments."
           (push file found))))
     (nreverse (delete-dups found))))
 
-(defun refbox-resource--files-for-keys-from-existing-index
-    (keys roots recursive extensions additional-sep)
-  "Return indexed files for KEYS, or `refbox--cache-miss' when uncached."
-  (let* ((key (refbox-resource--file-index-key roots recursive extensions))
-         (index (refbox--dynamic-cache-value 'resource-file-index key)))
-    (if (eq index refbox--cache-miss)
-        refbox--cache-miss
-      (let (found)
-        (dolist (entry index)
-          (let ((base (car entry))
-                (file (cdr entry)))
-            (when (cl-some
-                   (lambda (key)
-                     (refbox-resource--file-base-matches-key-p
-                      base key additional-sep))
-                   keys)
-              (push file found))))
-        (nreverse (delete-dups found))))))
+(defun refbox-resource--files-for-keys-direct (keys roots extensions)
+  "Return exact KEY.EXTENSION matches in ROOTS."
+  (let (found)
+    (dolist (dir roots)
+      (dolist (key keys)
+        (dolist (extension extensions)
+          (let ((file (expand-file-name
+                       (format "%s.%s" key extension)
+                       dir)))
+            (when (file-exists-p file)
+              (push file found))))))
+    (nreverse (delete-dups found))))
+
+(defun refbox-resource--files-for-keys-normalized
+    (keys roots recursive extensions additional-sep materialize)
+  "Return files for normalized search inputs.
+
+When MATERIALIZE is nil, only use exact path probes or an index that
+already exists in the dynamic cache."
+  (cond
+   ((or (null keys) (null roots))
+    nil)
+   ((and (not recursive) extensions (not additional-sep))
+    (refbox-resource--files-for-keys-direct keys roots extensions))
+   (materialize
+    (refbox-resource--files-for-keys-in-index
+     keys
+     (refbox-resource--file-index roots recursive extensions)
+     additional-sep))
+   (t
+    (let* ((key (refbox-resource--file-index-key roots recursive extensions))
+           (index (refbox--dynamic-cache-value 'resource-file-index key)))
+      (unless (eq index refbox--cache-miss)
+        (refbox-resource--files-for-keys-in-index
+         keys index additional-sep))))))
+
+(defun refbox-resource--normalize-file-search (keys roots extensions)
+  "Return normalized KEYS, ROOTS, and EXTENSIONS for file search."
+  (list (refbox-resource--normalized-key-list keys)
+        (refbox-resource--normalized-roots roots)
+        (and extensions
+             (refbox-resource--normalize-extensions extensions))))
 
 (defun refbox-resource--files-for-keys-in-roots
     (keys roots recursive extensions additional-sep)
   "Return files in ROOTS associated with KEYS."
-  (let* ((keys (cl-remove-if #'string-empty-p
-                             (mapcar (lambda (key)
-                                       (format "%s" (or key "")))
-                                     keys)))
-         (roots (refbox-resource--normalized-roots roots))
-         (extensions (and extensions
-                          (refbox-resource--normalize-extensions extensions))))
+  (pcase-let ((`(,keys ,roots ,extensions)
+               (refbox-resource--normalize-file-search keys roots extensions)))
     (refbox--dynamic-cache-get
      'resource-files-for-keys
      (list keys roots recursive extensions additional-sep)
      (lambda ()
-       (cond
-        ((or (null keys) (null roots))
-         nil)
-        ((and (not recursive) extensions (not additional-sep))
-         (let (found)
-           (dolist (dir roots)
-             (dolist (key keys)
-               (dolist (extension extensions)
-                 (let ((file (expand-file-name
-                              (format "%s.%s" key extension)
-                              dir)))
-                   (when (file-exists-p file)
-                     (push file found))))))
-           (nreverse (delete-dups found))))
-        (t
-         (refbox-resource--files-for-keys-from-index
-          keys roots recursive extensions additional-sep)))))))
+       (refbox-resource--files-for-keys-normalized
+        keys roots recursive extensions additional-sep t)))))
 
 (defun refbox-resource--files-for-keys-cheap
     (keys roots recursive extensions additional-sep)
@@ -2029,37 +2039,10 @@ whose cdr is passed as additional arguments."
 
 This never performs recursive directory discovery or full directory
 materialization from an indicator path."
-  (let* ((keys (cl-remove-if #'string-empty-p
-                             (mapcar (lambda (key)
-                                       (format "%s" (or key "")))
-                                     keys)))
-         (roots (refbox-resource--normalized-roots roots))
-         (extensions (and extensions
-                          (refbox-resource--normalize-extensions extensions))))
-    (cond
-     ((or (null keys) (null roots))
-      nil)
-     ((and (not recursive) extensions (not additional-sep))
-      (let (found)
-        (dolist (dir roots)
-          (dolist (key keys)
-            (dolist (extension extensions)
-              (let ((file (expand-file-name
-                           (format "%s.%s" key extension)
-                           dir)))
-                (when (file-exists-p file)
-                  (push file found))))))
-        (nreverse (delete-dups found))))
-     (t
-      (let ((files (refbox-resource--files-for-keys-from-existing-index
-                    keys roots recursive extensions additional-sep)))
-        (unless (eq files refbox--cache-miss)
-          files))))))
-
-(defun refbox-resource--files-for-keys (keys dirs extensions additional-sep)
-  "Return files in DIRS associated with KEYS."
-  (refbox-resource--files-for-keys-in-roots
-   keys dirs nil extensions additional-sep))
+  (pcase-let ((`(,keys ,roots ,extensions)
+               (refbox-resource--normalize-file-search keys roots extensions)))
+    (refbox-resource--files-for-keys-normalized
+     keys roots recursive extensions additional-sep nil)))
 
 (defun refbox-resource-file-source--plist (source)
   "Return the plist for file SOURCE."
@@ -2455,19 +2438,6 @@ enumerate all indexed references; when it is explicitly nil, return nil."
   "Create or open a note for REFERENCE using the active source."
   (let ((key (refbox--reference-key reference)))
     (funcall (refbox-note-source--function :create) key reference)))
-
-(defun refbox--read-target (prompt targets)
-  "Read one target from TARGETS using PROMPT."
-  (cond
-   ((null targets)
-    (user-error "No resources found"))
-   ((null (cdr targets))
-    (car targets))
-   (t
-    (let ((table (make-hash-table :test 'equal)))
-      (dolist (target targets)
-        (puthash target target table))
-      (gethash (completing-read prompt targets nil t) table)))))
 
 (defun refbox--command-should-prompt-p (command)
   "Return non-nil when COMMAND should prompt for a single resource."
@@ -2956,10 +2926,6 @@ insertion."
 (defun refbox--major-mode-function (key default &rest args)
   "Call the adapter for KEY with ARGS, falling back to DEFAULT."
   (apply (refbox--get-major-mode-function key default) args))
-
-(defun refbox--insert-keys-comma-separated (keys)
-  "Insert KEYS separated by commas."
-  (insert (string-join keys ",")))
 
 (defun refbox--insert-keys-comma-space-separated (keys)
   "Insert KEYS separated by comma and space."
