@@ -270,6 +270,15 @@ without adding a marker."
   :type 'natnum
   :group 'refbox)
 
+(defcustom refbox-completion-field-value-limit 1024
+  "Maximum field text hydrated for each completion candidate.
+
+This bounds large author, abstract, and title fields on the
+type-ahead path while leaving explicit entry and resource commands
+untruncated."
+  :type 'natnum
+  :group 'refbox)
+
 (defcustom refbox-completion-category-styles '(basic)
   "Completion styles used for refbox's dynamic reference category.
 
@@ -771,6 +780,18 @@ is non-nil."
   (when (listp candidate)
     (refbox--listify (refbox--candidate-value candidate :resources))))
 
+(defun refbox--candidate-resource-kinds (candidate)
+  "Return CANDIDATE resource kinds as strings."
+  (delete-dups
+   (cl-remove-if
+    #'refbox--blank-string-p
+    (append
+     (when (listp candidate)
+       (refbox--listify (refbox--candidate-value
+                         candidate :resource_kinds :resource-kinds)))
+     (mapcar #'refbox--resource-kind
+             (refbox--candidate-resources candidate))))))
+
 (defun refbox--candidate-field-table (candidate)
   "Return cached field lookup table for CANDIDATE."
   (when (and refbox--reference-field-cache (listp candidate))
@@ -942,9 +963,7 @@ computed property such as indicators, or an indexed bibliography field."
 (defun refbox-reference-has-resource-kind-p (candidate kind)
   "Return non-nil when CANDIDATE has an indexed resource of KIND."
   (let ((kind (if (symbolp kind) (symbol-name kind) kind)))
-    (cl-some (lambda (resource)
-               (equal (refbox--resource-kind resource) kind))
-             (refbox--candidate-resources candidate))))
+    (member kind (refbox--candidate-resource-kinds candidate))))
 
 (defun refbox-reference-has-any-resource-kind-p (candidate kinds)
   "Return non-nil when CANDIDATE has an indexed resource from KINDS."
@@ -1519,7 +1538,7 @@ direct function transform."
       matches)))
 
 (defun refbox-search-references
-    (query &optional limit source-paths unranked field-names)
+    (query &optional limit source-paths unranked field-names omit-resources)
   "Search indexed references for QUERY using bounded LIMIT.
 
 When SOURCE-PATHS is non-nil, restrict results to those
@@ -1528,7 +1547,10 @@ bibliography source files.
 When UNRANKED is non-nil, request a fast deterministic index-order
 search intended for type-ahead completion.
 
-When FIELD-NAMES is non-nil, hydrate only those bibliography fields."
+When FIELD-NAMES is non-nil, hydrate only those bibliography fields.
+
+When OMIT-RESOURCES is non-nil, return lightweight resource kind
+summaries instead of full resource payloads."
   (let* ((parsed (refbox-search--parse-query query))
          (clean-query (plist-get parsed :query))
          (resource-kinds (plist-get parsed :resource-kinds))
@@ -1557,10 +1579,15 @@ When FIELD-NAMES is non-nil, hydrate only those bibliography fields."
                        (list :resource_kinds (vconcat resource-kinds)))
                      (when field-names
                        (list :field_names (vconcat field-names)))
+                     (when omit-resources
+                       (list :field_value_char_limit
+                             refbox-completion-field-value-limit))
                      (when (refbox--blank-string-p clean-query)
                        (list :allow_empty_query t))
                      (when unranked
-                       (list :ranked :json-false)))))
+                       (list :ranked :json-false))
+                     (when omit-resources
+                       (list :include_resources :json-false)))))
          (entries (plist-get response :entries)))
     (setq entries (refbox--listify entries))
     (if post-filter-tags
@@ -1754,7 +1781,8 @@ whose cdr is passed as additional arguments."
                         (plist-get state :limit)
                         (plist-get state :source-paths)
                         t
-                        (refbox--completion-field-names))))))))
+                        (refbox--completion-field-names)
+                        t)))))))
   (plist-get state :candidates))
 
 (defun refbox-capf--completion-table (state)
@@ -3590,7 +3618,9 @@ asks before replacing an existing file."
   (string-join
    (delq nil
          (list (substring-no-properties completion)
-               (refbox--completion-annotation-text completion)))
+               (get-text-property 0 'refbox-affixation-suffix completion)
+               (unless (get-text-property 0 'refbox-candidate completion)
+                 (refbox--completion-annotation-text completion))))
    " "))
 
 (defun refbox--completion-apply-input-filter (input completions)
@@ -3621,20 +3651,22 @@ selection can still resolve to the candidate it came from."
     (let* ((base (refbox-reference-format-main candidate))
            (suffix (refbox-reference-format-suffix candidate))
            (prefix (refbox-reference-indicators candidate))
-           (display base)
+           (text (concat base suffix))
+           (display text)
            (source-path (refbox-reference-field candidate "source_path"))
            (counter 2))
       (when (gethash display seen)
-        (setq display (format "%s  [%s]" base source-path)))
+        (setq display (format "%s  [%s]" text source-path)))
       (while (gethash display seen)
-        (setq display (format "%s <%d>" base counter)
+        (setq display (format "%s <%d>" text counter)
               counter (1+ counter)))
       (puthash display candidate seen)
       (puthash display candidate selection-map)
       (propertize display
                   'refbox-candidate candidate
                   'refbox-prefix prefix
-                  'refbox-annotation suffix))))
+                  'refbox-annotation suffix
+                  'refbox-affixation-suffix ""))))
 
 (defun refbox--completion-prefix-text (completion)
   "Return cached affixation prefix text for COMPLETION."
@@ -3663,12 +3695,13 @@ selection can still resolve to the candidate it came from."
                (mapcar (lambda (candidate)
                          (refbox--completion-candidate-display
                           candidate seen selection-map))
-                       (refbox-search-references
-                        (refbox--completion-search-input input)
-                        (plist-get state :limit)
-                        (plist-get state :source-paths)
-                        t
-                        (refbox--completion-field-names))))))))
+              (refbox-search-references
+               (refbox--completion-search-input input)
+               (plist-get state :limit)
+               (plist-get state :source-paths)
+               t
+               (refbox--completion-field-names)
+               t)))))))
   (plist-get state :candidates))
 
 (defun refbox--completion-filter (candidates predicate)
@@ -3684,7 +3717,6 @@ selection can still resolve to the candidate it came from."
      ((eq action 'metadata)
       '(metadata
         (category . refbox-reference)
-        (annotation-function . refbox--completion-annotation)
         (affixation-function . refbox--completion-affixation)))
      (t
       (let ((candidates (refbox--completion-filter
@@ -3722,9 +3754,10 @@ selection can still resolve to the candidate it came from."
        (lambda (completion)
          (list completion
                (or (refbox--completion-prefix-text completion) "")
-               (if-let ((annotation (refbox--completion-annotation-text completion)))
-                   (concat " " annotation)
-                 "")))
+               (or (get-text-property 0 'refbox-affixation-suffix completion)
+                   (if-let ((annotation (refbox--completion-annotation-text completion)))
+                       (concat " " annotation)
+                     ""))))
        completions))))
 
 (defun refbox--completion-predicate (predicate)

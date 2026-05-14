@@ -116,6 +116,7 @@ impl Daemon {
             entry_type: entry.entry_type,
             score: entry.score,
             fields: entry.fields.into_iter().map(field_item).collect(),
+            resource_kinds: entry.resource_kinds,
             resources: entry.resources.into_iter().map(resource_item).collect(),
         }
     }
@@ -166,6 +167,8 @@ impl Daemon {
                 let source_paths = request.source_paths.unwrap_or_default();
                 let resource_kinds = request.resource_kinds.unwrap_or_default();
                 let field_names = request.field_names;
+                let include_resources = request.include_resources.unwrap_or(true);
+                let field_value_char_limit = request.field_value_char_limit;
                 let search_results = self
                     .store
                     .search(
@@ -183,6 +186,8 @@ impl Daemon {
                         search_results,
                         &default_crossref_fields(),
                         field_names.as_deref(),
+                        include_resources,
+                        field_value_char_limit,
                     )
                     .map_err(store_error)?
                     .into_iter()
@@ -209,7 +214,13 @@ impl Daemon {
                     .collect();
                 let entries = self
                     .store
-                    .hydrate_search_results(search_results, &default_crossref_fields(), None)
+                    .hydrate_search_results(
+                        search_results,
+                        &default_crossref_fields(),
+                        None,
+                        true,
+                        None,
+                    )
                     .map_err(store_error)?
                     .into_iter()
                     .map(Self::entry_search_item)

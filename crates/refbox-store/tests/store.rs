@@ -35,7 +35,7 @@ fn migrations_are_versioned_from_first_schema() {
         )
         .expect("FTS schema should query");
     assert!(
-        fts_sql.contains("prefix='2 3 4'"),
+        fts_sql.contains("prefix='1 2 3 4'"),
         "entry_fts should keep type-ahead prefix indexes"
     );
     drop(connection);
@@ -92,7 +92,7 @@ fn inserts_parsed_files_and_queries_records_back() {
     assert_eq!(results[0].key, "smith2020");
     assert_eq!(results[0].entry_type, "article");
     let hydrated = store
-        .hydrate_search_results(results, &["crossref".to_string()], None)
+        .hydrate_search_results(results, &["crossref".to_string()], None, true, None)
         .expect("search results should hydrate");
     assert_eq!(hydrated.len(), 1);
     assert!(
@@ -101,6 +101,16 @@ fn inserts_parsed_files_and_queries_records_back() {
             .iter()
             .any(|field| field.lookup_name == "title")
     );
+    assert_eq!(hydrated[0].resource_kinds, vec!["doi"]);
+
+    let lightweight = store
+        .search("scalable", 5, &[], &[], false, true)
+        .and_then(|results| {
+            store.hydrate_search_results(results, &["crossref".to_string()], None, false, None)
+        })
+        .expect("lightweight search results should hydrate");
+    assert_eq!(lightweight[0].resource_kinds, vec!["doi"]);
+    assert!(lightweight[0].resources.is_empty());
 
     let title_only = store
         .search("scalable", 5, &[], &[], false, true)
@@ -109,6 +119,8 @@ fn inserts_parsed_files_and_queries_records_back() {
                 results,
                 &["crossref".to_string()],
                 Some(&["title".to_string()]),
+                true,
+                None,
             )
         })
         .expect("filtered search results should hydrate");
@@ -120,6 +132,19 @@ fn inserts_parsed_files_and_queries_records_back() {
             .collect::<Vec<_>>(),
         vec!["title"]
     );
+    let capped = store
+        .search("scalable", 5, &[], &[], false, true)
+        .and_then(|results| {
+            store.hydrate_search_results(
+                results,
+                &["crossref".to_string()],
+                Some(&["title".to_string()]),
+                true,
+                Some(8),
+            )
+        })
+        .expect("capped search results should hydrate");
+    assert_eq!(capped[0].fields[0].value, "{Scalabl");
 
     let resources = store
         .resources_for_entry(entries[0].id, &["crossref".to_string()])
@@ -390,7 +415,7 @@ SELECT rowid, entry_key, title, names, date, venue, abstract, keywords, identifi
 FROM entry_fts;
 DROP TABLE entry_fts;
 ALTER TABLE entry_fts_old RENAME TO entry_fts;
-DELETE FROM schema_migrations WHERE version = 5;
+DELETE FROM schema_migrations WHERE version >= 5;
 PRAGMA user_version = 4;
 "#,
             )
@@ -412,7 +437,7 @@ PRAGMA user_version = 4;
             |row| row.get(0),
         )
         .expect("FTS schema should query");
-    assert!(fts_sql.contains("prefix='2 3 4'"));
+    assert!(fts_sql.contains("prefix='1 2 3 4'"));
     drop(connection);
     let _ = fs::remove_file(db_path);
 }
@@ -553,7 +578,7 @@ fn resource_queries_inherit_crossref_resources() {
         .search("child", 5, &[], &[], false, true)
         .expect("child search should work");
     let hydrated = store
-        .hydrate_search_results(results, &["crossref".to_string()], None)
+        .hydrate_search_results(results, &["crossref".to_string()], None, true, None)
         .expect("hydrated search should include resources");
     let child = hydrated
         .iter()

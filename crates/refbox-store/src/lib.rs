@@ -11,7 +11,7 @@ use refbox_core::{
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use thiserror::Error;
 
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
@@ -112,6 +112,7 @@ pub struct StoredSearchEntry {
     pub entry_type: String,
     pub score: f64,
     pub fields: Vec<StoredField>,
+    pub resource_kinds: Vec<String>,
     pub resources: Vec<StoredResource>,
 }
 
@@ -563,6 +564,8 @@ impl RefboxStore {
         results: Vec<SearchResult>,
         crossref_fields: &[String],
         field_names: Option<&[String]>,
+        include_resources: bool,
+        field_value_char_limit: Option<usize>,
     ) -> Result<Vec<StoredSearchEntry>> {
         if results.is_empty() {
             return Ok(Vec::new());
@@ -574,11 +577,20 @@ impl RefboxStore {
             .collect::<Vec<_>>();
         let crossref_fields = normalized_crossref_fields(crossref_fields);
         let field_names = normalized_requested_fields(field_names, &crossref_fields);
-        let mut fields_by_entry = self.fields_for_entries(&entry_ids, field_names.as_deref())?;
-        let mut resources_by_entry = self.direct_resources_for_entries(&results)?;
+        let mut fields_by_entry = self.fields_for_entries(
+            &entry_ids,
+            field_names.as_deref(),
+            field_value_char_limit,
+        )?;
+        let mut resources_by_entry = if include_resources {
+            self.direct_resources_for_entries(&results)?
+        } else {
+            HashMap::new()
+        };
+        let mut resource_kinds_by_entry = self.direct_resource_kinds_for_entries(&entry_ids)?;
         let crossref_field_set = crossref_fields.iter().cloned().collect::<HashSet<_>>();
 
-        if !crossref_fields.is_empty() {
+        if include_resources && !crossref_fields.is_empty() {
             for result in &results {
                 let fields = fields_by_entry
                     .get(&result.entry_id)
@@ -611,6 +623,9 @@ impl RefboxStore {
                 let resources = resources_by_entry
                     .remove(&result.entry_id)
                     .unwrap_or_default();
+                let resource_kinds = resource_kinds_by_entry
+                    .remove(&result.entry_id)
+                    .unwrap_or_default();
                 StoredSearchEntry {
                     entry_id: result.entry_id,
                     file_path: result.file_path,
@@ -618,6 +633,7 @@ impl RefboxStore {
                     entry_type: result.entry_type,
                     score: result.score,
                     fields,
+                    resource_kinds,
                     resources,
                 }
             })
@@ -628,23 +644,38 @@ impl RefboxStore {
         &self,
         entry_ids: &[i64],
         field_names: Option<&[String]>,
+        field_value_char_limit: Option<usize>,
     ) -> Result<HashMap<i64, Vec<StoredField>>> {
         if entry_ids.is_empty() {
             return Ok(HashMap::new());
         }
 
+        let field_value_char_limit = field_value_char_limit
+            .map(|limit| i64::try_from(limit).map_err(|_| StoreError::LimitOutOfRange(limit)))
+            .transpose()?;
+        let mut parameters: Vec<&dyn rusqlite::ToSql> = Vec::new();
+        let value_expression = if let Some(limit) = &field_value_char_limit {
+            parameters.push(limit);
+            "substr(value, 1, ?1)"
+        } else {
+            "value"
+        };
+        let entry_placeholders = (0..entry_ids.len())
+            .map(|index| format!("?{}", parameters.len() + index + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
         let mut sql = format!(
-            "SELECT id, entry_id, raw_name, lookup_name, value,
+            "SELECT id, entry_id, raw_name, lookup_name, {value_expression},
                     source_path, source_start_byte, source_start_line, source_start_column,
                     source_end_byte, source_end_line, source_end_column
              FROM fields
-             WHERE entry_id IN ({})",
-            placeholders(entry_ids.len()),
+             WHERE entry_id IN ({entry_placeholders})",
         );
-        let mut parameters: Vec<&dyn rusqlite::ToSql> = entry_ids
-            .iter()
-            .map(|entry_id| entry_id as &dyn rusqlite::ToSql)
-            .collect();
+        parameters.extend(
+            entry_ids
+                .iter()
+                .map(|entry_id| entry_id as &dyn rusqlite::ToSql),
+        );
         if let Some(field_names) = field_names {
             if !field_names.is_empty() {
                 let offset = parameters.len() + 1;
@@ -739,6 +770,35 @@ impl RefboxStore {
                 });
         }
         Ok(resources_by_entry)
+    }
+
+    fn direct_resource_kinds_for_entries(
+        &self,
+        entry_ids: &[i64],
+    ) -> Result<HashMap<i64, Vec<String>>> {
+        if entry_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let sql = format!(
+            "SELECT entry_id, kind
+             FROM resources
+             WHERE entry_id IN ({})
+             GROUP BY entry_id, kind
+             ORDER BY entry_id, kind",
+            placeholders(entry_ids.len()),
+        );
+        let mut statement = self.connection.prepare(&sql)?;
+        let rows = statement
+            .query_map(params_from_iter(entry_ids.iter()), |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut kinds_by_entry: HashMap<i64, Vec<String>> = HashMap::new();
+        for (entry_id, kind) in rows {
+            kinds_by_entry.entry(entry_id).or_default().push(kind);
+        }
+        Ok(kinds_by_entry)
     }
 
     fn resource_owner_by_entry_id(&self, entry_id: i64) -> Result<Option<ResourceOwner>> {
@@ -972,6 +1032,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (4, MIGRATION_004),
     (5, MIGRATION_005),
     (6, MIGRATION_006),
+    (7, MIGRATION_007),
 ];
 
 const MIGRATION_001: &str = r#"
@@ -1200,6 +1261,27 @@ UPDATE diagnostics
 SET source_start_column = source_start_column + 1,
     source_end_column = source_end_column + 1
 WHERE source_start_column IS NOT NULL;
+"#;
+
+const MIGRATION_007: &str = r#"
+CREATE VIRTUAL TABLE IF NOT EXISTS entry_fts_v7 USING fts5(
+    entry_key,
+    title,
+    names,
+    date,
+    venue,
+    abstract,
+    keywords,
+    identifiers,
+    prefix='1 2 3 4'
+);
+
+INSERT INTO entry_fts_v7(rowid, entry_key, title, names, date, venue, abstract, keywords, identifiers)
+SELECT rowid, entry_key, title, names, date, venue, abstract, keywords, identifiers
+FROM entry_fts;
+
+DROP TABLE entry_fts;
+ALTER TABLE entry_fts_v7 RENAME TO entry_fts;
 "#;
 
 fn insert_file_rows(

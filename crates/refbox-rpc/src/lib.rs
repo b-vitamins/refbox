@@ -181,8 +181,10 @@ pub struct SearchEntriesRequest {
     pub source_paths: Option<Vec<String>>,
     pub resource_kinds: Option<Vec<String>>,
     pub field_names: Option<Vec<String>>,
+    pub field_value_char_limit: Option<usize>,
     pub allow_empty_query: Option<bool>,
     pub ranked: Option<bool>,
+    pub include_resources: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -203,6 +205,7 @@ pub struct EntrySearchItem {
     pub entry_type: String,
     pub score: f64,
     pub fields: Vec<EntryFieldItem>,
+    pub resource_kinds: Vec<String>,
     pub resources: Vec<ResourceItem>,
 }
 

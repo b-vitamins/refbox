@@ -93,6 +93,14 @@ names."
   :type 'file
   :group 'refbox)
 
+(defcustom refbox-rpc-request-timeout 300
+  "Seconds to wait for a refbox RPC response.
+
+Cold starts may include schema migrations or first-time index work,
+so this timeout must allow legitimate one-time setup to finish."
+  :type 'natnum
+  :group 'refbox)
+
 (defvar refbox--connection nil
   "Live JSON-RPC connection to the local refbox process.")
 
@@ -217,7 +225,11 @@ When CONFIGURATION is nil, validate and use the current user options."
 
 (defun refbox-rpc-request (method &optional params)
   "Send METHOD with PARAMS to the local refbox daemon."
-  (jsonrpc-request (refbox-rpc-ensure) method params))
+  (jsonrpc-request
+   (refbox-rpc-ensure)
+   method
+   params
+   :timeout refbox-rpc-request-timeout))
 
 (provide 'refbox-rpc)
 

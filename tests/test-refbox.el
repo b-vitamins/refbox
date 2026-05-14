@@ -471,27 +471,27 @@
              (candidate-string (car candidates))
              (candidate (get-text-property
                          0 'refbox-candidate candidate-string))
-             (annotation (refbox--completion-annotation candidate-string))
              (affixation (car (refbox--completion-affixation
                                (list candidate-string)))))
         (let ((params (cadar calls)))
           (should (equal (plist-get params :query) "alpha"))
           (should (equal (plist-get params :limit) 7))
           (should (equal (plist-get params :ranked) :json-false))
+          (should (equal (plist-get params :field_value_char_limit)
+                         refbox-completion-field-value-limit))
           (should (equal (append (plist-get params :field_names) nil)
                          '("key" "title" "indicators"
-                           "entry_type" "source_path" "crossref"))))
+                           "entry_type" "source_path" "crossref")))
+          (should (eq (plist-get params :include_resources) :json-false)))
         (should (string-match-p "smith2020" candidate-string))
         (should (equal (plist-get candidate :key) "smith2020"))
         (should (string-match-p
                  "F L +article main\\.bib"
-                 annotation))
+                 candidate-string))
         (should (string-match-p
                  "F L"
                  (nth 1 affixation)))
-        (should (string-match-p
-                 "F L +article main\\.bib"
-                 (nth 2 affixation)))))))
+        (should (string-empty-p (nth 2 affixation)))))))
 
 (ert-deftest refbox-test-completion-uses_completion_limit_by_default ()
   "Minibuffer completion should request the configured completion page size."
@@ -513,7 +513,7 @@
         (completion-styles '(substring basic)))
     (cl-letf (((symbol-function 'refbox-search-references)
                (lambda (_query &optional _limit _source-paths _unranked
-                              _field-names)
+                              _field-names _omit-resources)
                  (list refbox-test-reference-candidate
                        (plist-put
                         (copy-tree refbox-test-reference-candidate)
@@ -538,7 +538,7 @@
                #'ignore)
               ((symbol-function 'refbox-search-references)
                (lambda (query &optional _limit _source-paths _unranked
-                              _field-names)
+                              _field-names _omit-resources)
                  (if (equal query "xu")
                      (list refbox-test-reference-candidate)
                    nil)))
