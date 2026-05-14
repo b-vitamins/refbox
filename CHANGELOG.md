@@ -6,6 +6,19 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-15
+
+### Changed
+- Made dynamic reference completion use native index matching for type-ahead input while keeping Emacs completion styles from discarding valid non-prefix hits.
+- Shaped minibuffer reference candidates with Citar-style main and suffix display columns plus affixation indicators.
+- Reduced completion-path RPC payloads by bounding hydrated fields, omitting full resources, returning resource-kind summaries, and skipping per-field source spans.
+- Updated the real-corpus benchmark to measure the same lightweight completion request shape used by the Emacs UI.
+
+### Fixed
+- Preserved selected reference identity across completion UI redisplay/probe calls so accepting a displayed candidate returns the indexed reference reliably.
+- Added one-character FTS prefix indexing for first-keystroke typeahead over large bibliographies.
+- Increased the default RPC request timeout so one-time schema migrations and cold index setup can finish without spurious Emacs-side timeouts.
+
 ## [0.2.1] - 2026-05-14
 
 ### Changed
