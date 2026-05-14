@@ -474,7 +474,7 @@ impl RefboxStore {
         let mut next_param = 1;
         let mut sql = if fts_query.is_some() {
             String::from(
-                "SELECT e.id, f.path, e.entry_key, e.entry_type, bm25(entry_fts) AS score
+                "SELECT e.id, f.path, e.entry_key, e.entry_type, entry_fts.rank AS score
                  FROM entry_fts
                  JOIN entries e ON e.id = entry_fts.rowid
                  JOIN files f ON f.id = e.file_id
@@ -524,10 +524,12 @@ impl RefboxStore {
                 next_param += 1;
             }
         }
-        sql.push_str(
-            " ORDER BY score, e.entry_key, f.path, e.id
-             LIMIT ?",
-        );
+        if fts_query.is_some() {
+            sql.push_str(" ORDER BY entry_fts.rank, e.entry_key, f.path, e.id");
+        } else {
+            sql.push_str(" ORDER BY e.entry_key, f.path, e.id");
+        }
+        sql.push_str(" LIMIT ?");
         sql.push_str(&next_param.to_string());
         parameters.push(&limit);
         let mut statement = self.connection.prepare(&sql)?;
