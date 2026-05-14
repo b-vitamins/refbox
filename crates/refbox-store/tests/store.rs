@@ -512,7 +512,7 @@ fn resource_queries_inherit_crossref_resources() {
 }
 
 #[test]
-fn large_author_lists_do_not_duplicate_full_name_lists_per_person() {
+fn large_author_lists_do_not_materialize_unused_name_rows() {
     let db_path = unique_db_path("refbox-large-authors");
     let author_count = 512;
     let authors = (0..author_count)
@@ -530,12 +530,8 @@ fn large_author_lists_do_not_duplicate_full_name_lists_per_person() {
     }
 
     let connection = Connection::open(&db_path).expect("database should open");
-    let (stored_names, max_raw_len, total_raw_len): (i64, i64, i64) = connection
-        .query_row(
-            "SELECT COUNT(*), MAX(length(raw)), SUM(length(raw)) FROM names",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
+    let stored_names: i64 = connection
+        .query_row("SELECT COUNT(*) FROM names", [], |row| row.get(0))
         .expect("name storage should query");
     let source_span_table_count: i64 = connection
         .query_row(
@@ -545,9 +541,7 @@ fn large_author_lists_do_not_duplicate_full_name_lists_per_person() {
         )
         .expect("source span table check should query");
 
-    assert_eq!(stored_names, i64::from(author_count));
-    assert!(max_raw_len < 32);
-    assert!(total_raw_len < 12_000);
+    assert_eq!(stored_names, 0);
     assert_eq!(source_span_table_count, 0);
 
     drop(connection);

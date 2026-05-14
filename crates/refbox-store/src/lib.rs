@@ -5,8 +5,8 @@ use std::path::Path;
 
 use refbox_core::{
     BibliographyEntry, BibliographyFile, DerivedBibliographyStore, Diagnostic, DiagnosticSeverity,
-    DiagnosticTarget, FileParseStatus, IndexStoreCounts, IndexedFileMetadata, PersonName,
-    ResourceKind, SourcePosition, SourceSpan,
+    DiagnosticTarget, FileParseStatus, IndexStoreCounts, IndexedFileMetadata, ResourceKind,
+    SourcePosition, SourceSpan,
 };
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use thiserror::Error;
@@ -23,8 +23,6 @@ pub enum StoreError {
     SourceOffsetOutOfRange(u64),
     #[error("limit {0} exceeds SQLite integer range")]
     LimitOutOfRange(usize),
-    #[error("row index {0} exceeds SQLite integer range")]
-    IndexOutOfRange(usize),
     #[error("count {0} exceeds SQLite integer range")]
     CountOutOfRange(usize),
 }
@@ -1304,43 +1302,6 @@ fn insert_entry(connection: &Connection, file_id: i64, entry: &BibliographyEntry
         )?;
     }
 
-    for name_list in &entry.names {
-        let source = nullable_span(name_list.source.as_ref())?;
-        for (index, name) in name_list.names.iter().enumerate() {
-            let name_index =
-                i64::try_from(index).map_err(|_| StoreError::IndexOutOfRange(index))?;
-            let raw_name = person_name_storage_text(name);
-            execute_cached(
-                connection,
-                "INSERT INTO names(
-                    entry_id, raw_role, lookup_role, raw, name_index,
-                    given, family, prefix, suffix, literal,
-                    source_path, source_start_byte, source_start_line, source_start_column,
-                    source_end_byte, source_end_line, source_end_column
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
-                params![
-                    entry_id,
-                    name_list.raw_role,
-                    name_list.lookup_role,
-                    raw_name,
-                    name_index,
-                    name.given.join(" "),
-                    name.family.join(" "),
-                    name.prefix.join(" "),
-                    name.suffix.join(" "),
-                    name.literal,
-                    source.path,
-                    source.start_byte,
-                    source.start_line,
-                    source.start_column,
-                    source.end_byte,
-                    source.end_line,
-                    source.end_column,
-                ],
-            )?;
-        }
-    }
-
     for resource in &entry.resources {
         let source = nullable_span(resource.source.as_ref())?;
         execute_cached(
@@ -1422,7 +1383,7 @@ fn insert_fts_row(connection: &Connection, entry_id: i64, entry: &BibliographyEn
             entry_id,
             entry.id.key,
             field_values(entry, &["title", "shorttitle"]),
-            entry.names.iter().map(|name| name.raw.as_str()).collect::<Vec<_>>().join(" "),
+            field_values(entry, &["author", "editor", "translator"]),
             entry.dates.iter().map(|date| date.raw.as_str()).collect::<Vec<_>>().join(" "),
             field_values(
                 entry,
@@ -1545,29 +1506,6 @@ fn refresh_duplicate_groups_for_keys(connection: &Connection, keys: &[String]) -
     }
 
     Ok(())
-}
-
-fn person_name_storage_text(name: &PersonName) -> String {
-    if let Some(literal) = name
-        .literal
-        .as_deref()
-        .filter(|literal| !literal.is_empty())
-    {
-        return literal.to_string();
-    }
-
-    let mut text = Vec::new();
-    text.extend(name.prefix.iter().map(String::as_str));
-    text.extend(name.given.iter().map(String::as_str));
-    text.extend(name.family.iter().map(String::as_str));
-    let mut text = text.join(" ");
-    if !name.suffix.is_empty() {
-        if !text.is_empty() {
-            text.push_str(", ");
-        }
-        text.push_str(&name.suffix.join(" "));
-    }
-    text
 }
 
 fn fts_query_from_user_input(query: &str) -> Option<String> {
