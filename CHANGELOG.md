@@ -6,6 +6,11 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-05-14
+
+### Changed
+- Updated the `bibtex-parser` dependency to `0.3.1`.
+
 ## [0.2.0] - 2026-05-14
 
 ### Added
