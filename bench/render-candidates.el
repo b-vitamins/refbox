@@ -26,12 +26,13 @@
 
 (defun refbox-bench--render-once (candidates)
   "Render CANDIDATES once and return elapsed milliseconds."
-  (let ((start (float-time))
-        (seen (make-hash-table :test 'equal))
-        rendered)
-    (dolist (candidate candidates)
-      (push (refbox--completion-candidate-display candidate seen) rendered))
-    (refbox--completion-affixation (nreverse rendered))
+  (let ((start (float-time)))
+    (refbox--with-dynamic-cache (make-hash-table :test 'eq)
+      (let ((seen (make-hash-table :test 'equal))
+            rendered)
+        (dolist (candidate candidates)
+          (push (refbox--completion-candidate-display candidate seen) rendered))
+        (refbox--completion-affixation (nreverse rendered))))
     (* 1000.0 (- (float-time) start))))
 
 (defun refbox-bench--main ()

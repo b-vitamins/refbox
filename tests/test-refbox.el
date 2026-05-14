@@ -484,6 +484,88 @@
                  "F L +article main\\.bib"
                  (nth 2 affixation)))))))
 
+(ert-deftest refbox-test-completion-caches_cited_indicator_scan ()
+  "Cited indicators should scan the current buffer once per completion state."
+  (let* ((cited (copy-tree refbox-test-reference-candidate))
+         (uncited (plist-put (copy-tree refbox-test-reference-candidate)
+                             :key "doe2021"))
+         (refbox-templates '((main . "%{key}")
+                             (suffix . "%{indicators}")))
+         (refbox-indicators
+          (list (refbox-indicator-create
+                 :symbol "C"
+                 :function #'refbox-is-cited
+                 :tag "is:cited")))
+         (scans 0))
+    (cl-letf (((symbol-function 'refbox-current-buffer-citation-keys)
+               (lambda (&optional _buffer)
+                 (setq scans (1+ scans))
+                 '("smith2020")))
+              ((symbol-function 'refbox-rpc-request)
+               (lambda (method _params)
+                 (should (equal method refbox-rpc-method-search-entries))
+                 (list :entries (list cited uncited)))))
+      (let* ((state (refbox--completion-state 2))
+             (table (refbox--completion-table state))
+             (candidates (funcall table "smith" nil t)))
+        (should (= scans 1))
+        (should (string-match-p
+                 "C"
+                 (refbox--completion-annotation (car candidates))))
+        (should-not (string-match-p
+                     "C"
+                     (refbox--completion-annotation (cadr candidates))))))))
+
+(ert-deftest refbox-test-completion-skips_expensive_recursive_library_indicators ()
+  "Recursive library source indicators should not scan directories cold."
+  (let* ((root (make-temp-file "refbox-recursive-library-" t))
+         (nested (expand-file-name "nested" root))
+         (alpha (expand-file-name "alpha-extra.pdf" nested))
+         (beta (expand-file-name "beta.pdf" nested))
+         (candidates '((:key "alpha" :fields nil :resources nil)
+                       (:key "beta" :fields nil :resources nil)))
+         (refbox-templates '((main . "%{key}")
+                             (suffix . "%{indicators}")))
+         (refbox-indicators
+          (list (refbox-indicator-create
+                 :symbol "F"
+                 :function #'refbox-has-files
+                 :tag "has:files")))
+         (refbox-library-paths (list root))
+         (refbox-library-paths-recursive t)
+         (refbox-library-file-extensions '("pdf"))
+         (refbox-file-additional-files-separator "-")
+         (directory-scans 0)
+         (directory-files-original (symbol-function 'directory-files)))
+    (unwind-protect
+        (progn
+          (make-directory nested)
+          (with-temp-file alpha)
+          (with-temp-file beta)
+          (cl-letf (((symbol-function 'directory-files)
+                     (lambda (&rest args)
+                       (setq directory-scans (1+ directory-scans))
+                       (apply directory-files-original args)))
+                    ((symbol-function 'directory-files-recursively)
+                     (lambda (&rest _args)
+                       (error "recursive directory scan should not be used")))
+                    ((symbol-function 'refbox-rpc-request)
+                     (lambda (method _params)
+                       (should (equal method refbox-rpc-method-search-entries))
+                       (list :entries candidates))))
+            (let* ((state (refbox--completion-state 2))
+                   (table (refbox--completion-table state))
+                   (rendered (funcall table "alpha" nil t)))
+              (should (= directory-scans 0))
+              (should (cl-every
+                       (lambda (candidate)
+                         (not
+                          (string-match-p
+                           "F"
+                           (refbox--completion-annotation candidate))))
+                       rendered)))))
+      (delete-directory root t))))
+
 (ert-deftest refbox-test-search-tags-use_daemon_resource_filters ()
   "Search tags backed by indexed resources should be sent to the daemon."
   (let (calls)

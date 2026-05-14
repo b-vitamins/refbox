@@ -671,6 +671,39 @@ is non-nil."
 (defvar refbox--reference-field-cache nil
   "Dynamic cache of candidate field lookup tables.")
 
+(defconst refbox--cache-miss (make-symbol "refbox-cache-miss")
+  "Sentinel used for internal cache misses.")
+
+(defvar refbox--dynamic-cache nil
+  "Dynamic cache shared by one completion or rendering operation.")
+
+(defmacro refbox--with-dynamic-cache (cache &rest body)
+  "Run BODY with CACHE available to hot-path helpers."
+  (declare (indent 1) (debug t))
+  `(let ((refbox--dynamic-cache
+          (or ,cache refbox--dynamic-cache (make-hash-table :test 'eq))))
+     ,@body))
+
+(defun refbox--dynamic-cache-get (namespace key producer)
+  "Return cached value for NAMESPACE and KEY, or call PRODUCER."
+  (if (null refbox--dynamic-cache)
+      (funcall producer)
+    (let* ((cache (or (gethash namespace refbox--dynamic-cache)
+                      (puthash namespace
+                               (make-hash-table :test 'equal)
+                               refbox--dynamic-cache)))
+           (value (gethash key cache refbox--cache-miss)))
+      (if (eq value refbox--cache-miss)
+          (puthash key (funcall producer) cache)
+        value))))
+
+(defun refbox--dynamic-cache-value (namespace key)
+  "Return cached value for NAMESPACE and KEY, or `refbox--cache-miss'."
+  (if-let ((cache (and refbox--dynamic-cache
+                       (gethash namespace refbox--dynamic-cache))))
+      (gethash key cache refbox--cache-miss)
+    refbox--cache-miss))
+
 (defun refbox--plist-get-any (plist &rest keys)
   "Return the first value in PLIST matching one of KEYS."
   (catch 'value
@@ -994,20 +1027,44 @@ reference key string."
   (lambda (reference)
     (refbox-reference-cited-in-current-buffer-p reference)))
 
+(defun refbox--citation-buffer ()
+  "Return the buffer whose citation context should be inspected."
+  (if (minibufferp)
+      (window-buffer (minibuffer-selected-window))
+    (current-buffer)))
+
+(defun refbox--current-citation-key-table ()
+  "Return a cached table of citation keys in the current context buffer."
+  (let ((buffer (refbox--citation-buffer)))
+    (refbox--dynamic-cache-get
+     'citation-keys
+     (list buffer
+           (and (buffer-live-p buffer)
+                (buffer-chars-modified-tick buffer)))
+     (lambda ()
+       (let ((table (make-hash-table :test 'equal)))
+         (when (buffer-live-p buffer)
+           (with-current-buffer buffer
+             (dolist (key (ignore-errors
+                            (refbox-current-buffer-citation-keys buffer)))
+               (unless (refbox--blank-string-p key)
+                 (puthash key t table)))))
+         table)))))
+
 (defun refbox-reference-cited-in-current-buffer-p (candidate)
   "Return non-nil when CANDIDATE's key appears in the current buffer."
   (let ((key (refbox-reference-field candidate "key")))
     (and (not (refbox--blank-string-p key))
-         (let ((buffer (if (minibufferp)
-                           (window-buffer (minibuffer-selected-window))
-                         (current-buffer))))
-           (and (buffer-live-p buffer)
-                (with-current-buffer buffer
-                  (save-excursion
-                    (save-restriction
-                      (widen)
-                      (goto-char (point-min))
-                      (search-forward key nil t)))))))))
+         (if refbox--dynamic-cache
+             (gethash key (refbox--current-citation-key-table))
+           (let ((buffer (refbox--citation-buffer)))
+             (and (buffer-live-p buffer)
+                  (with-current-buffer buffer
+                    (save-excursion
+                      (save-restriction
+                        (widen)
+                        (goto-char (point-min))
+                        (search-forward key nil t))))))))))
 
 (defun refbox--predicate-matches-p (predicate candidate)
   "Return non-nil when PREDICATE matches CANDIDATE."
@@ -1411,7 +1468,8 @@ bibliography source files."
          (entries (plist-get response :entries)))
     (setq entries (refbox--listify entries))
     (if post-filter-tags
-        (refbox-search--post-filter entries post-filter-tags requested-limit)
+        (refbox--with-dynamic-cache nil
+          (refbox-search--post-filter entries post-filter-tags requested-limit))
       entries)))
 
 (defun refbox-list-references (&optional limit offset)
@@ -1569,7 +1627,8 @@ whose cdr is passed as additional arguments."
   (list :limit (refbox-rpc--search-limit limit)
         :source-paths source-paths
         :input nil
-        :candidates nil))
+        :candidates nil
+        :cache (make-hash-table :test 'eq)))
 
 (defun refbox-capf--candidate (candidate seen)
   "Return a key completion candidate from CANDIDATE using SEEN."
@@ -1577,23 +1636,27 @@ whose cdr is passed as additional arguments."
     (unless (or (refbox--blank-string-p key)
                 (gethash key seen))
       (puthash key t seen)
-      (propertize key 'refbox-candidate candidate))))
+      (propertize key
+                  'refbox-candidate candidate
+                  'refbox-annotation
+                  (refbox-reference-format-suffix candidate)))))
 
 (defun refbox-capf--state-candidates (state input)
   "Return bounded key candidates for INPUT using STATE."
   (setq input (substring-no-properties input))
   (unless (equal input (plist-get state :input))
-    (let ((seen (make-hash-table :test 'equal)))
-      (setf (plist-get state :input) input)
-      (setf (plist-get state :candidates)
-            (delq
-             nil
-             (mapcar (lambda (candidate)
-                       (refbox-capf--candidate candidate seen))
-                     (refbox-search-references
-                      input
-                      (plist-get state :limit)
-                      (plist-get state :source-paths)))))))
+    (refbox--with-dynamic-cache (plist-get state :cache)
+      (let ((seen (make-hash-table :test 'equal)))
+        (setf (plist-get state :input) input)
+        (setf (plist-get state :candidates)
+              (delq
+               nil
+               (mapcar (lambda (candidate)
+                         (refbox-capf--candidate candidate seen))
+                       (refbox-search-references
+                        input
+                        (plist-get state :limit)
+                        (plist-get state :source-paths))))))))
   (plist-get state :candidates))
 
 (defun refbox-capf--completion-table (state)
@@ -1625,13 +1688,16 @@ whose cdr is passed as additional arguments."
 
 (defun refbox-capf-annotate (citekey)
   "Return a completion annotation for CITEKEY."
-  (let ((candidate
-         (or (get-text-property 0 'refbox-candidate citekey)
-             (ignore-errors
-               (refbox-entry-by-key (substring-no-properties citekey))))))
-    (if candidate
-        (concat " " (refbox-reference-format-suffix candidate))
-      "")))
+  (or (when-let ((annotation (get-text-property 0 'refbox-annotation citekey)))
+        (concat " " annotation))
+      (refbox--with-dynamic-cache nil
+        (let ((candidate
+               (or (get-text-property 0 'refbox-candidate citekey)
+                   (ignore-errors
+                     (refbox-entry-by-key (substring-no-properties citekey))))))
+          (if candidate
+              (concat " " (refbox-reference-format-suffix candidate))
+            "")))))
 
 (defun refbox-capf-at-bounds (bounds &optional source-paths)
   "Return CAPF data for BOUNDS using optional SOURCE-PATHS."
@@ -1762,7 +1828,7 @@ whose cdr is passed as additional arguments."
              (member (downcase extension)
                      (refbox-resource--normalize-extensions extensions))))))
 
-(defun refbox-resource--directory-list (dirs recursive)
+(defun refbox-resource--directory-list-uncached (dirs recursive)
   "Return existing DIRS, optionally including recursive subdirectories."
   (delete-dups
    (apply
@@ -1776,8 +1842,16 @@ whose cdr is passed as additional arguments."
                    (cl-loop
                     for child in (directory-files-recursively dir "" t)
                     when (file-directory-p child)
-                    collect (file-name-as-directory child)))))))
+                      collect (file-name-as-directory child)))))))
      dirs))))
+
+(defun refbox-resource--directory-list (dirs recursive)
+  "Return existing DIRS, optionally including recursive subdirectories."
+  (refbox--dynamic-cache-get
+   'resource-directories
+   (list (mapcar #'expand-file-name dirs) recursive)
+   (lambda ()
+     (refbox-resource--directory-list-uncached dirs recursive))))
 
 (defun refbox-resource--library-dirs ()
   "Return configured library directories."
@@ -1821,38 +1895,171 @@ whose cdr is passed as additional arguments."
            and return t)))))
     (nreverse (delete-dups found))))
 
+(defun refbox-resource--normalized-roots (roots)
+  "Return existing ROOTS as absolute directory names."
+  (delete-dups
+   (delq nil
+         (mapcar (lambda (root)
+                   (let ((root (file-name-as-directory
+                                (expand-file-name root))))
+                     (and (file-directory-p root) root)))
+                 roots))))
+
+(defun refbox-resource--file-index-key (roots recursive extensions)
+  "Return the cache key for a ROOTS file index."
+  (list (refbox-resource--normalized-roots roots)
+        recursive
+        (and extensions
+             (refbox-resource--normalize-extensions extensions))))
+
+(defun refbox-resource--file-index (roots recursive extensions)
+  "Return cached regular files under ROOTS matching EXTENSIONS."
+  (let* ((key (refbox-resource--file-index-key roots recursive extensions))
+         (roots (nth 0 key))
+         (extensions (nth 2 key)))
+    (refbox--dynamic-cache-get
+     'resource-file-index
+     key
+     (lambda ()
+       (let (entries stack)
+         (dolist (root roots)
+           (if recursive
+               (push root stack)
+             (dolist (file (directory-files
+                            root t directory-files-no-dot-files-regexp))
+               (when (and (file-regular-p file)
+                          (or (null extensions)
+                              (when-let ((extension (file-name-extension file)))
+                                (member (downcase extension) extensions))))
+                 (push (cons (file-name-base file) file) entries)))))
+         (while stack
+           (let ((dir (pop stack)))
+             (dolist (file (directory-files
+                            dir t directory-files-no-dot-files-regexp))
+               (cond
+                ((and (file-directory-p file)
+                      (not (file-symlink-p file)))
+                 (push file stack))
+                ((and (file-regular-p file)
+                      (or (null extensions)
+                          (when-let ((extension (file-name-extension file)))
+                            (member (downcase extension) extensions))))
+                 (push (cons (file-name-base file) file) entries))))))
+         (nreverse entries))))))
+
+(defun refbox-resource--file-base-matches-key-p (base key additional-sep)
+  "Return non-nil when file BASE matches reference KEY."
+  (or (string= base key)
+      (and additional-sep
+           (string-match-p
+            (concat "\\`" (regexp-quote key)
+                    "\\(?:" additional-sep ".*\\)?\\'")
+            base))))
+
+(defun refbox-resource--files-for-keys-from-index
+    (keys roots recursive extensions additional-sep)
+  "Return files for KEYS by scanning a cached ROOTS file index."
+  (let ((index (refbox-resource--file-index roots recursive extensions))
+        found)
+    (dolist (entry index)
+      (let ((base (car entry))
+            (file (cdr entry)))
+        (when (cl-some
+               (lambda (key)
+                 (refbox-resource--file-base-matches-key-p
+                  base key additional-sep))
+               keys)
+          (push file found))))
+    (nreverse (delete-dups found))))
+
+(defun refbox-resource--files-for-keys-from-existing-index
+    (keys roots recursive extensions additional-sep)
+  "Return indexed files for KEYS, or `refbox--cache-miss' when uncached."
+  (let* ((key (refbox-resource--file-index-key roots recursive extensions))
+         (index (refbox--dynamic-cache-value 'resource-file-index key)))
+    (if (eq index refbox--cache-miss)
+        refbox--cache-miss
+      (let (found)
+        (dolist (entry index)
+          (let ((base (car entry))
+                (file (cdr entry)))
+            (when (cl-some
+                   (lambda (key)
+                     (refbox-resource--file-base-matches-key-p
+                      base key additional-sep))
+                   keys)
+              (push file found))))
+        (nreverse (delete-dups found))))))
+
+(defun refbox-resource--files-for-keys-in-roots
+    (keys roots recursive extensions additional-sep)
+  "Return files in ROOTS associated with KEYS."
+  (let* ((keys (cl-remove-if #'string-empty-p
+                             (mapcar (lambda (key)
+                                       (format "%s" (or key "")))
+                                     keys)))
+         (roots (refbox-resource--normalized-roots roots))
+         (extensions (and extensions
+                          (refbox-resource--normalize-extensions extensions))))
+    (refbox--dynamic-cache-get
+     'resource-files-for-keys
+     (list keys roots recursive extensions additional-sep)
+     (lambda ()
+       (cond
+        ((or (null keys) (null roots))
+         nil)
+        ((and (not recursive) extensions (not additional-sep))
+         (let (found)
+           (dolist (dir roots)
+             (dolist (key keys)
+               (dolist (extension extensions)
+                 (let ((file (expand-file-name
+                              (format "%s.%s" key extension)
+                              dir)))
+                   (when (file-exists-p file)
+                     (push file found))))))
+           (nreverse (delete-dups found))))
+        (t
+         (refbox-resource--files-for-keys-from-index
+          keys roots recursive extensions additional-sep)))))))
+
+(defun refbox-resource--files-for-keys-cheap
+    (keys roots recursive extensions additional-sep)
+  "Return cheap file matches for KEYS in ROOTS.
+
+This never performs recursive directory discovery or full directory
+materialization from an indicator path."
+  (let* ((keys (cl-remove-if #'string-empty-p
+                             (mapcar (lambda (key)
+                                       (format "%s" (or key "")))
+                                     keys)))
+         (roots (refbox-resource--normalized-roots roots))
+         (extensions (and extensions
+                          (refbox-resource--normalize-extensions extensions))))
+    (cond
+     ((or (null keys) (null roots))
+      nil)
+     ((and (not recursive) extensions (not additional-sep))
+      (let (found)
+        (dolist (dir roots)
+          (dolist (key keys)
+            (dolist (extension extensions)
+              (let ((file (expand-file-name
+                           (format "%s.%s" key extension)
+                           dir)))
+                (when (file-exists-p file)
+                  (push file found))))))
+        (nreverse (delete-dups found))))
+     (t
+      (let ((files (refbox-resource--files-for-keys-from-existing-index
+                    keys roots recursive extensions additional-sep)))
+        (unless (eq files refbox--cache-miss)
+          files))))))
+
 (defun refbox-resource--files-for-keys (keys dirs extensions additional-sep)
   "Return files in DIRS associated with KEYS."
-  (let ((keys (cl-remove-if #'string-empty-p
-                            (mapcar (lambda (key)
-                                      (format "%s" (or key "")))
-                                    keys)))
-        found)
-    (when (and keys dirs)
-      (if (and extensions (not additional-sep))
-          (dolist (dir dirs)
-            (dolist (key keys)
-              (dolist (extension (refbox-resource--normalize-extensions extensions))
-                (let ((file (expand-file-name (format "%s.%s" key extension) dir)))
-                  (when (file-exists-p file)
-                    (push file found))))))
-        (dolist (dir dirs)
-          (when (file-directory-p dir)
-            (dolist (file (directory-files dir t directory-files-no-dot-files-regexp))
-              (when (and (file-regular-p file)
-                         (refbox-resource--extension-allowed-p file extensions))
-                (let ((base (file-name-base file)))
-                  (when (cl-some
-                         (lambda (key)
-                           (or (string= base key)
-                               (and additional-sep
-                                    (string-match-p
-                                     (concat "\\`" (regexp-quote key)
-                                             "\\(?:" additional-sep ".*\\)?\\'")
-                                     base))))
-                         keys)
-                    (push file found)))))))))
-    (nreverse (delete-dups found))))
+  (refbox-resource--files-for-keys-in-roots
+   keys dirs nil extensions additional-sep))
 
 (defun refbox-resource-file-source--plist (source)
   "Return the plist for file SOURCE."
@@ -1912,15 +2119,23 @@ callable."
 
 (defun refbox-resource-file-source-library-items (candidate resources)
   "Return library-path files associated with CANDIDATE."
-  (refbox-resource--files-for-keys
+  (refbox-resource--files-for-keys-in-roots
    (refbox-reference-related-keys candidate resources)
-   (refbox-resource--library-dirs)
+   refbox-library-paths
+   refbox-library-paths-recursive
    refbox-library-file-extensions
    refbox-file-additional-files-separator))
 
 (defun refbox-resource-file-source-library-has-items (candidate resources)
   "Return non-nil when CANDIDATE has files in configured library paths."
-  (not (null (refbox-resource-file-source-library-items candidate resources))))
+  (not
+   (null
+    (refbox-resource--files-for-keys-cheap
+     (refbox-reference-related-keys candidate resources)
+     refbox-library-paths
+     refbox-library-paths-recursive
+     refbox-library-file-extensions
+     refbox-file-additional-files-separator))))
 
 (defun refbox-resource-file-source-items (candidate resources)
   "Return file items from `refbox-file-sources'."
@@ -1991,9 +2206,10 @@ callable."
 
 (defun refbox-note-files-for-keys (keys)
   "Return existing note files for KEYS."
-  (refbox-resource--files-for-keys
+  (refbox-resource--files-for-keys-in-roots
    keys
-   (refbox-note--directories)
+   refbox-notes-paths
+   nil
    refbox-file-note-extensions
    refbox-file-additional-files-separator))
 
@@ -3278,7 +3494,8 @@ asks before replacing an existing file."
         :source-paths source-paths
         :input nil
         :candidates nil
-        :map (make-hash-table :test 'equal)))
+        :map (make-hash-table :test 'equal)
+        :cache (make-hash-table :test 'eq)))
 
 (defun refbox--completion-candidate-display (candidate seen)
   "Return a propertized display string for CANDIDATE using SEEN map."
@@ -3311,16 +3528,17 @@ asks before replacing an existing file."
   "Return bounded completion candidates for INPUT using STATE."
   (setq input (substring-no-properties input))
   (unless (equal input (plist-get state :input))
-    (let ((seen (plist-get state :map)))
-      (clrhash seen)
-      (setf (plist-get state :input) input)
-      (setf (plist-get state :candidates)
-            (mapcar (lambda (candidate)
-                      (refbox--completion-candidate-display candidate seen))
-                    (refbox-search-references
-                     input
-                     (plist-get state :limit)
-                     (plist-get state :source-paths))))))
+    (refbox--with-dynamic-cache (plist-get state :cache)
+      (let ((seen (plist-get state :map)))
+        (clrhash seen)
+        (setf (plist-get state :input) input)
+        (setf (plist-get state :candidates)
+              (mapcar (lambda (candidate)
+                        (refbox--completion-candidate-display candidate seen))
+                      (refbox-search-references
+                       input
+                       (plist-get state :limit)
+                       (plist-get state :source-paths)))))))
   (plist-get state :candidates))
 
 (defun refbox--completion-filter (candidates predicate)
@@ -3363,15 +3581,16 @@ asks before replacing an existing file."
 
 (defun refbox--completion-affixation (completions)
   "Return affixation triples for COMPLETIONS."
-  (let ((refbox--reference-field-cache (make-hash-table :test 'eq)))
-    (mapcar
-     (lambda (completion)
-       (list completion
-             ""
-             (if-let ((annotation (refbox--completion-annotation-text completion)))
-                 (concat " " annotation)
-               "")))
-     completions)))
+  (refbox--with-dynamic-cache nil
+    (let ((refbox--reference-field-cache (make-hash-table :test 'eq)))
+      (mapcar
+       (lambda (completion)
+         (list completion
+               ""
+               (if-let ((annotation (refbox--completion-annotation-text completion)))
+                   (concat " " annotation)
+                 "")))
+       completions))))
 
 (defun refbox--completion-predicate (predicate)
   "Return a completion predicate wrapping candidate PREDICATE."
