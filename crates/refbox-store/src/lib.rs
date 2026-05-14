@@ -1180,7 +1180,8 @@ fn insert_file_rows(
 ) -> Result<()> {
     delete_existing_file(connection, &file.path)?;
 
-    connection.execute(
+    execute_cached(
+        connection,
         "INSERT INTO files(
             path, size_bytes, modified_ns, content_hash, parse_status, entry_count, diagnostic_count
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -1210,6 +1211,13 @@ fn insert_file_rows(
     Ok(())
 }
 
+fn execute_cached<P>(connection: &Connection, sql: &str, params: P) -> Result<usize>
+where
+    P: rusqlite::Params,
+{
+    Ok(connection.prepare_cached(sql)?.execute(params)?)
+}
+
 fn delete_existing_file(connection: &Connection, path: &str) -> Result<()> {
     let entry_ids = {
         let mut statement = connection.prepare(
@@ -1224,16 +1232,25 @@ fn delete_existing_file(connection: &Connection, path: &str) -> Result<()> {
     };
 
     for entry_id in entry_ids {
-        connection.execute("DELETE FROM entry_fts WHERE rowid = ?1", params![entry_id])?;
+        execute_cached(
+            connection,
+            "DELETE FROM entry_fts WHERE rowid = ?1",
+            params![entry_id],
+        )?;
     }
 
-    connection.execute("DELETE FROM files WHERE path = ?1", params![path])?;
+    execute_cached(
+        connection,
+        "DELETE FROM files WHERE path = ?1",
+        params![path],
+    )?;
     Ok(())
 }
 
 fn insert_entry(connection: &Connection, file_id: i64, entry: &BibliographyEntry) -> Result<i64> {
     let source = db_span(&entry.raw.source)?;
-    connection.execute(
+    execute_cached(
+        connection,
         "INSERT INTO entries(
             file_id, entry_key, entry_type, raw_text,
             source_path, source_start_byte, source_start_line, source_start_column,
@@ -1257,7 +1274,8 @@ fn insert_entry(connection: &Connection, file_id: i64, entry: &BibliographyEntry
 
     for field in &entry.fields {
         let source = nullable_span(field.source.as_ref())?;
-        connection.execute(
+        execute_cached(
+            connection,
             "INSERT INTO fields(
                 entry_id, raw_name, lookup_name, value,
                 source_path, source_start_byte, source_start_line, source_start_column,
@@ -1285,7 +1303,8 @@ fn insert_entry(connection: &Connection, file_id: i64, entry: &BibliographyEntry
             let name_index =
                 i64::try_from(index).map_err(|_| StoreError::IndexOutOfRange(index))?;
             let raw_name = person_name_storage_text(name);
-            connection.execute(
+            execute_cached(
+                connection,
                 "INSERT INTO names(
                     entry_id, raw_role, lookup_role, raw, name_index,
                     given, family, prefix, suffix, literal,
@@ -1317,7 +1336,8 @@ fn insert_entry(connection: &Connection, file_id: i64, entry: &BibliographyEntry
 
     for resource in &entry.resources {
         let source = nullable_span(resource.source.as_ref())?;
-        connection.execute(
+        execute_cached(
+            connection,
             "INSERT INTO resources(
                 entry_id, kind, raw_name, lookup_name, value,
                 source_path, source_start_byte, source_start_line, source_start_column,
@@ -1356,7 +1376,8 @@ fn insert_diagnostic(
 ) -> Result<()> {
     let source = nullable_span(diagnostic.source.as_ref())?;
     let target = diagnostic_target_columns(&diagnostic.target);
-    connection.execute(
+    execute_cached(
+        connection,
         "INSERT INTO diagnostics(
             file_id, entry_id, severity, code, message, target_kind,
             target_path, target_entry_file, target_entry_key,
@@ -1386,7 +1407,8 @@ fn insert_diagnostic(
 }
 
 fn insert_fts_row(connection: &Connection, entry_id: i64, entry: &BibliographyEntry) -> Result<()> {
-    connection.execute(
+    execute_cached(
+        connection,
         "INSERT INTO entry_fts(rowid, entry_key, title, names, date, venue, abstract, keywords, identifiers)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
@@ -1437,7 +1459,8 @@ fn refresh_duplicate_groups(connection: &Connection) -> Result<()> {
     };
 
     for key in duplicate_keys {
-        connection.execute(
+        execute_cached(
+            connection,
             "INSERT INTO duplicate_groups(entry_key) VALUES (?1)",
             params![key],
         )?;
@@ -1450,7 +1473,8 @@ fn refresh_duplicate_groups(connection: &Connection) -> Result<()> {
                 .collect::<std::result::Result<Vec<_>, _>>()?
         };
         for entry_id in entry_ids {
-            connection.execute(
+            execute_cached(
+                connection,
                 "INSERT INTO duplicate_group_entries(group_id, entry_id) VALUES (?1, ?2)",
                 params![group_id, entry_id],
             )?;
