@@ -87,7 +87,7 @@ When nil, all styles reported by Org are offered."
   :type '(repeat symbol)
   :group 'refbox-org)
 
-(defcustom refbox-org-follow-action #'refbox-org-follow-default-action
+(defcustom refbox-org-follow-action #'refbox-org-follow-at-point-function
   "Function called by `refbox-org-follow-at-point'.
 
 The function receives three arguments: the citation key, the Org
@@ -637,6 +637,10 @@ DIRECTION is -1 for left and 1 for right."
 (defun refbox-org-open-source (key _datum _arg)
   "Open bibliography source for citation KEY."
   (refbox-open-source key))
+
+(defun refbox-org-follow-at-point-function (_key _datum _arg)
+  "Run `refbox-at-point-function' for the citation at point."
+  (call-interactively refbox-at-point-function))
 
 (defun refbox-org-follow-default-action (key _datum _arg)
   "Run `refbox-default-action' for citation KEY."
