@@ -91,6 +91,16 @@ fn inserts_parsed_files_and_queries_records_back() {
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].key, "smith2020");
     assert_eq!(results[0].entry_type, "article");
+    let hydrated = store
+        .hydrate_search_results(results, &["crossref".to_string()])
+        .expect("search results should hydrate");
+    assert_eq!(hydrated.len(), 1);
+    assert!(
+        hydrated[0]
+            .fields
+            .iter()
+            .any(|field| field.lookup_name == "title")
+    );
 
     let resources = store
         .resources_for_entry(entries[0].id, &["crossref".to_string()])
@@ -429,6 +439,25 @@ fn resource_queries_inherit_crossref_resources() {
         keyed_resources
             .iter()
             .any(|resource| resource.owner_key == "parent2020")
+    );
+
+    let results = store
+        .search("child", 5, &[], &[], false)
+        .expect("child search should work");
+    let hydrated = store
+        .hydrate_search_results(results, &["crossref".to_string()])
+        .expect("hydrated search should include resources");
+    let child = hydrated
+        .iter()
+        .find(|entry| entry.key == "child2020")
+        .expect("child search result should hydrate");
+    assert!(
+        child
+            .resources
+            .iter()
+            .any(|resource| resource.kind == "file"
+                && resource.owner_key == "parent2020"
+                && resource.inherited_from_key.as_deref() == Some("parent2020"))
     );
 }
 

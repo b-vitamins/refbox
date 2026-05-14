@@ -1,6 +1,6 @@
 //! SQLite storage and query surfaces.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use refbox_core::{
@@ -104,6 +104,17 @@ pub struct SearchResult {
     pub key: String,
     pub entry_type: String,
     pub score: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredSearchEntry {
+    pub entry_id: i64,
+    pub file_path: String,
+    pub key: String,
+    pub entry_type: String,
+    pub score: f64,
+    pub fields: Vec<StoredField>,
+    pub resources: Vec<StoredResource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -545,6 +556,162 @@ impl RefboxStore {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(results)
+    }
+
+    pub fn hydrate_search_results(
+        &self,
+        results: Vec<SearchResult>,
+        crossref_fields: &[String],
+    ) -> Result<Vec<StoredSearchEntry>> {
+        if results.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let entry_ids = results
+            .iter()
+            .map(|result| result.entry_id)
+            .collect::<Vec<_>>();
+        let mut fields_by_entry = self.fields_for_entries(&entry_ids)?;
+        let mut resources_by_entry = self.direct_resources_for_entries(&results)?;
+        let crossref_fields = normalized_crossref_fields(crossref_fields);
+        let crossref_field_set = crossref_fields.iter().cloned().collect::<HashSet<_>>();
+
+        if !crossref_fields.is_empty() {
+            for result in &results {
+                let fields = fields_by_entry
+                    .get(&result.entry_id)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                if !entry_has_crossref_parent(fields, &crossref_field_set) {
+                    continue;
+                }
+
+                let owner = ResourceOwner {
+                    key: result.key.clone(),
+                    source_path: result.file_path.clone(),
+                };
+                let resources = resources_by_entry.entry(result.entry_id).or_default();
+                let mut visited = HashSet::new();
+                self.append_crossref_resources(
+                    result.entry_id,
+                    &owner,
+                    &crossref_fields,
+                    &mut visited,
+                    resources,
+                )?;
+            }
+        }
+
+        Ok(results
+            .into_iter()
+            .map(|result| {
+                let fields = fields_by_entry.remove(&result.entry_id).unwrap_or_default();
+                let resources = resources_by_entry
+                    .remove(&result.entry_id)
+                    .unwrap_or_default();
+                StoredSearchEntry {
+                    entry_id: result.entry_id,
+                    file_path: result.file_path,
+                    key: result.key,
+                    entry_type: result.entry_type,
+                    score: result.score,
+                    fields,
+                    resources,
+                }
+            })
+            .collect())
+    }
+
+    fn fields_for_entries(&self, entry_ids: &[i64]) -> Result<HashMap<i64, Vec<StoredField>>> {
+        if entry_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let sql = format!(
+            "SELECT id, entry_id, raw_name, lookup_name, value,
+                    source_path, source_start_byte, source_start_line, source_start_column,
+                    source_end_byte, source_end_line, source_end_column
+             FROM fields
+             WHERE entry_id IN ({})
+             ORDER BY entry_id, id",
+            placeholders(entry_ids.len()),
+        );
+        let mut statement = self.connection.prepare(&sql)?;
+        let mut fields_by_entry: HashMap<i64, Vec<StoredField>> = HashMap::new();
+        let fields = statement
+            .query_map(params_from_iter(entry_ids.iter()), stored_field_from_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for field in fields {
+            fields_by_entry
+                .entry(field.entry_id)
+                .or_default()
+                .push(field);
+        }
+        Ok(fields_by_entry)
+    }
+
+    fn direct_resources_for_entries(
+        &self,
+        results: &[SearchResult],
+    ) -> Result<HashMap<i64, Vec<StoredResource>>> {
+        if results.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let entry_ids = results
+            .iter()
+            .map(|result| result.entry_id)
+            .collect::<Vec<_>>();
+        let owners = results
+            .iter()
+            .map(|result| {
+                (
+                    result.entry_id,
+                    ResourceOwner {
+                        key: result.key.clone(),
+                        source_path: result.file_path.clone(),
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let sql = format!(
+            "SELECT id, entry_id, kind, raw_name, lookup_name, value,
+                    source_path, source_start_byte, source_start_line, source_start_column,
+                    source_end_byte, source_end_line, source_end_column
+             FROM resources
+             WHERE entry_id IN ({})
+             ORDER BY entry_id, id",
+            placeholders(entry_ids.len()),
+        );
+        let mut statement = self.connection.prepare(&sql)?;
+        let mut resources_by_entry: HashMap<i64, Vec<StoredResource>> = HashMap::new();
+        let rows = statement
+            .query_map(params_from_iter(entry_ids.iter()), stored_resource_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for row in rows {
+            let Some(owner) = owners.get(&row.entry_id) else {
+                continue;
+            };
+            resources_by_entry
+                .entry(row.entry_id)
+                .or_default()
+                .push(StoredResource {
+                    id: row.id,
+                    entry_id: row.entry_id,
+                    key: owner.key.clone(),
+                    source_path: owner.source_path.clone(),
+                    owner_key: owner.key.clone(),
+                    owner_source_path: owner.source_path.clone(),
+                    kind: row.kind,
+                    raw_name: row.raw_name,
+                    lookup_name: row.lookup_name,
+                    value: row.value,
+                    inherited_from_key: None,
+                    inherited_from_source_path: None,
+                    source: row.source,
+                });
+        }
+        Ok(resources_by_entry)
     }
 
     fn resource_owner_by_entry_id(&self, entry_id: i64) -> Result<Option<ResourceOwner>> {
@@ -1288,6 +1455,28 @@ fn fts_query_from_user_input(query: &str) -> Option<String> {
     } else {
         Some(tokens.join(" "))
     }
+}
+
+fn placeholders(count: usize) -> String {
+    (1..=count)
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn normalized_crossref_fields(fields: &[String]) -> Vec<String> {
+    fields
+        .iter()
+        .map(|field| field.trim().to_ascii_lowercase())
+        .filter(|field| !field.is_empty())
+        .collect()
+}
+
+fn entry_has_crossref_parent(fields: &[StoredField], crossref_fields: &HashSet<String>) -> bool {
+    fields.iter().any(|field| {
+        crossref_fields.contains(&field.lookup_name)
+            && clean_bibliography_scalar(&field.value).is_some()
+    })
 }
 
 fn stored_entry_from_row(row: &Row<'_>) -> rusqlite::Result<StoredEntry> {

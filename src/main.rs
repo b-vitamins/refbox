@@ -19,7 +19,7 @@ use refbox_rpc::{
     SearchEntriesResponse, SourceLocationRequest, SourceLocationResponse, StatusResponse,
     SyncFileRequest, SyncResponse, clamp_limit,
 };
-use refbox_store::{RefboxStore, StoredEntry, StoredField};
+use refbox_store::{RefboxStore, SearchResult, StoredEntry, StoredField, StoredSearchEntry};
 use serde::de::DeserializeOwned;
 
 #[derive(Debug, Parser)]
@@ -109,36 +109,15 @@ impl Daemon {
         }
     }
 
-    fn entry_search_item(
-        &self,
-        entry_id: i64,
-        key: String,
-        source_path: String,
-        entry_type: String,
-        score: f64,
-    ) -> std::result::Result<EntrySearchItem, JsonRpcError> {
-        let fields = self
-            .store
-            .fields_for_entry(entry_id)
-            .map_err(store_error)?
-            .into_iter()
-            .map(field_item)
-            .collect();
-        let resources = self
-            .store
-            .resources_for_entry(entry_id, &default_crossref_fields())
-            .map_err(store_error)?
-            .into_iter()
-            .map(resource_item)
-            .collect();
-        Ok(EntrySearchItem {
-            key,
-            source_path,
-            entry_type,
-            score,
-            fields,
-            resources,
-        })
+    fn entry_search_item(entry: StoredSearchEntry) -> EntrySearchItem {
+        EntrySearchItem {
+            key: entry.key,
+            source_path: entry.file_path,
+            entry_type: entry.entry_type,
+            score: entry.score,
+            fields: entry.fields.into_iter().map(field_item).collect(),
+            resources: entry.resources.into_iter().map(resource_item).collect(),
+        }
     }
 
     fn dispatch(
@@ -196,39 +175,39 @@ impl Daemon {
                         request.allow_empty_query.unwrap_or(false),
                     )
                     .map_err(store_error)?;
-                let entries = search_results
+                let entries = self
+                    .store
+                    .hydrate_search_results(search_results, &default_crossref_fields())
+                    .map_err(store_error)?
                     .into_iter()
-                    .map(|entry| {
-                        self.entry_search_item(
-                            entry.entry_id,
-                            entry.key,
-                            entry.file_path,
-                            entry.entry_type,
-                            entry.score,
-                        )
-                    })
-                    .collect::<std::result::Result<Vec<_>, JsonRpcError>>()?;
+                    .map(Self::entry_search_item)
+                    .collect();
                 self.to_value(SearchEntriesResponse { entries })
             }
             METHOD_LIST_ENTRIES => {
                 let request: ListEntriesRequest = parse_params(params)?;
                 let limit = clamp_limit(request.limit);
                 let offset = request.offset.unwrap_or(0);
-                let entries = self
+                let search_results = self
                     .store
                     .list_entries(limit, offset)
                     .map_err(store_error)?
                     .into_iter()
-                    .map(|entry| {
-                        self.entry_search_item(
-                            entry.id,
-                            entry.key,
-                            entry.file_path,
-                            entry.entry_type,
-                            0.0,
-                        )
+                    .map(|entry| SearchResult {
+                        entry_id: entry.id,
+                        file_path: entry.file_path,
+                        key: entry.key,
+                        entry_type: entry.entry_type,
+                        score: 0.0,
                     })
-                    .collect::<std::result::Result<Vec<_>, JsonRpcError>>()?;
+                    .collect();
+                let entries = self
+                    .store
+                    .hydrate_search_results(search_results, &default_crossref_fields())
+                    .map_err(store_error)?
+                    .into_iter()
+                    .map(Self::entry_search_item)
+                    .collect();
                 self.to_value(SearchEntriesResponse { entries })
             }
             METHOD_ENTRY_BY_KEY => {
