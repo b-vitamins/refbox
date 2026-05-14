@@ -409,19 +409,32 @@ fn read_file_snapshot<E>(path: &str) -> std::result::Result<FileSnapshot, SyncEr
         .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
         .and_then(|duration| i64::try_from(duration.as_nanos()).ok());
 
+    let content_hash = sha256_hex(&bytes);
+    let text = match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(error) => String::from_utf8_lossy(error.as_bytes()).into_owned(),
+    };
+
     Ok(FileSnapshot {
         path: path.to_string(),
         size_bytes: metadata.len(),
         modified_ns,
-        content_hash: sha256_hex(&bytes),
-        text: String::from_utf8_lossy(&bytes).into_owned(),
+        content_hash,
+        text,
     })
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
-    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        encoded.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX_DIGITS[usize::from(byte & 0x0f)]));
+    }
+    encoded
 }
+
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 fn same_freshness(metadata: &IndexedFileMetadata, snapshot: &FileSnapshot) -> bool {
     metadata.size_bytes == snapshot.size_bytes
