@@ -1,10 +1,10 @@
 ;;; refbox-markdown.el --- Markdown citation integration for refbox -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2026 refbox contributors
+;; Copyright (C) 2026 Ayan Das
 
-;; Author: refbox contributors <maintainers@example.invalid>
-;; Maintainer: refbox contributors <maintainers@example.invalid>
-;; Version: 0.1.0
+;; Author: Ayan Das <bvits@riseup.net>
+;; Maintainer: Ayan Das <bvits@riseup.net>
+;; Version: 0.2.0
 ;; Package-Requires: ((emacs "29.1") (jsonrpc "1.0.27"))
 ;; Keywords: bib, markdown, convenience
 
