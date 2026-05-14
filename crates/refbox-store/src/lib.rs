@@ -224,8 +224,8 @@ impl RefboxStore {
         }
 
         let tx = self.connection.transaction()?;
-        delete_existing_file(&tx, path)?;
-        refresh_duplicate_groups(&tx)?;
+        let affected_keys = delete_existing_file(&tx, path)?;
+        refresh_duplicate_groups_for_keys(&tx, &affected_keys)?;
         tx.commit()?;
         Ok(())
     }
@@ -1178,7 +1178,7 @@ fn insert_file_rows(
     metadata: &IndexedFileMetadata,
     defer_duplicate_groups: bool,
 ) -> Result<()> {
-    delete_existing_file(connection, &file.path)?;
+    let mut affected_keys = delete_existing_file(connection, &file.path)?;
 
     execute_cached(
         connection,
@@ -1202,11 +1202,12 @@ fn insert_file_rows(
     }
 
     for entry in &file.entries {
+        affected_keys.push(entry.id.key.clone());
         insert_entry(connection, file_id, entry)?;
     }
 
     if !defer_duplicate_groups {
-        refresh_duplicate_groups(connection)?;
+        refresh_duplicate_groups_for_keys(connection, &affected_keys)?;
     }
     Ok(())
 }
@@ -1218,20 +1219,26 @@ where
     Ok(connection.prepare_cached(sql)?.execute(params)?)
 }
 
-fn delete_existing_file(connection: &Connection, path: &str) -> Result<()> {
-    let entry_ids = {
+fn delete_existing_file(connection: &Connection, path: &str) -> Result<Vec<String>> {
+    let entry_rows = {
         let mut statement = connection.prepare(
-            "SELECT e.id
+            "SELECT e.id, e.entry_key
              FROM entries e
              JOIN files f ON f.id = e.file_id
              WHERE f.path = ?1",
         )?;
         statement
-            .query_map(params![path], |row| row.get::<_, i64>(0))?
+            .query_map(params![path], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?
             .collect::<std::result::Result<Vec<_>, _>>()?
     };
+    let affected_keys = entry_rows
+        .iter()
+        .map(|(_, key)| key.clone())
+        .collect::<Vec<_>>();
 
-    for entry_id in entry_ids {
+    for (entry_id, _) in entry_rows {
         execute_cached(
             connection,
             "DELETE FROM entry_fts WHERE rowid = ?1",
@@ -1244,7 +1251,7 @@ fn delete_existing_file(connection: &Connection, path: &str) -> Result<()> {
         "DELETE FROM files WHERE path = ?1",
         params![path],
     )?;
-    Ok(())
+    Ok(affected_keys)
 }
 
 fn insert_entry(connection: &Connection, file_id: i64, entry: &BibliographyEntry) -> Result<i64> {
@@ -1472,6 +1479,62 @@ fn refresh_duplicate_groups(connection: &Connection) -> Result<()> {
                 .query_map(params![key], |row| row.get::<_, i64>(0))?
                 .collect::<std::result::Result<Vec<_>, _>>()?
         };
+        for entry_id in entry_ids {
+            execute_cached(
+                connection,
+                "INSERT INTO duplicate_group_entries(group_id, entry_id) VALUES (?1, ?2)",
+                params![group_id, entry_id],
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn refresh_duplicate_groups_for_keys(connection: &Connection, keys: &[String]) -> Result<()> {
+    let mut seen = HashSet::new();
+    for key in keys {
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+
+        if let Some(group_id) = connection
+            .query_row(
+                "SELECT id FROM duplicate_groups WHERE entry_key = ?1",
+                params![key],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+        {
+            execute_cached(
+                connection,
+                "DELETE FROM duplicate_group_entries WHERE group_id = ?1",
+                params![group_id],
+            )?;
+            execute_cached(
+                connection,
+                "DELETE FROM duplicate_groups WHERE id = ?1",
+                params![group_id],
+            )?;
+        }
+
+        let entry_ids = {
+            let mut statement = connection
+                .prepare("SELECT id FROM entries WHERE entry_key = ?1 ORDER BY file_id, id")?;
+            statement
+                .query_map(params![key], |row| row.get::<_, i64>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        if entry_ids.len() <= 1 {
+            continue;
+        }
+
+        execute_cached(
+            connection,
+            "INSERT INTO duplicate_groups(entry_key) VALUES (?1)",
+            params![key],
+        )?;
+        let group_id = connection.last_insert_rowid();
         for entry_id in entry_ids {
             execute_cached(
                 connection,

@@ -224,6 +224,22 @@ fn duplicate_keys_from_different_files_are_preserved() {
     assert_eq!(duplicate_groups.len(), 1);
     assert_eq!(duplicate_groups[0].key, "dup2020");
     assert_eq!(duplicate_groups[0].entries.len(), 2);
+
+    let replacement = parse_bibliography_file(
+        "refs/b.bib",
+        r#"@book{unique2020,
+  title = {Second Copy}
+}"#,
+    );
+    store
+        .insert_file(&replacement)
+        .expect("replacement file should insert");
+    assert!(
+        store
+            .duplicate_groups()
+            .expect("duplicate groups should query")
+            .is_empty()
+    );
 }
 
 #[test]
