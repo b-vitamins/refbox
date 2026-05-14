@@ -8,7 +8,7 @@ use refbox_core::{
     DiagnosticTarget, FileParseStatus, IndexStoreCounts, IndexedFileMetadata, PersonName,
     ResourceKind, SourcePosition, SourceSpan,
 };
-use rusqlite::{Connection, OptionalExtension, Row, Transaction, params, params_from_iter};
+use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use thiserror::Error;
 
 pub const SCHEMA_VERSION: i64 = 6;
@@ -203,58 +203,37 @@ impl RefboxStore {
         metadata: &IndexedFileMetadata,
     ) -> Result<()> {
         let defer_duplicate_groups = self.bulk_update_depth > 0;
-        let tx = self.connection.transaction()?;
-        delete_existing_file(&tx, &file.path)?;
-
-        tx.execute(
-            "INSERT INTO files(
-                path, size_bytes, modified_ns, content_hash, parse_status, entry_count, diagnostic_count
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                file.path,
-                i64_from_u64(metadata.size_bytes)?,
-                metadata.modified_ns,
-                metadata.content_hash,
-                parse_status_name(metadata.parse_status),
-                i64_from_usize(metadata.entry_count)?,
-                i64_from_usize(metadata.diagnostic_count)?,
-            ],
-        )?;
-        let file_id = tx.last_insert_rowid();
-
-        for diagnostic in &file.diagnostics {
-            insert_diagnostic(&tx, file_id, None, diagnostic)?;
-        }
-
-        for entry in &file.entries {
-            insert_entry(&tx, file_id, entry)?;
-        }
-
-        if !defer_duplicate_groups {
-            refresh_duplicate_groups(&tx)?;
-        }
-        tx.commit()?;
         if defer_duplicate_groups {
+            insert_file_rows(&self.connection, file, metadata, true)?;
             self.duplicate_groups_dirty = true;
+            return Ok(());
         }
+
+        let tx = self.connection.transaction()?;
+        insert_file_rows(&tx, file, metadata, false)?;
+        tx.commit()?;
         Ok(())
     }
 
     pub fn remove_file(&mut self, path: &str) -> Result<()> {
         let defer_duplicate_groups = self.bulk_update_depth > 0;
+        if defer_duplicate_groups {
+            delete_existing_file(&self.connection, path)?;
+            self.duplicate_groups_dirty = true;
+            return Ok(());
+        }
+
         let tx = self.connection.transaction()?;
         delete_existing_file(&tx, path)?;
-        if !defer_duplicate_groups {
-            refresh_duplicate_groups(&tx)?;
-        }
+        refresh_duplicate_groups(&tx)?;
         tx.commit()?;
-        if defer_duplicate_groups {
-            self.duplicate_groups_dirty = true;
-        }
         Ok(())
     }
 
     pub fn begin_bulk_update(&mut self) -> Result<()> {
+        if self.bulk_update_depth == 0 {
+            self.connection.execute_batch("BEGIN IMMEDIATE")?;
+        }
         self.bulk_update_depth = self.bulk_update_depth.saturating_add(1);
         Ok(())
     }
@@ -264,11 +243,29 @@ impl RefboxStore {
             self.bulk_update_depth -= 1;
         }
         if self.bulk_update_depth == 0 && self.duplicate_groups_dirty {
-            let tx = self.connection.transaction()?;
-            refresh_duplicate_groups(&tx)?;
-            tx.commit()?;
+            let result: Result<()> = (|| {
+                refresh_duplicate_groups(&self.connection)?;
+                self.connection.execute_batch("COMMIT")?;
+                Ok(())
+            })();
+            if result.is_err() {
+                let _ = self.connection.execute_batch("ROLLBACK");
+            }
+            result?;
             self.duplicate_groups_dirty = false;
+        } else if self.bulk_update_depth == 0 {
+            self.connection.execute_batch("COMMIT")?;
         }
+        Ok(())
+    }
+
+    pub fn cancel_bulk_update(&mut self) -> Result<()> {
+        if self.bulk_update_depth == 0 {
+            return Ok(());
+        }
+        self.bulk_update_depth = 0;
+        self.duplicate_groups_dirty = false;
+        self.connection.execute_batch("ROLLBACK")?;
         Ok(())
     }
 
@@ -913,6 +910,10 @@ impl DerivedBibliographyStore for RefboxStore {
         RefboxStore::finish_bulk_update(self)
     }
 
+    fn cancel_bulk_update(&mut self) -> Result<()> {
+        RefboxStore::cancel_bulk_update(self)
+    }
+
     fn indexed_file_metadata(&self) -> Result<Vec<IndexedFileMetadata>> {
         RefboxStore::indexed_file_metadata(self)
     }
@@ -1171,9 +1172,47 @@ SET source_start_column = source_start_column + 1,
 WHERE source_start_column IS NOT NULL;
 "#;
 
-fn delete_existing_file(tx: &Transaction<'_>, path: &str) -> Result<()> {
+fn insert_file_rows(
+    connection: &Connection,
+    file: &BibliographyFile,
+    metadata: &IndexedFileMetadata,
+    defer_duplicate_groups: bool,
+) -> Result<()> {
+    delete_existing_file(connection, &file.path)?;
+
+    connection.execute(
+        "INSERT INTO files(
+            path, size_bytes, modified_ns, content_hash, parse_status, entry_count, diagnostic_count
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            file.path,
+            i64_from_u64(metadata.size_bytes)?,
+            metadata.modified_ns,
+            metadata.content_hash,
+            parse_status_name(metadata.parse_status),
+            i64_from_usize(metadata.entry_count)?,
+            i64_from_usize(metadata.diagnostic_count)?,
+        ],
+    )?;
+    let file_id = connection.last_insert_rowid();
+
+    for diagnostic in &file.diagnostics {
+        insert_diagnostic(connection, file_id, None, diagnostic)?;
+    }
+
+    for entry in &file.entries {
+        insert_entry(connection, file_id, entry)?;
+    }
+
+    if !defer_duplicate_groups {
+        refresh_duplicate_groups(connection)?;
+    }
+    Ok(())
+}
+
+fn delete_existing_file(connection: &Connection, path: &str) -> Result<()> {
     let entry_ids = {
-        let mut statement = tx.prepare(
+        let mut statement = connection.prepare(
             "SELECT e.id
              FROM entries e
              JOIN files f ON f.id = e.file_id
@@ -1185,16 +1224,16 @@ fn delete_existing_file(tx: &Transaction<'_>, path: &str) -> Result<()> {
     };
 
     for entry_id in entry_ids {
-        tx.execute("DELETE FROM entry_fts WHERE rowid = ?1", params![entry_id])?;
+        connection.execute("DELETE FROM entry_fts WHERE rowid = ?1", params![entry_id])?;
     }
 
-    tx.execute("DELETE FROM files WHERE path = ?1", params![path])?;
+    connection.execute("DELETE FROM files WHERE path = ?1", params![path])?;
     Ok(())
 }
 
-fn insert_entry(tx: &Transaction<'_>, file_id: i64, entry: &BibliographyEntry) -> Result<i64> {
+fn insert_entry(connection: &Connection, file_id: i64, entry: &BibliographyEntry) -> Result<i64> {
     let source = db_span(&entry.raw.source)?;
-    tx.execute(
+    connection.execute(
         "INSERT INTO entries(
             file_id, entry_key, entry_type, raw_text,
             source_path, source_start_byte, source_start_line, source_start_column,
@@ -1214,11 +1253,11 @@ fn insert_entry(tx: &Transaction<'_>, file_id: i64, entry: &BibliographyEntry) -
             source.end_column,
         ],
     )?;
-    let entry_id = tx.last_insert_rowid();
+    let entry_id = connection.last_insert_rowid();
 
     for field in &entry.fields {
         let source = nullable_span(field.source.as_ref())?;
-        tx.execute(
+        connection.execute(
             "INSERT INTO fields(
                 entry_id, raw_name, lookup_name, value,
                 source_path, source_start_byte, source_start_line, source_start_column,
@@ -1246,7 +1285,7 @@ fn insert_entry(tx: &Transaction<'_>, file_id: i64, entry: &BibliographyEntry) -
             let name_index =
                 i64::try_from(index).map_err(|_| StoreError::IndexOutOfRange(index))?;
             let raw_name = person_name_storage_text(name);
-            tx.execute(
+            connection.execute(
                 "INSERT INTO names(
                     entry_id, raw_role, lookup_role, raw, name_index,
                     given, family, prefix, suffix, literal,
@@ -1278,7 +1317,7 @@ fn insert_entry(tx: &Transaction<'_>, file_id: i64, entry: &BibliographyEntry) -
 
     for resource in &entry.resources {
         let source = nullable_span(resource.source.as_ref())?;
-        tx.execute(
+        connection.execute(
             "INSERT INTO resources(
                 entry_id, kind, raw_name, lookup_name, value,
                 source_path, source_start_byte, source_start_line, source_start_column,
@@ -1302,22 +1341,22 @@ fn insert_entry(tx: &Transaction<'_>, file_id: i64, entry: &BibliographyEntry) -
     }
 
     for diagnostic in &entry.diagnostics {
-        insert_diagnostic(tx, file_id, Some(entry_id), diagnostic)?;
+        insert_diagnostic(connection, file_id, Some(entry_id), diagnostic)?;
     }
 
-    insert_fts_row(tx, entry_id, entry)?;
+    insert_fts_row(connection, entry_id, entry)?;
     Ok(entry_id)
 }
 
 fn insert_diagnostic(
-    tx: &Transaction<'_>,
+    connection: &Connection,
     file_id: i64,
     entry_id: Option<i64>,
     diagnostic: &Diagnostic,
 ) -> Result<()> {
     let source = nullable_span(diagnostic.source.as_ref())?;
     let target = diagnostic_target_columns(&diagnostic.target);
-    tx.execute(
+    connection.execute(
         "INSERT INTO diagnostics(
             file_id, entry_id, severity, code, message, target_kind,
             target_path, target_entry_file, target_entry_key,
@@ -1346,8 +1385,8 @@ fn insert_diagnostic(
     Ok(())
 }
 
-fn insert_fts_row(tx: &Transaction<'_>, entry_id: i64, entry: &BibliographyEntry) -> Result<()> {
-    tx.execute(
+fn insert_fts_row(connection: &Connection, entry_id: i64, entry: &BibliographyEntry) -> Result<()> {
+    connection.execute(
         "INSERT INTO entry_fts(rowid, entry_key, title, names, date, venue, abstract, keywords, identifiers)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
@@ -1380,12 +1419,12 @@ fn insert_fts_row(tx: &Transaction<'_>, entry_id: i64, entry: &BibliographyEntry
     Ok(())
 }
 
-fn refresh_duplicate_groups(tx: &Transaction<'_>) -> Result<()> {
-    tx.execute("DELETE FROM duplicate_group_entries", [])?;
-    tx.execute("DELETE FROM duplicate_groups", [])?;
+fn refresh_duplicate_groups(connection: &Connection) -> Result<()> {
+    connection.execute("DELETE FROM duplicate_group_entries", [])?;
+    connection.execute("DELETE FROM duplicate_groups", [])?;
 
     let duplicate_keys = {
-        let mut statement = tx.prepare(
+        let mut statement = connection.prepare(
             "SELECT entry_key
              FROM entries
              GROUP BY entry_key
@@ -1398,20 +1437,20 @@ fn refresh_duplicate_groups(tx: &Transaction<'_>) -> Result<()> {
     };
 
     for key in duplicate_keys {
-        tx.execute(
+        connection.execute(
             "INSERT INTO duplicate_groups(entry_key) VALUES (?1)",
             params![key],
         )?;
-        let group_id = tx.last_insert_rowid();
+        let group_id = connection.last_insert_rowid();
         let entry_ids = {
-            let mut statement =
-                tx.prepare("SELECT id FROM entries WHERE entry_key = ?1 ORDER BY file_id, id")?;
+            let mut statement = connection
+                .prepare("SELECT id FROM entries WHERE entry_key = ?1 ORDER BY file_id, id")?;
             statement
                 .query_map(params![key], |row| row.get::<_, i64>(0))?
                 .collect::<std::result::Result<Vec<_>, _>>()?
         };
         for entry_id in entry_ids {
-            tx.execute(
+            connection.execute(
                 "INSERT INTO duplicate_group_entries(group_id, entry_id) VALUES (?1, ?2)",
                 params![group_id, entry_id],
             )?;

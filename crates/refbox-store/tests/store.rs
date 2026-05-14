@@ -112,6 +112,40 @@ fn inserts_parsed_files_and_queries_records_back() {
 }
 
 #[test]
+fn bulk_updates_commit_or_roll_back_as_a_unit() {
+    let mut store = RefboxStore::open_in_memory().expect("store should open");
+    let file = parse_bibliography_file("refs/main.bib", "@article{alpha2020, title = {Alpha}}\n");
+
+    store.begin_bulk_update().expect("bulk update should begin");
+    store.insert_file(&file).expect("bulk insert should work");
+    store
+        .cancel_bulk_update()
+        .expect("bulk update should roll back");
+    assert_eq!(
+        store
+            .index_counts()
+            .expect("counts should query")
+            .entry_count,
+        0
+    );
+
+    store
+        .begin_bulk_update()
+        .expect("bulk update should begin again");
+    store.insert_file(&file).expect("bulk insert should work");
+    store
+        .finish_bulk_update()
+        .expect("bulk update should commit");
+    assert_eq!(
+        store
+            .index_counts()
+            .expect("counts should query")
+            .entry_count,
+        1
+    );
+}
+
+#[test]
 fn diagnostics_and_source_locations_are_queryable() {
     let mut store = RefboxStore::open_in_memory().expect("store should open");
     let file = parse_bibliography_file(

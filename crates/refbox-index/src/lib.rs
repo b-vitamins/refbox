@@ -251,9 +251,16 @@ impl SyncEngine {
             Ok(status)
         })();
 
-        let finish_result = store.finish_bulk_update().map_err(SyncError::Store);
-        let mut status = sync_result?;
-        finish_result?;
+        let mut status = match sync_result {
+            Ok(status) => {
+                store.finish_bulk_update().map_err(SyncError::Store)?;
+                status
+            }
+            Err(error) => {
+                let _ = store.cancel_bulk_update();
+                return Err(error);
+            }
+        };
 
         apply_counts(store.index_counts().map_err(SyncError::Store)?, &mut status);
         Ok(status)
