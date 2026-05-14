@@ -665,6 +665,9 @@ is non-nil."
   "\\(?:%{\\([^}\n]+\\)}\\|\\${\\([^}\n]+\\)}\\)"
   "Regexp matching supported refbox template placeholders.")
 
+(defvar refbox-template--parse-cache (make-hash-table :test 'equal)
+  "Cache of parsed reference templates keyed by template configuration.")
+
 (defun refbox--plist-get-any (plist &rest keys)
   "Return the first value in PLIST matching one of KEYS."
   (catch 'value
@@ -1170,6 +1173,14 @@ direct function transform."
       (push (substring template position) tokens))
     (nreverse tokens)))
 
+(defun refbox-template--parsed (template)
+  "Return cached parsed TEMPLATE."
+  (let ((cache-key (list template refbox-display-transform-functions)))
+    (or (gethash cache-key refbox-template--parse-cache)
+        (puthash cache-key
+                 (refbox-template-parse template)
+                 refbox-template--parse-cache))))
+
 (defun refbox-template--field-text (token candidate)
   "Return TOKEN text for CANDIDATE before width fitting."
   (let ((value (cl-loop
@@ -1221,7 +1232,7 @@ direct function transform."
 (defun refbox-template-format (template candidate &optional width)
   "Format CANDIDATE with TEMPLATE and optional display WIDTH."
   (let* ((tokens (if (stringp template)
-                     (refbox-template-parse template)
+                     (refbox-template--parsed template)
                    template))
          rendered
          (used-width 0)

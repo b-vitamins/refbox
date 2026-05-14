@@ -378,6 +378,22 @@
       "refs/main\\.bib"
       (refbox-reference-format-preview refbox-test-reference-candidate)))))
 
+(ert-deftest refbox-test-template-formatting-caches_parsed_templates ()
+  "Repeated formatting should reuse parsed template forms."
+  (clrhash refbox-template--parse-cache)
+  (let ((parse-count 0)
+        (parser (symbol-function 'refbox-template-parse)))
+    (cl-letf (((symbol-function 'refbox-template-parse)
+               (lambda (template)
+                 (setq parse-count (1+ parse-count))
+                 (funcall parser template))))
+      (dotimes (_ 3)
+        (should (equal (refbox-template-format
+                        "%{title}"
+                        refbox-test-reference-candidate)
+                       "Alpha Reference Title")))
+      (should (= parse-count 1)))))
+
 (ert-deftest refbox-test-default_templates_use_familiar_fields ()
   "Default templates should render cleaned reference metadata."
   (should (string-match-p
