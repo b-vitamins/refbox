@@ -3286,6 +3286,7 @@ asks before replacing an existing file."
          (or refbox--reference-field-cache
              (make-hash-table :test 'eq))))
     (let* ((base (refbox-reference-format-main candidate))
+           (suffix (refbox-reference-format-suffix candidate))
            (display base)
            (source-path (refbox-reference-field candidate "source_path"))
            (counter 2))
@@ -3295,7 +3296,16 @@ asks before replacing an existing file."
         (setq display (format "%s <%d>" base counter)
               counter (1+ counter)))
       (puthash display candidate seen)
-      (propertize display 'refbox-candidate candidate))))
+      (propertize display
+                  'refbox-candidate candidate
+                  'refbox-annotation suffix))))
+
+(defun refbox--completion-annotation-text (completion)
+  "Return cached annotation text for COMPLETION."
+  (or (get-text-property 0 'refbox-annotation completion)
+      (when-let ((candidate (get-text-property 0 'refbox-candidate completion)))
+        (let ((refbox--reference-field-cache (make-hash-table :test 'eq)))
+          (refbox-reference-format-suffix candidate)))))
 
 (defun refbox--completion-state-candidates (state input)
   "Return bounded completion candidates for INPUT using STATE."
@@ -3348,22 +3358,19 @@ asks before replacing an existing file."
 
 (defun refbox--completion-annotation (completion)
   "Return annotation text for COMPLETION."
-  (let ((refbox--reference-field-cache (make-hash-table :test 'eq)))
-    (let ((candidate (get-text-property 0 'refbox-candidate completion)))
-      (when candidate
-        (concat " " (refbox-reference-format-suffix candidate))))))
+  (when-let ((annotation (refbox--completion-annotation-text completion)))
+    (concat " " annotation)))
 
 (defun refbox--completion-affixation (completions)
   "Return affixation triples for COMPLETIONS."
   (let ((refbox--reference-field-cache (make-hash-table :test 'eq)))
     (mapcar
      (lambda (completion)
-       (let ((candidate (get-text-property 0 'refbox-candidate completion)))
-         (list completion
-               ""
-               (if candidate
-                   (concat " " (refbox-reference-format-suffix candidate))
-                 ""))))
+       (list completion
+             ""
+             (if-let ((annotation (refbox--completion-annotation-text completion)))
+                 (concat " " annotation)
+               "")))
      completions)))
 
 (defun refbox--completion-predicate (predicate)
