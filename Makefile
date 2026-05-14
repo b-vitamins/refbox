@@ -1,5 +1,7 @@
 EMACS ?= emacs
 BENCH_REPORT_DIR ?= target/refbox-bench
+BENCH_RELEASE_DAEMON := target/release/refbox
+BENCH_RELEASE_RUNNER := target/release/refbox-bench
 ELISP_FILES := refbox-rpc.el refbox.el refbox-org.el refbox-latex.el refbox-markdown.el refbox-embark.el
 ELISP_TEST_FILES := tests/test-init.el tests/test-refbox.el tests/test-refbox-org.el tests/test-refbox-latex.el tests/test-refbox-markdown.el tests/test-refbox-embark.el
 ELISP_ELC_FILES := $(ELISP_FILES:.el=.elc) $(ELISP_TEST_FILES:.el=.elc)
@@ -68,14 +70,14 @@ bench-ci:
 .PHONY: bench-release
 bench-release:
 	mkdir -p "$(BENCH_REPORT_DIR)"
-	cargo build -p refbox
-	cargo run -p refbox-bench -- --profile release --emacs "$(EMACS)" --report "$(BENCH_REPORT_DIR)/release.json"
+	cargo build --release -p refbox -p refbox-bench
+	"$(BENCH_RELEASE_RUNNER)" --profile release --emacs "$(EMACS)" --daemon "$(BENCH_RELEASE_DAEMON)" --report "$(BENCH_REPORT_DIR)/release.json"
 
 .PHONY: bench-local
 bench-local:
 	mkdir -p "$(BENCH_REPORT_DIR)"
-	cargo build -p refbox
-	cargo run -p refbox-bench -- --profile local --emacs "$(EMACS)" --report "$(BENCH_REPORT_DIR)/local.json"
+	cargo build --release -p refbox -p refbox-bench
+	"$(BENCH_RELEASE_RUNNER)" --profile local --emacs "$(EMACS)" --daemon "$(BENCH_RELEASE_DAEMON)" --report "$(BENCH_REPORT_DIR)/local.json"
 
 .PHONY: bench-real
 bench-real:
@@ -83,5 +85,5 @@ bench-real:
 	: "$${REFBOX_BENCH_REAL_QUERY:?set REFBOX_BENCH_REAL_QUERY}"
 	: "$${REFBOX_BENCH_REAL_KEY:?set REFBOX_BENCH_REAL_KEY}"
 	mkdir -p "$(BENCH_REPORT_DIR)"
-	cargo build -p refbox
-	cargo run -p refbox-bench -- --profile real --emacs "$(EMACS)" --report "$(BENCH_REPORT_DIR)/real.json"
+	cargo build --release -p refbox -p refbox-bench
+	"$(BENCH_RELEASE_RUNNER)" --profile real --root "$$REFBOX_BENCH_REAL_ROOT" --query "$$REFBOX_BENCH_REAL_QUERY" --key "$$REFBOX_BENCH_REAL_KEY" --emacs "$(EMACS)" --daemon "$(BENCH_RELEASE_DAEMON)" --report "$(BENCH_REPORT_DIR)/real.json"
