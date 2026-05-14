@@ -157,7 +157,13 @@ impl RefboxStore {
     }
 
     fn from_connection(connection: Connection) -> Result<Self> {
-        connection.execute_batch("PRAGMA foreign_keys = ON;")?;
+        connection.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA foreign_keys = ON;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA temp_store = MEMORY;
+             PRAGMA cache_size = -200000;",
+        )?;
         let mut store = Self {
             connection,
             bulk_update_depth: 0,
@@ -1569,4 +1575,35 @@ fn diagnostic_count(file: &BibliographyFile) -> usize {
             .iter()
             .map(|entry| entry.diagnostics.len())
             .sum::<usize>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn store_opens_with_indexing_pragmas() {
+        let store = RefboxStore::open_in_memory().expect("store should open");
+        let foreign_keys: i64 = store
+            .connection
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .expect("foreign key pragma should read");
+        let synchronous: i64 = store
+            .connection
+            .query_row("PRAGMA synchronous", [], |row| row.get(0))
+            .expect("synchronous pragma should read");
+        let temp_store: i64 = store
+            .connection
+            .query_row("PRAGMA temp_store", [], |row| row.get(0))
+            .expect("temp store pragma should read");
+        let cache_size: i64 = store
+            .connection
+            .query_row("PRAGMA cache_size", [], |row| row.get(0))
+            .expect("cache size pragma should read");
+
+        assert_eq!(foreign_keys, 1);
+        assert_eq!(synchronous, 1);
+        assert_eq!(temp_store, 2);
+        assert_eq!(cache_size, -200000);
+    }
 }
