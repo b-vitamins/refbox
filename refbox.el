@@ -668,6 +668,9 @@ is non-nil."
 (defvar refbox-template--parse-cache (make-hash-table :test 'equal)
   "Cache of parsed reference templates keyed by template configuration.")
 
+(defvar refbox--reference-field-cache nil
+  "Dynamic cache of candidate field lookup tables.")
+
 (defun refbox--plist-get-any (plist &rest keys)
   "Return the first value in PLIST matching one of KEYS."
   (catch 'value
@@ -709,6 +712,21 @@ is non-nil."
   "Return CANDIDATE resources as a list."
   (when (listp candidate)
     (refbox--listify (refbox--candidate-value candidate :resources))))
+
+(defun refbox--candidate-field-table (candidate)
+  "Return cached field lookup table for CANDIDATE."
+  (when (and refbox--reference-field-cache (listp candidate))
+    (or (gethash candidate refbox--reference-field-cache)
+        (let ((table (make-hash-table :test 'equal)))
+          (dolist (field (refbox--candidate-fields candidate))
+            (let ((value (refbox--field-value field))
+                  (lookup-name (refbox--field-lookup-name field))
+                  (raw-name (refbox--field-raw-name field)))
+              (dolist (name (delq nil (list lookup-name raw-name)))
+                (let ((normalized (refbox--field-name-normalize name)))
+                  (unless (gethash normalized table)
+                    (puthash normalized value table))))))
+          (puthash candidate table refbox--reference-field-cache)))))
 
 (defun refbox--resource-value (resource)
   "Return RESOURCE's raw value."
@@ -782,15 +800,18 @@ computed property such as indicators, or an indexed bibliography field."
      ((string= field "indicators")
       (refbox-reference-indicators candidate))
      (t
-      (cl-loop
-       for indexed-field in (refbox--candidate-fields candidate)
-       for lookup-name = (refbox--field-lookup-name indexed-field)
-       for raw-name = (refbox--field-raw-name indexed-field)
-       when (or (and lookup-name
-                     (string= field (refbox--field-name-normalize lookup-name)))
-                (and raw-name
-                     (string= field (refbox--field-name-normalize raw-name))))
-       return (refbox--field-value indexed-field))))))
+      (or
+       (when-let ((table (refbox--candidate-field-table candidate)))
+         (gethash field table))
+       (cl-loop
+        for indexed-field in (refbox--candidate-fields candidate)
+        for lookup-name = (refbox--field-lookup-name indexed-field)
+        for raw-name = (refbox--field-raw-name indexed-field)
+        when (or (and lookup-name
+                      (string= field (refbox--field-name-normalize lookup-name)))
+                 (and raw-name
+                      (string= field (refbox--field-name-normalize raw-name))))
+        return (refbox--field-value indexed-field)))))))
 
 (defun refbox-reference-has-field-p (candidate field)
   "Return non-nil when CANDIDATE has a non-empty FIELD."
@@ -3261,17 +3282,20 @@ asks before replacing an existing file."
 
 (defun refbox--completion-candidate-display (candidate seen)
   "Return a propertized display string for CANDIDATE using SEEN map."
-  (let* ((base (refbox-reference-format-main candidate))
-         (display base)
-         (source-path (refbox-reference-field candidate "source_path"))
-         (counter 2))
-    (when (gethash display seen)
-      (setq display (format "%s  [%s]" base source-path)))
-    (while (gethash display seen)
-      (setq display (format "%s <%d>" base counter)
-            counter (1+ counter)))
-    (puthash display candidate seen)
-    (propertize display 'refbox-candidate candidate)))
+  (let ((refbox--reference-field-cache
+         (or refbox--reference-field-cache
+             (make-hash-table :test 'eq))))
+    (let* ((base (refbox-reference-format-main candidate))
+           (display base)
+           (source-path (refbox-reference-field candidate "source_path"))
+           (counter 2))
+      (when (gethash display seen)
+        (setq display (format "%s  [%s]" base source-path)))
+      (while (gethash display seen)
+        (setq display (format "%s <%d>" base counter)
+              counter (1+ counter)))
+      (puthash display candidate seen)
+      (propertize display 'refbox-candidate candidate))))
 
 (defun refbox--completion-state-candidates (state input)
   "Return bounded completion candidates for INPUT using STATE."
@@ -3324,21 +3348,23 @@ asks before replacing an existing file."
 
 (defun refbox--completion-annotation (completion)
   "Return annotation text for COMPLETION."
-  (let ((candidate (get-text-property 0 'refbox-candidate completion)))
-    (when candidate
-      (concat " " (refbox-reference-format-suffix candidate)))))
+  (let ((refbox--reference-field-cache (make-hash-table :test 'eq)))
+    (let ((candidate (get-text-property 0 'refbox-candidate completion)))
+      (when candidate
+        (concat " " (refbox-reference-format-suffix candidate))))))
 
 (defun refbox--completion-affixation (completions)
   "Return affixation triples for COMPLETIONS."
-  (mapcar
-   (lambda (completion)
-     (let ((candidate (get-text-property 0 'refbox-candidate completion)))
-       (list completion
-             ""
-             (if candidate
-                 (concat " " (refbox-reference-format-suffix candidate))
-               ""))))
-   completions))
+  (let ((refbox--reference-field-cache (make-hash-table :test 'eq)))
+    (mapcar
+     (lambda (completion)
+       (let ((candidate (get-text-property 0 'refbox-candidate completion)))
+         (list completion
+               ""
+               (if candidate
+                   (concat " " (refbox-reference-format-suffix candidate))
+                 ""))))
+     completions)))
 
 (defun refbox--completion-predicate (predicate)
   "Return a completion predicate wrapping candidate PREDICATE."
