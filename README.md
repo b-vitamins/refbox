@@ -313,7 +313,7 @@ Missing file resources: check `file` fields, `refbox-library-paths`,
 writes new files into the first configured library path.
 
 Missing links: `refbox-open-links` uses indexed URL and identifier fields such
-as `url`, `doi`, `pmid`, and `pmcid`, plus `refbox-resource-link-templates`.
+as `url`, `doi`, `pmid`, and `pmcid`, configured by `refbox-link-fields`.
 
 Missing notes: configure `refbox-note-paths` and
 `refbox-note-file-extensions`. Use `M-x refbox-create-note` to create the

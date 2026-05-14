@@ -495,11 +495,10 @@ t is used as the default when no extension entry matches."
   :group 'refbox)
 
 (defcustom refbox-link-fields
-  '((url . "%s")
-    (doi . "https://doi.org/%s")
-    (arxiv . "https://arxiv.org/abs/%s")
-    (pmid . "https://pubmed.ncbi.nlm.nih.gov/%s/")
-    (pmcid . "https://www.ncbi.nlm.nih.gov/pmc/articles/%s/"))
+  '((doi . "https://doi.org/%s")
+    (pmid . "https://www.ncbi.nlm.nih.gov/pubmed/%s")
+    (pmcid . "https://www.ncbi.nlm.nih.gov/pmc/articles/%s")
+    (url . "%s"))
   "Alist mapping resource kinds to URL format strings."
   :type '(alist :key-type symbol :value-type string)
   :group 'refbox)
