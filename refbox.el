@@ -1549,8 +1549,9 @@ search intended for type-ahead completion.
 
 When FIELD-NAMES is non-nil, hydrate only those bibliography fields.
 
-When OMIT-RESOURCES is non-nil, return lightweight resource kind
-summaries instead of full resource payloads."
+When OMIT-RESOURCES is non-nil, return the lightweight completion
+shape: resource kind summaries, no full resource payloads, and no
+per-field source spans."
   (let* ((parsed (refbox-search--parse-query query))
          (clean-query (plist-get parsed :query))
          (resource-kinds (plist-get parsed :resource-kinds))
@@ -1581,7 +1582,8 @@ summaries instead of full resource payloads."
                        (list :field_names (vconcat field-names)))
                      (when omit-resources
                        (list :field_value_char_limit
-                             refbox-completion-field-value-limit))
+                             refbox-completion-field-value-limit
+                             :include_field_sources :json-false))
                      (when (refbox--blank-string-p clean-query)
                        (list :allow_empty_query t))
                      (when unranked

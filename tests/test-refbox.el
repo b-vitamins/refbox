@@ -479,6 +479,7 @@
           (should (equal (plist-get params :ranked) :json-false))
           (should (equal (plist-get params :field_value_char_limit)
                          refbox-completion-field-value-limit))
+          (should (eq (plist-get params :include_field_sources) :json-false))
           (should (equal (append (plist-get params :field_names) nil)
                          '("key" "title" "indicators"
                            "entry_type" "source_path" "crossref")))
@@ -523,6 +524,27 @@
              (candidates (funcall table "doe" nil t)))
         (should (= (length candidates) 1))
         (should (string-match-p "doe2021" (car candidates)))))))
+
+(ert-deftest refbox-test-completion-keeps_native_matches_when_styles_reject_display ()
+  "Native search hits should remain visible for non-prefix typeahead input."
+  (let ((refbox-templates '((main . "%{author:16}     %{title:32}")
+                            (suffix . "          %{=key=:12}")))
+        (completion-styles '(basic)))
+    (cl-letf (((symbol-function 'refbox-search-references)
+               (lambda (query &optional _limit _source-paths _unranked
+                              _field-names _omit-resources)
+                 (should (equal query "Relational Interaction"))
+                 (list refbox-test-reference-candidate))))
+      (let* ((state (refbox--completion-state 10))
+             (table (refbox--completion-table state))
+             (candidates (funcall table "Relational Interaction" nil t)))
+        (should (= (length candidates) 1))
+        (should (string-match-p "Alpha Reference Title" (car candidates)))
+        (should (equal
+                 (plist-get (get-text-property 0 'refbox-candidate
+                                               (car candidates))
+                            :key)
+                 "smith2020"))))))
 
 (ert-deftest refbox-test-completion-search-input-omits_negated_components ()
   "Daemon completion search should not require Orderless negated components."

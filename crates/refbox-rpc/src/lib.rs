@@ -182,6 +182,7 @@ pub struct SearchEntriesRequest {
     pub resource_kinds: Option<Vec<String>>,
     pub field_names: Option<Vec<String>>,
     pub field_value_char_limit: Option<usize>,
+    pub include_field_sources: Option<bool>,
     pub allow_empty_query: Option<bool>,
     pub ranked: Option<bool>,
     pub include_resources: Option<bool>,
@@ -214,6 +215,7 @@ pub struct EntryFieldItem {
     pub raw_name: String,
     pub lookup_name: String,
     pub value: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceSpan>,
 }
 

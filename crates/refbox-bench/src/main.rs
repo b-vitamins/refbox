@@ -17,6 +17,11 @@ const GENERATED_QUERY: &str = "refboxscale";
 const GENERATED_KEY: &str = "rb00000000";
 const SEARCH_LIMIT: usize = 20;
 const CAPF_LIMIT: usize = 50;
+const COMPLETION_FIELD_VALUE_LIMIT: usize = 1024;
+const COMPLETION_FIELDS: &[&str] = &[
+    "author", "editor", "date", "year", "issued", "title", "=key=", "id", "=type=", "tags",
+    "keywords", "crossref",
+];
 
 #[derive(Debug, Parser)]
 #[command(author, version, about = "refbox scale benchmark harness")]
@@ -297,11 +302,23 @@ fn main() -> Result<()> {
 
     let mut capf_entries = Vec::new();
     let mut capf_samples = Vec::new();
+    let completion_fields = COMPLETION_FIELDS
+        .iter()
+        .map(|field| Value::String((*field).to_owned()))
+        .collect::<Vec<_>>();
     for _ in 0..spec.rpc_samples {
         let (result, elapsed_ms) = rpc.timed_result(
             &mut id,
             METHOD_SEARCH_ENTRIES,
-            json!({ "query": query, "limit": CAPF_LIMIT }),
+            json!({
+                "query": query,
+                "limit": CAPF_LIMIT,
+                "ranked": false,
+                "include_resources": false,
+                "include_field_sources": false,
+                "field_names": completion_fields,
+                "field_value_char_limit": COMPLETION_FIELD_VALUE_LIMIT,
+            }),
         )?;
         capf_entries = value_array(&result, "entries")?;
         capf_samples.push(elapsed_ms);

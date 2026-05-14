@@ -168,6 +168,7 @@ impl Daemon {
                 let resource_kinds = request.resource_kinds.unwrap_or_default();
                 let field_names = request.field_names;
                 let include_resources = request.include_resources.unwrap_or(true);
+                let include_field_sources = request.include_field_sources.unwrap_or(true);
                 let field_value_char_limit = request.field_value_char_limit;
                 let search_results = self
                     .store
@@ -187,6 +188,7 @@ impl Daemon {
                         &default_crossref_fields(),
                         field_names.as_deref(),
                         include_resources,
+                        include_field_sources,
                         field_value_char_limit,
                     )
                     .map_err(store_error)?
@@ -218,6 +220,7 @@ impl Daemon {
                         search_results,
                         &default_crossref_fields(),
                         None,
+                        true,
                         true,
                         None,
                     )
@@ -746,7 +749,30 @@ mod tests {
         assert_eq!(search["entries"][0]["key"], "a2020");
         assert_eq!(search["entries"][0]["entry_type"], "article");
         assert_eq!(search["entries"][0]["fields"][0]["lookup_name"], "title");
+        assert!(search["entries"][0]["fields"][0]["source"].is_object());
         assert_eq!(search["entries"][0]["resources"][0]["kind"], "doi");
+
+        let lightweight_search = result(daemon.handle_request(request(
+            METHOD_SEARCH_ENTRIES,
+            json!({
+                "query": "alpha",
+                "limit": 500,
+                "include_resources": false,
+                "include_field_sources": false,
+            }),
+        )));
+        assert_eq!(lightweight_search["entries"][0]["key"], "a2020");
+        assert!(
+            lightweight_search["entries"][0]["resources"]
+                .as_array()
+                .expect("resources array")
+                .is_empty()
+        );
+        assert!(
+            lightweight_search["entries"][0]["fields"][0]
+                .get("source")
+                .is_none()
+        );
 
         let listed = result(daemon.handle_request(request(
             METHOD_LIST_ENTRIES,

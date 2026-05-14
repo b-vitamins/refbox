@@ -92,7 +92,7 @@ fn inserts_parsed_files_and_queries_records_back() {
     assert_eq!(results[0].key, "smith2020");
     assert_eq!(results[0].entry_type, "article");
     let hydrated = store
-        .hydrate_search_results(results, &["crossref".to_string()], None, true, None)
+        .hydrate_search_results(results, &["crossref".to_string()], None, true, true, None)
         .expect("search results should hydrate");
     assert_eq!(hydrated.len(), 1);
     assert!(
@@ -106,7 +106,14 @@ fn inserts_parsed_files_and_queries_records_back() {
     let lightweight = store
         .search("scalable", 5, &[], &[], false, true)
         .and_then(|results| {
-            store.hydrate_search_results(results, &["crossref".to_string()], None, false, None)
+            store.hydrate_search_results(
+                results,
+                &["crossref".to_string()],
+                None,
+                false,
+                true,
+                None,
+            )
         })
         .expect("lightweight search results should hydrate");
     assert_eq!(lightweight[0].resource_kinds, vec!["doi"]);
@@ -119,6 +126,7 @@ fn inserts_parsed_files_and_queries_records_back() {
                 results,
                 &["crossref".to_string()],
                 Some(&["title".to_string()]),
+                true,
                 true,
                 None,
             )
@@ -140,11 +148,28 @@ fn inserts_parsed_files_and_queries_records_back() {
                 &["crossref".to_string()],
                 Some(&["title".to_string()]),
                 true,
+                true,
                 Some(8),
             )
         })
         .expect("capped search results should hydrate");
     assert_eq!(capped[0].fields[0].value, "{Scalabl");
+
+    let source_free = store
+        .search("scalable", 5, &[], &[], false, true)
+        .and_then(|results| {
+            store.hydrate_search_results(
+                results,
+                &["crossref".to_string()],
+                Some(&["title".to_string()]),
+                false,
+                false,
+                None,
+            )
+        })
+        .expect("source-free search results should hydrate");
+    assert_eq!(source_free[0].fields[0].lookup_name, "title");
+    assert!(source_free[0].fields[0].source.is_none());
 
     let resources = store
         .resources_for_entry(entries[0].id, &["crossref".to_string()])
@@ -578,7 +603,7 @@ fn resource_queries_inherit_crossref_resources() {
         .search("child", 5, &[], &[], false, true)
         .expect("child search should work");
     let hydrated = store
-        .hydrate_search_results(results, &["crossref".to_string()], None, true, None)
+        .hydrate_search_results(results, &["crossref".to_string()], None, true, true, None)
         .expect("hydrated search should include resources");
     let child = hydrated
         .iter()

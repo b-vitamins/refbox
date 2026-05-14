@@ -565,6 +565,7 @@ impl RefboxStore {
         crossref_fields: &[String],
         field_names: Option<&[String]>,
         include_resources: bool,
+        include_field_sources: bool,
         field_value_char_limit: Option<usize>,
     ) -> Result<Vec<StoredSearchEntry>> {
         if results.is_empty() {
@@ -580,6 +581,7 @@ impl RefboxStore {
         let mut fields_by_entry = self.fields_for_entries(
             &entry_ids,
             field_names.as_deref(),
+            include_field_sources,
             field_value_char_limit,
         )?;
         let mut resources_by_entry = if include_resources {
@@ -644,6 +646,7 @@ impl RefboxStore {
         &self,
         entry_ids: &[i64],
         field_names: Option<&[String]>,
+        include_sources: bool,
         field_value_char_limit: Option<usize>,
     ) -> Result<HashMap<i64, Vec<StoredField>>> {
         if entry_ids.is_empty() {
@@ -664,10 +667,15 @@ impl RefboxStore {
             .map(|index| format!("?{}", parameters.len() + index + 1))
             .collect::<Vec<_>>()
             .join(", ");
+        let source_columns = if include_sources {
+            "source_path, source_start_byte, source_start_line, source_start_column,
+             source_end_byte, source_end_line, source_end_column"
+        } else {
+            "NULL, NULL, NULL, NULL, NULL, NULL, NULL"
+        };
         let mut sql = format!(
             "SELECT id, entry_id, raw_name, lookup_name, {value_expression},
-                    source_path, source_start_byte, source_start_line, source_start_column,
-                    source_end_byte, source_end_line, source_end_column
+                    {source_columns}
              FROM fields
              WHERE entry_id IN ({entry_placeholders})",
         );

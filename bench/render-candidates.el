@@ -29,9 +29,12 @@
   (let ((start (float-time)))
     (refbox--with-dynamic-cache (make-hash-table :test 'eq)
       (let ((seen (make-hash-table :test 'equal))
+            (selection-map (make-hash-table :test 'equal))
             rendered)
         (dolist (candidate candidates)
-          (push (refbox--completion-candidate-display candidate seen) rendered))
+          (push (refbox--completion-candidate-display
+                 candidate seen selection-map)
+                rendered))
         (refbox--completion-affixation (nreverse rendered))))
     (* 1000.0 (- (float-time) start))))
 
