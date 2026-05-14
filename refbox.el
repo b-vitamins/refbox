@@ -38,6 +38,8 @@
 (require 'xml)
 (require 'refbox-rpc)
 
+(defvar completion-category-defaults)
+
 (defface refbox
   '((t :inherit default))
   "Base face for refbox completion candidates."
@@ -263,6 +265,19 @@ without adding a marker."
   :type 'natnum
   :group 'refbox)
 
+(defcustom refbox-completion-limit 50
+  "Maximum number of reference candidates requested for minibuffer completion."
+  :type 'natnum
+  :group 'refbox)
+
+(defcustom refbox-completion-category-styles '(basic)
+  "Completion styles used for refbox's dynamic reference category.
+
+Refbox performs reference matching against the native index so completion
+UIs should pass the raw minibuffer input through to the dynamic table."
+  :type '(repeat symbol)
+  :group 'refbox)
+
 (defcustom refbox-reference-resource-indicator "F"
   "Indicator used when a reference has local resource fields."
   :type 'string
@@ -371,6 +386,16 @@ Each item is a `refbox-indicator' whose function returns a predicate
 accepting a reference key or candidate."
   :type 'sexp
   :group 'refbox)
+
+(defun refbox--install-completion-category-defaults ()
+  "Install refbox completion category defaults."
+  (setq completion-category-defaults
+        (assq-delete-all 'refbox-reference completion-category-defaults))
+  (add-to-list
+   'completion-category-defaults
+   `(refbox-reference (styles ,@refbox-completion-category-styles))))
+
+(refbox--install-completion-category-defaults)
 
 (defcustom refbox-crossref-field-names '("crossref")
   "Field names whose values name parent references.
@@ -1156,9 +1181,9 @@ between displayed names."
          (truncated-names (seq-take names (or truncate name-count)))
          (truncated-count (length truncated-names)))
     (mapconcat
-     (lambda (name)
+     (lambda (item)
+       (pcase-let ((`(,name . ,position) item))
        (let* ((short-name (refbox--shorten-name name))
-              (position (refbox--shorten-name-position truncated-names name))
               (suffix
                (cond
                 ((equal position truncated-count)
@@ -1166,9 +1191,38 @@ between displayed names."
                 ((and and-string (equal position (1- truncated-count)))
                  (concat " " and-string " "))
                 (t ", "))))
-         (concat short-name suffix)))
-     truncated-names
+         (concat short-name suffix))))
+     (cl-loop for name in truncated-names
+              for position from 1
+              collect (cons name position))
      "")))
+
+(defun refbox--shorten-names-to-width
+    (names width &optional truncate and-string)
+  "Return shortened NAMES, stopping once WIDTH display columns are filled."
+  (if (or truncate and-string)
+      (let ((text (refbox--shorten-names names truncate and-string)))
+        (truncate-string-to-width text width))
+    (let ((text (string-trim (format "%s" (or names ""))))
+          (start 0)
+          result)
+      (while (and (> (length text) 1)
+                  (or (and (string-prefix-p "{" text)
+                           (string-suffix-p "}" text))
+                      (and (string-prefix-p "\"" text)
+                           (string-suffix-p "\"" text))))
+        (setq text (string-trim (substring text 1 -1))))
+      (while (and (< start (length text))
+                  (or (null result) (< (string-width result) width)))
+        (let* ((next (string-search " and " text start))
+               (raw-name (substring text start (or next (length text))))
+               (name (replace-regexp-in-string
+                      "[[:space:]\n\r\t]+" " " (string-trim raw-name)))
+               (short-name (refbox--shorten-name name))
+               (suffix (if next ", " "")))
+          (setq result (concat result short-name suffix))
+          (setq start (if next (+ next 5) (length text)))))
+      (or result ""))))
 
 (defun refbox-template--field-width (width)
   "Return normalized template WIDTH."
@@ -1259,6 +1313,23 @@ direct function transform."
                  (refbox-template-parse template)
                  refbox-template--parse-cache))))
 
+(defun refbox-template-field-names (template)
+  "Return field names referenced by TEMPLATE."
+  (delete-dups
+   (cl-loop for token in (refbox-template--parsed template)
+            unless (stringp token)
+            append (plist-get token :fields))))
+
+(defun refbox--completion-field-names ()
+  "Return bibliography fields needed to render completion candidates."
+  (delete-dups
+   (cl-remove-if
+    #'refbox--blank-string-p
+    (append
+     (refbox-template-field-names (refbox--template 'main))
+     (refbox-template-field-names (refbox--template 'suffix))
+     (refbox--crossref-field-names)))))
+
 (defun refbox-template--field-text (token candidate)
   "Return TOKEN text for CANDIDATE before width fitting."
   (let ((value (cl-loop
@@ -1267,29 +1338,40 @@ direct function transform."
                 when (not (refbox--blank-string-p field-value))
                 return field-value))
         (transform (plist-get token :transform)))
-    (setq value (refbox-template-clean value))
-    (when transform
+    (if (and (consp transform)
+             (eq (car transform) 'refbox--shorten-names)
+             (integerp (plist-get token :width)))
       (setq
        value
-       (format
-        "%s"
-        (or
-         (pcase transform
-           ((pred symbolp)
-            (unless (fboundp transform)
-              (user-error "refbox template transform is not defined: %s"
-                          transform))
-            (funcall transform value))
-           (`(,function . ,args)
-            (unless (or (functionp function)
-                        (and (symbolp function) (fboundp function)))
-              (user-error "refbox template transform is not defined: %s"
-                          function))
-            (apply function value args))
-           (_
-            (user-error "refbox template transform is invalid: %S"
-                        transform)))
-         ""))))
+       (format "%s"
+               (or (apply #'refbox--shorten-names-to-width
+                          value
+                          (plist-get token :width)
+                          (cdr transform))
+                   "")))
+      (setq value (refbox-template-clean value))
+      (when transform
+        (setq
+         value
+         (format
+          "%s"
+          (or
+           (pcase transform
+             ((pred symbolp)
+              (unless (fboundp transform)
+                (user-error "refbox template transform is not defined: %s"
+                            transform))
+              (funcall transform value))
+             (`(,function . ,args)
+              (unless (or (functionp function)
+                          (and (symbolp function) (fboundp function)))
+                (user-error "refbox template transform is not defined: %s"
+                            function))
+              (apply function value args))
+             (_
+              (user-error "refbox template transform is invalid: %S"
+                          transform)))
+           "")))))
     value))
 
 (defun refbox-template--fit (value width)
@@ -1436,11 +1518,17 @@ direct function transform."
         (cl-subseq matches 0 limit)
       matches)))
 
-(defun refbox-search-references (query &optional limit source-paths)
+(defun refbox-search-references
+    (query &optional limit source-paths unranked field-names)
   "Search indexed references for QUERY using bounded LIMIT.
 
 When SOURCE-PATHS is non-nil, restrict results to those
-bibliography source files."
+bibliography source files.
+
+When UNRANKED is non-nil, request a fast deterministic index-order
+search intended for type-ahead completion.
+
+When FIELD-NAMES is non-nil, hydrate only those bibliography fields."
   (let* ((parsed (refbox-search--parse-query query))
          (clean-query (plist-get parsed :query))
          (resource-kinds (plist-get parsed :resource-kinds))
@@ -1453,6 +1541,11 @@ bibliography source files."
           (cl-remove-if
            #'refbox--blank-string-p
            (mapcar #'expand-file-name source-paths)))
+         (field-names
+          (delete-dups
+           (cl-remove-if
+            #'refbox--blank-string-p
+            (mapcar #'refbox--field-name-normalize field-names))))
          (response (refbox-rpc-request
                     refbox-rpc-method-search-entries
                     (append
@@ -1462,9 +1555,12 @@ bibliography source files."
                        (list :source_paths (vconcat source-paths)))
                      (when resource-kinds
                        (list :resource_kinds (vconcat resource-kinds)))
-                     (when (and (refbox--blank-string-p clean-query)
-                                (or resource-kinds post-filter-tags))
-                       (list :allow_empty_query t)))))
+                     (when field-names
+                       (list :field_names (vconcat field-names)))
+                     (when (refbox--blank-string-p clean-query)
+                       (list :allow_empty_query t))
+                     (when unranked
+                       (list :ranked :json-false)))))
          (entries (plist-get response :entries)))
     (setq entries (refbox--listify entries))
     (if post-filter-tags
@@ -1656,7 +1752,9 @@ whose cdr is passed as additional arguments."
                        (refbox-search-references
                         input
                         (plist-get state :limit)
-                        (plist-get state :source-paths))))))))
+                        (plist-get state :source-paths)
+                        t
+                        (refbox--completion-field-names))))))))
   (plist-get state :candidates))
 
 (defun refbox-capf--completion-table (state)
@@ -3456,20 +3554,73 @@ asks before replacing an existing file."
 
 (defun refbox--completion-state (&optional limit source-paths)
   "Return fresh completion state using LIMIT and SOURCE-PATHS."
-  (list :limit (refbox-rpc--search-limit limit)
+  (list :limit (refbox-rpc--search-limit (or limit refbox-completion-limit))
         :source-paths source-paths
         :input nil
         :candidates nil
         :map (make-hash-table :test 'equal)
         :cache (make-hash-table :test 'eq)))
 
-(defun refbox--completion-candidate-display (candidate seen)
-  "Return a propertized display string for CANDIDATE using SEEN map."
+(defun refbox--completion-search-input (input)
+  "Return the daemon search text derived from completion INPUT."
+  (string-join
+   (cl-remove-if
+    #'refbox--blank-string-p
+    (mapcar
+     (lambda (component)
+       (unless (string-prefix-p "!" component)
+         component))
+     (split-string-and-unquote (substring-no-properties input))))
+   " "))
+
+(defun refbox--completion-negative-components (input)
+  "Return negated completion components from INPUT."
+  (cl-loop for component in (split-string-and-unquote
+                             (substring-no-properties input))
+           when (and (string-prefix-p "!" component)
+                     (> (length component) 1))
+           collect (substring component 1)))
+
+(defun refbox--completion-style-sensitive-input-p (input)
+  "Return non-nil when INPUT uses completion-style syntax."
+  (not (null (refbox--completion-negative-components input))))
+
+(defun refbox--completion-visible-text (completion)
+  "Return searchable visible text for COMPLETION."
+  (string-join
+   (delq nil
+         (list (substring-no-properties completion)
+               (refbox--completion-annotation-text completion)))
+   " "))
+
+(defun refbox--completion-apply-input-filter (input completions)
+  "Return COMPLETIONS that satisfy Refbox-side INPUT filters."
+  (let ((negated (mapcar #'downcase
+                         (refbox--completion-negative-components input))))
+    (if (null negated)
+        completions
+      (cl-remove-if
+       (lambda (completion)
+         (let ((visible (downcase (refbox--completion-visible-text completion))))
+           (cl-some (lambda (component)
+                      (string-search component visible))
+                    negated)))
+       completions))))
+
+
+
+(defun refbox--completion-candidate-display (candidate seen selection-map)
+  "Return a propertized display string for CANDIDATE.
+
+SEEN tracks duplicate displays in the current result page.  SELECTION-MAP
+is retained across minibuffer input changes so a final plain-string
+selection can still resolve to the candidate it came from."
   (let ((refbox--reference-field-cache
          (or refbox--reference-field-cache
              (make-hash-table :test 'eq))))
     (let* ((base (refbox-reference-format-main candidate))
            (suffix (refbox-reference-format-suffix candidate))
+           (prefix (refbox-reference-indicators candidate))
            (display base)
            (source-path (refbox-reference-field candidate "source_path"))
            (counter 2))
@@ -3479,9 +3630,17 @@ asks before replacing an existing file."
         (setq display (format "%s <%d>" base counter)
               counter (1+ counter)))
       (puthash display candidate seen)
+      (puthash display candidate selection-map)
       (propertize display
                   'refbox-candidate candidate
+                  'refbox-prefix prefix
                   'refbox-annotation suffix))))
+
+(defun refbox--completion-prefix-text (completion)
+  "Return cached affixation prefix text for COMPLETION."
+  (or (get-text-property 0 'refbox-prefix completion)
+      (when-let ((candidate (get-text-property 0 'refbox-candidate completion)))
+        (refbox-reference-indicators candidate))))
 
 (defun refbox--completion-annotation-text (completion)
   "Return cached annotation text for COMPLETION."
@@ -3495,16 +3654,21 @@ asks before replacing an existing file."
   (setq input (substring-no-properties input))
   (unless (equal input (plist-get state :input))
     (refbox--with-dynamic-cache (plist-get state :cache)
-      (let ((seen (plist-get state :map)))
-        (clrhash seen)
+      (let ((seen (make-hash-table :test 'equal))
+            (selection-map (plist-get state :map)))
         (setf (plist-get state :input) input)
         (setf (plist-get state :candidates)
-              (mapcar (lambda (candidate)
-                        (refbox--completion-candidate-display candidate seen))
-                      (refbox-search-references
-                       input
-                       (plist-get state :limit)
-                       (plist-get state :source-paths)))))))
+              (refbox--completion-apply-input-filter
+               input
+               (mapcar (lambda (candidate)
+                         (refbox--completion-candidate-display
+                          candidate seen selection-map))
+                       (refbox-search-references
+                        (refbox--completion-search-input input)
+                        (plist-get state :limit)
+                        (plist-get state :source-paths)
+                        t
+                        (refbox--completion-field-names))))))))
   (plist-get state :candidates))
 
 (defun refbox--completion-filter (candidates predicate)
@@ -3527,7 +3691,12 @@ asks before replacing an existing file."
                          (refbox--completion-state-candidates state string)
                          predicate)))
         (cond
-         ((eq action t) candidates)
+         ((eq action t)
+          (let ((styled (complete-with-action action candidates string predicate)))
+            (if (or styled
+                    (refbox--completion-style-sensitive-input-p string))
+                styled
+              candidates)))
          ((eq action 'lambda)
           (cl-some (lambda (candidate)
                      (string= string (substring-no-properties candidate)))
@@ -3552,7 +3721,7 @@ asks before replacing an existing file."
       (mapcar
        (lambda (completion)
          (list completion
-               ""
+               (or (refbox--completion-prefix-text completion) "")
                (if-let ((annotation (refbox--completion-annotation-text completion)))
                    (concat " " annotation)
                  "")))

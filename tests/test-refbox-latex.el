@@ -225,10 +225,16 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                                       table))))
                 (should (equal (buffer-substring-no-properties start end) "al"))
                 (should (equal (substring-no-properties candidate) "alpha"))
-                (should (equal (car calls)
-                               (list :query "al"
-                                     :limit 9
-                                     :source_paths (vector bib))))))))
+                (let ((params (car calls)))
+                  (should (equal (plist-get params :query) "al"))
+                  (should (equal (plist-get params :limit) 9))
+                  (should (equal (plist-get params :source_paths)
+                                 (vector bib)))
+                  (should (member "title"
+                                  (append (plist-get params :field_names)
+                                          nil)))
+                  (should (equal (plist-get params :ranked)
+                                 :json-false)))))))
       (delete-directory root t))))
 
 (ert-deftest refbox-latex-test-capf-setup-is-buffer-local ()

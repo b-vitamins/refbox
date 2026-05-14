@@ -180,7 +180,9 @@ pub struct SearchEntriesRequest {
     pub limit: Option<usize>,
     pub source_paths: Option<Vec<String>>,
     pub resource_kinds: Option<Vec<String>>,
+    pub field_names: Option<Vec<String>>,
     pub allow_empty_query: Option<bool>,
+    pub ranked: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

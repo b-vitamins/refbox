@@ -149,8 +149,12 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                                 table))))
           (should (equal (buffer-substring-no-properties start end) "al"))
           (should (equal (substring-no-properties candidate) "alpha"))
-          (should (equal (car calls)
-                         (list :query "al" :limit 11))))))))
+          (let ((params (car calls)))
+            (should (equal (plist-get params :query) "al"))
+            (should (equal (plist-get params :limit) 11))
+            (should (member "title"
+                            (append (plist-get params :field_names) nil)))
+            (should (equal (plist-get params :ranked) :json-false))))))))
 
 (ert-deftest refbox-markdown-test-capf-completes_braced_citation_keys ()
   "Markdown CAPF should complete inside brace-delimited Pandoc keys."
@@ -159,7 +163,12 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
       (cl-letf (((symbol-function 'refbox-rpc-request)
                  (lambda (method params)
                    (should (equal method refbox-rpc-method-search-entries))
-                   (should (equal params (list :query "al" :limit 11)))
+                   (should (equal (plist-get params :query) "al"))
+                   (should (equal (plist-get params :limit) 11))
+                   (should (member "title"
+                                   (append (plist-get params :field_names)
+                                           nil)))
+                   (should (equal (plist-get params :ranked) :json-false))
                    (list :entries
                          (list (refbox-markdown-test-search-candidate
                                 "alpha"

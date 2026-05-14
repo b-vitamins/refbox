@@ -474,15 +474,86 @@
              (annotation (refbox--completion-annotation candidate-string))
              (affixation (car (refbox--completion-affixation
                                (list candidate-string)))))
-        (should (equal (cadar calls) (list :query "alpha" :limit 7)))
+        (let ((params (cadar calls)))
+          (should (equal (plist-get params :query) "alpha"))
+          (should (equal (plist-get params :limit) 7))
+          (should (equal (plist-get params :ranked) :json-false))
+          (should (equal (append (plist-get params :field_names) nil)
+                         '("key" "title" "indicators"
+                           "entry_type" "source_path" "crossref"))))
         (should (string-match-p "smith2020" candidate-string))
         (should (equal (plist-get candidate :key) "smith2020"))
         (should (string-match-p
                  "F L +article main\\.bib"
                  annotation))
         (should (string-match-p
+                 "F L"
+                 (nth 1 affixation)))
+        (should (string-match-p
                  "F L +article main\\.bib"
                  (nth 2 affixation)))))))
+
+(ert-deftest refbox-test-completion-uses_completion_limit_by_default ()
+  "Minibuffer completion should request the configured completion page size."
+  (let ((refbox-completion-limit 87)
+        calls)
+    (cl-letf (((symbol-function 'refbox-rpc-request)
+               (lambda (method params)
+                 (push (list method params) calls)
+                 (should (equal method refbox-rpc-method-search-entries))
+                 (list :entries nil))))
+      (let* ((state (refbox--completion-state))
+             (table (refbox--completion-table state)))
+        (funcall table "alpha" nil t)
+        (should (equal (plist-get (cadar calls) :limit) 87))))))
+
+(ert-deftest refbox-test-completion-delegates_visible_text_to_completion_styles ()
+  "The minibuffer table should let completion styles filter display strings."
+  (let ((refbox-templates '((main . "%{key} %{title}")))
+        (completion-styles '(substring basic)))
+    (cl-letf (((symbol-function 'refbox-search-references)
+               (lambda (_query &optional _limit _source-paths _unranked
+                              _field-names)
+                 (list refbox-test-reference-candidate
+                       (plist-put
+                        (copy-tree refbox-test-reference-candidate)
+                        :key "doe2021")))))
+      (let* ((state (refbox--completion-state 10))
+             (table (refbox--completion-table state))
+             (candidates (funcall table "doe" nil t)))
+        (should (= (length candidates) 1))
+        (should (string-match-p "doe2021" (car candidates)))))))
+
+(ert-deftest refbox-test-completion-search-input-omits_negated_components ()
+  "Daemon completion search should not require Orderless negated components."
+  (should (equal (refbox--completion-search-input "alpha !beta gamma")
+                 "alpha gamma")))
+
+(ert-deftest refbox-test-read-reference-keeps_selection_map_after_final_probe ()
+  "Final completion probes should not erase the selected candidate mapping."
+  (let ((refbox-templates '((main . "%{author:30}     %{date:4}     %{title:48}")
+                            (suffix . "%{=key=:15} %{=type=:12}")))
+        selected-display)
+    (cl-letf (((symbol-function 'refbox--sync-current-bibliography-buffer-if-needed)
+               #'ignore)
+              ((symbol-function 'refbox-search-references)
+               (lambda (query &optional _limit _source-paths _unranked
+                              _field-names)
+                 (if (equal query "xu")
+                     (list refbox-test-reference-candidate)
+                   nil)))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _args)
+                 (setq selected-display
+                       (substring-no-properties
+                        (car (funcall collection "xu" nil t))))
+                 ;; Some completion UIs probe again with the accepted display
+                 ;; string before returning it, which used to clear the only
+                 ;; display-to-candidate map.
+                 (funcall collection selected-display nil t)
+                 selected-display)))
+      (let ((selected (refbox--read-reference "Reference: " nil 5 nil)))
+        (should (equal (plist-get selected :key) "smith2020"))))))
 
 (ert-deftest refbox-test-completion-caches_cited_indicator_scan ()
   "Cited indicators should scan the current buffer once per completion state."
@@ -507,7 +578,7 @@
                  (list :entries (list cited uncited)))))
       (let* ((state (refbox--completion-state 2))
              (table (refbox--completion-table state))
-             (candidates (funcall table "smith" nil t)))
+             (candidates (funcall table "" nil t)))
         (should (= scans 1))
         (should (string-match-p
                  "C"
@@ -581,6 +652,19 @@
                        ["file"]))
         (should (equal (plist-get (car results) :key) "smith2020"))))))
 
+(ert-deftest refbox-test-search-empty_query_requests_bounded_page ()
+  "Empty searches should ask the daemon for the first bounded page."
+  (let (calls)
+    (cl-letf (((symbol-function 'refbox-rpc-request)
+               (lambda (method params)
+                 (push (list method params) calls)
+                 (should (equal method refbox-rpc-method-search-entries))
+                 (list :entries (list refbox-test-reference-candidate)))))
+      (let ((results (refbox-search-references "" 7)))
+        (should (equal (cadar calls)
+                       (list :query "" :limit 7 :allow_empty_query t)))
+        (should (equal (plist-get (car results) :key) "smith2020"))))))
+
 (ert-deftest refbox-test-search_tags_support_emacs_side_predicates ()
   "Search tags backed by local predicates should filter returned candidates."
   (let* ((cited (copy-tree refbox-test-reference-candidate))
@@ -620,7 +704,12 @@
       (let ((selected (refbox-read-reference "Reference: " "smith" 3)))
         (should (equal (plist-get selected :key) "smith2020"))
         (should (equal (plist-get selected :source_path) "refs/main.bib"))
-        (should (equal (cadar calls) (list :query "smith" :limit 3)))))))
+        (let ((params (cadar calls)))
+          (should (equal (plist-get params :query) "smith"))
+          (should (equal (plist-get params :limit) 3))
+          (should (equal (plist-get params :ranked) :json-false))
+          (should (equal (append (plist-get params :field_names) nil)
+                         '("key" "title" "crossref"))))))))
 
 (ert-deftest refbox-test-list-references-uses-paged-rpc ()
   "Whole-corpus enumeration should use the daemon's paged list method."

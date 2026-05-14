@@ -455,6 +455,7 @@ impl RefboxStore {
         source_paths: &[String],
         resource_kinds: &[String],
         allow_empty_query: bool,
+        ranked: bool,
     ) -> Result<Vec<SearchResult>> {
         if limit == 0 {
             return Ok(Vec::new());
@@ -531,7 +532,11 @@ impl RefboxStore {
             }
         }
         if fts_query.is_some() {
-            sql.push_str(" ORDER BY entry_fts.rank, e.entry_key, f.path, e.id");
+            if ranked {
+                sql.push_str(" ORDER BY entry_fts.rank, e.entry_key, f.path, e.id");
+            } else {
+                sql.push_str(" ORDER BY entry_fts.rowid");
+            }
         } else {
             sql.push_str(" ORDER BY e.entry_key, f.path, e.id");
         }
@@ -557,6 +562,7 @@ impl RefboxStore {
         &self,
         results: Vec<SearchResult>,
         crossref_fields: &[String],
+        field_names: Option<&[String]>,
     ) -> Result<Vec<StoredSearchEntry>> {
         if results.is_empty() {
             return Ok(Vec::new());
@@ -566,9 +572,10 @@ impl RefboxStore {
             .iter()
             .map(|result| result.entry_id)
             .collect::<Vec<_>>();
-        let mut fields_by_entry = self.fields_for_entries(&entry_ids)?;
-        let mut resources_by_entry = self.direct_resources_for_entries(&results)?;
         let crossref_fields = normalized_crossref_fields(crossref_fields);
+        let field_names = normalized_requested_fields(field_names, &crossref_fields);
+        let mut fields_by_entry = self.fields_for_entries(&entry_ids, field_names.as_deref())?;
+        let mut resources_by_entry = self.direct_resources_for_entries(&results)?;
         let crossref_field_set = crossref_fields.iter().cloned().collect::<HashSet<_>>();
 
         if !crossref_fields.is_empty() {
@@ -617,24 +624,49 @@ impl RefboxStore {
             .collect())
     }
 
-    fn fields_for_entries(&self, entry_ids: &[i64]) -> Result<HashMap<i64, Vec<StoredField>>> {
+    fn fields_for_entries(
+        &self,
+        entry_ids: &[i64],
+        field_names: Option<&[String]>,
+    ) -> Result<HashMap<i64, Vec<StoredField>>> {
         if entry_ids.is_empty() {
             return Ok(HashMap::new());
         }
 
-        let sql = format!(
+        let mut sql = format!(
             "SELECT id, entry_id, raw_name, lookup_name, value,
                     source_path, source_start_byte, source_start_line, source_start_column,
                     source_end_byte, source_end_line, source_end_column
              FROM fields
-             WHERE entry_id IN ({})
-             ORDER BY entry_id, id",
+             WHERE entry_id IN ({})",
             placeholders(entry_ids.len()),
         );
+        let mut parameters: Vec<&dyn rusqlite::ToSql> = entry_ids
+            .iter()
+            .map(|entry_id| entry_id as &dyn rusqlite::ToSql)
+            .collect();
+        if let Some(field_names) = field_names {
+            if !field_names.is_empty() {
+                let offset = parameters.len() + 1;
+                let placeholders = (0..field_names.len())
+                    .map(|index| format!("?{}", offset + index))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                sql.push_str(" AND lookup_name IN (");
+                sql.push_str(&placeholders);
+                sql.push(')');
+                parameters.extend(
+                    field_names
+                        .iter()
+                        .map(|field_name| field_name as &dyn rusqlite::ToSql),
+                );
+            }
+        }
+        sql.push_str(" ORDER BY entry_id, id");
         let mut statement = self.connection.prepare(&sql)?;
         let mut fields_by_entry: HashMap<i64, Vec<StoredField>> = HashMap::new();
         let fields = statement
-            .query_map(params_from_iter(entry_ids.iter()), stored_field_from_row)?
+            .query_map(params_from_iter(parameters), stored_field_from_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         for field in fields {
             fields_by_entry
@@ -1534,6 +1566,23 @@ fn normalized_crossref_fields(fields: &[String]) -> Vec<String> {
         .map(|field| field.trim().to_ascii_lowercase())
         .filter(|field| !field.is_empty())
         .collect()
+}
+
+fn normalized_requested_fields(
+    field_names: Option<&[String]>,
+    crossref_fields: &[String],
+) -> Option<Vec<String>> {
+    field_names.map(|field_names| {
+        let mut fields = field_names
+            .iter()
+            .map(|field| field.trim().to_ascii_lowercase())
+            .filter(|field| !field.is_empty())
+            .chain(crossref_fields.iter().cloned())
+            .collect::<Vec<_>>();
+        fields.sort();
+        fields.dedup();
+        fields
+    })
 }
 
 fn entry_has_crossref_parent(fields: &[StoredField], crossref_fields: &HashSet<String>) -> bool {

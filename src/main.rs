@@ -165,6 +165,7 @@ impl Daemon {
                 let limit = clamp_limit(request.limit);
                 let source_paths = request.source_paths.unwrap_or_default();
                 let resource_kinds = request.resource_kinds.unwrap_or_default();
+                let field_names = request.field_names;
                 let search_results = self
                     .store
                     .search(
@@ -173,11 +174,16 @@ impl Daemon {
                         &source_paths,
                         &resource_kinds,
                         request.allow_empty_query.unwrap_or(false),
+                        request.ranked.unwrap_or(true),
                     )
                     .map_err(store_error)?;
                 let entries = self
                     .store
-                    .hydrate_search_results(search_results, &default_crossref_fields())
+                    .hydrate_search_results(
+                        search_results,
+                        &default_crossref_fields(),
+                        field_names.as_deref(),
+                    )
                     .map_err(store_error)?
                     .into_iter()
                     .map(Self::entry_search_item)
@@ -203,7 +209,7 @@ impl Daemon {
                     .collect();
                 let entries = self
                     .store
-                    .hydrate_search_results(search_results, &default_crossref_fields())
+                    .hydrate_search_results(search_results, &default_crossref_fields(), None)
                     .map_err(store_error)?
                     .into_iter()
                     .map(Self::entry_search_item)

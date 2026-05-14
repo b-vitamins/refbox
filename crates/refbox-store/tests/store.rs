@@ -86,13 +86,13 @@ fn inserts_parsed_files_and_queries_records_back() {
     );
 
     let results = store
-        .search("scalable", 5, &[], &[], false)
+        .search("scalable", 5, &[], &[], false, true)
         .expect("search should work");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].key, "smith2020");
     assert_eq!(results[0].entry_type, "article");
     let hydrated = store
-        .hydrate_search_results(results, &["crossref".to_string()])
+        .hydrate_search_results(results, &["crossref".to_string()], None)
         .expect("search results should hydrate");
     assert_eq!(hydrated.len(), 1);
     assert!(
@@ -100,6 +100,25 @@ fn inserts_parsed_files_and_queries_records_back() {
             .fields
             .iter()
             .any(|field| field.lookup_name == "title")
+    );
+
+    let title_only = store
+        .search("scalable", 5, &[], &[], false, true)
+        .and_then(|results| {
+            store.hydrate_search_results(
+                results,
+                &["crossref".to_string()],
+                Some(&["title".to_string()]),
+            )
+        })
+        .expect("filtered search results should hydrate");
+    assert_eq!(
+        title_only[0]
+            .fields
+            .iter()
+            .map(|field| field.lookup_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["title"]
     );
 
     let resources = store
@@ -263,7 +282,7 @@ fn fts_queries_are_bounded_and_deterministic_for_ties() {
     store.insert_file(&file).expect("file should insert");
 
     let results = store
-        .search("shared", 2, &[], &[], false)
+        .search("shared", 2, &[], &[], false, true)
         .expect("search should work");
     assert_eq!(
         results
@@ -271,6 +290,38 @@ fn fts_queries_are_bounded_and_deterministic_for_ties() {
             .map(|result| result.key.as_str())
             .collect::<Vec<_>>(),
         vec!["alpha", "beta"]
+    );
+}
+
+#[test]
+fn unranked_fts_queries_use_fast_index_order_for_typeahead() {
+    let mut store = RefboxStore::open_in_memory().expect("store should open");
+    let file = parse_bibliography_file(
+        "refs/search.bib",
+        r#"@article{beta,
+  title = {Shared Ranking Signal}
+}
+
+@article{alpha,
+  title = {Shared Ranking Signal}
+}
+
+@article{gamma,
+  title = {Shared Ranking Signal}
+}"#,
+    );
+
+    store.insert_file(&file).expect("file should insert");
+
+    let results = store
+        .search("shared", 2, &[], &[], false, false)
+        .expect("search should work");
+    assert_eq!(
+        results
+            .iter()
+            .map(|result| result.key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["beta", "alpha"]
     );
 }
 
@@ -289,17 +340,17 @@ fn fts_queries_prefix_match_title_author_and_punctuation_safe_input() {
     store.insert_file(&file).expect("file should insert");
 
     let title = store
-        .search("diff", 5, &[], &[], false)
+        .search("diff", 5, &[], &[], false, true)
         .expect("title prefix search");
     assert_eq!(title[0].key, "austin2021d3pm");
 
     let author = store
-        .search("jac aust", 5, &[], &[], false)
+        .search("jac aust", 5, &[], &[], false, true)
         .expect("author prefix search");
     assert_eq!(author[0].key, "austin2021d3pm");
 
     let punctuation = store
-        .search("10.1000/ref", 5, &[], &[], false)
+        .search("10.1000/ref", 5, &[], &[], false, true)
         .expect("punctuation search should not expose FTS syntax errors");
     assert_eq!(punctuation[0].key, "austin2021d3pm");
 }
@@ -348,7 +399,7 @@ PRAGMA user_version = 4;
 
     let store = RefboxStore::open(&db_path).expect("store should migrate");
     let results = store
-        .search("diff", 5, &[], &[], false)
+        .search("diff", 5, &[], &[], false, true)
         .expect("prefix search");
     assert_eq!(results[0].key, "austin2021d3pm");
     drop(store);
@@ -388,7 +439,14 @@ fn fts_queries_can_be_scoped_to_source_paths() {
         .expect("second file should insert");
 
     let results = store
-        .search("shared", 5, &["refs/second.bib".to_string()], &[], false)
+        .search(
+            "shared",
+            5,
+            &["refs/second.bib".to_string()],
+            &[],
+            false,
+            true,
+        )
         .expect("search should work");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].key, "second");
@@ -413,19 +471,19 @@ fn fts_queries_can_be_filtered_to_resource_kinds() {
     store.insert_file(&file).expect("file should insert");
 
     let file_results = store
-        .search("shared", 5, &[], &["file".to_string()], false)
+        .search("shared", 5, &[], &["file".to_string()], false, true)
         .expect("filtered search should work");
     assert_eq!(file_results.len(), 1);
     assert_eq!(file_results[0].key, "withfile");
 
     let doi_results = store
-        .search("", 5, &[], &["doi".to_string()], true)
+        .search("", 5, &[], &["doi".to_string()], true, true)
         .expect("tag-only search should work");
     assert_eq!(doi_results.len(), 1);
     assert_eq!(doi_results[0].key, "withdoi");
 
     let empty_results = store
-        .search("", 5, &[], &[], false)
+        .search("", 5, &[], &[], false, true)
         .expect("blank search should work");
     assert!(empty_results.is_empty());
 }
@@ -492,10 +550,10 @@ fn resource_queries_inherit_crossref_resources() {
     );
 
     let results = store
-        .search("child", 5, &[], &[], false)
+        .search("child", 5, &[], &[], false, true)
         .expect("child search should work");
     let hydrated = store
-        .hydrate_search_results(results, &["crossref".to_string()])
+        .hydrate_search_results(results, &["crossref".to_string()], None)
         .expect("hydrated search should include resources");
     let child = hydrated
         .iter()
