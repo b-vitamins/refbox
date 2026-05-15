@@ -6,6 +6,19 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-15
+
+### Changed
+- Polished the reference completion surface with explicit Refbox faces for main and suffix columns while preserving field-specific faces.
+- Made completion display width frame-aware and kept indicator affixation width-stable for richer Vertico-style UIs.
+- Updated the multi-reference selector to reuse the active minibuffer exit binding so RET accepts the current candidate and exits reliably.
+
+### Fixed
+- Cleaned protective BibTeX braces from shortened author/editor names in completion candidates.
+- Lazily loaded Org, LaTeX, and Markdown CAPF adapters from the generic `refbox-capf` entry point.
+- Closed citation integration parity gaps across Org activation, Markdown postnotes, LaTeX point placement, Embark targets/actions, note source enumeration, freeform presets, exact-key fallback, and default ellipsis handling.
+- Resolved Org CSL locale fallback lookup through Org's bundled CSL directory when the user has not configured a separate locale directory.
+
 ## [0.3.0] - 2026-05-15
 
 ### Changed
