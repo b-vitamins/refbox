@@ -6,6 +6,19 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-05-15
+
+### Changed
+- Moved recursive library-file and file-field resolution onto daemon RPCs so resource selection no longer walks large library trees in Elisp.
+- Made resolved indexed `file` fields terminal in the default resource source chain, avoiding pointless library fallback scans when the bibliography already names an existing file.
+- Tightened daemon-side file scanning by avoiding per-entry metadata probes on ordinary files and by filtering extensions before key matching.
+- Reduced completion rendering overhead by skipping expensive regexp cleanup on already-normalized field values.
+- Polished resource choices to show file basenames in the main candidate text while keeping full directories in annotations.
+
+### Fixed
+- Opened file resources through `refbox-file-open-in-emacs` by default so stale raw PDF buffers are refreshed and `pdf-view-mode` is applied when available.
+- Corrected README option names for library file extensions and file-backed notes.
+
 ## [0.4.0] - 2026-05-15
 
 ### Changed

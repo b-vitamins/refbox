@@ -4,7 +4,7 @@
 
 ;; Author: Ayan Das <bvits@riseup.net>
 ;; Maintainer: Ayan Das <bvits@riseup.net>
-;; Version: 0.4.0
+;; Version: 0.4.1
 ;; Package-Requires: ((emacs "29.1") (jsonrpc "1.0.27"))
 ;; Keywords: bib, tex, files, convenience
 
@@ -1198,7 +1198,9 @@ reference key string."
                     (and (string-prefix-p "\"" text)
                          (string-suffix-p "\"" text))))
       (setq text (string-trim (substring text 1 -1))))
-    (replace-regexp-in-string "[[:space:]\n\r\t]+" " " text)))
+    (if (string-match-p "[\n\r\t]\\|  +" text)
+        (replace-regexp-in-string "[[:space:]\n\r\t]+" " " text)
+      text)))
 
 (defun refbox-template-author (value)
   "Return VALUE cleaned and propertized as an author/editor."
@@ -1233,9 +1235,10 @@ reference key string."
 
 (defun refbox--shorten-name (name)
   "Return family name from NAME when it is written as \"family, given\"."
-  (replace-regexp-in-string
-   "[{}]" ""
-   (refbox-template-clean (car (split-string name ", ")))))
+  (let ((name (refbox-template-clean (car (split-string name ", ")))))
+    (if (string-match-p "[{}]" name)
+        (replace-regexp-in-string "[{}]" "" name)
+      name)))
 
 (defun refbox--shorten-names (names &optional truncate and-string)
   "Return shortened family names from BibTeX-style NAMES.
