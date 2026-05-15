@@ -58,6 +58,7 @@
   "Setup should register target finders and keymaps only when requested."
   (skip-unless (require 'embark nil t))
   (let ((embark-target-finders nil)
+        (embark-candidate-collectors nil)
         (embark-keymap-alist nil)
         (embark-multitarget-actions nil))
     (refbox-embark-setup)
@@ -65,6 +66,8 @@
                   embark-target-finders))
     (should (memq #'refbox-embark-target-citation-at-point
                   embark-target-finders))
+    (should (memq #'refbox-embark-selected-candidates
+                  embark-candidate-collectors))
     (should (eq (cdr (assq 'refbox-reference embark-keymap-alist))
                 'refbox-embark-map))
     (should (eq (cdr (assq 'refbox-citation embark-keymap-alist))
@@ -84,21 +87,45 @@
   "The global mode should be reversible."
   (skip-unless (require 'embark nil t))
   (let ((embark-target-finders nil)
+        (embark-candidate-collectors nil)
         (embark-keymap-alist nil)
         (embark-multitarget-actions nil)
         refbox-embark-mode)
     (refbox-embark-mode 1)
     (should (memq #'refbox-embark-target-reference-candidate
                   embark-target-finders))
+    (should (memq #'refbox-embark-selected-candidates
+                  embark-candidate-collectors))
     (should (assq 'refbox-reference embark-keymap-alist))
     (should (memq #'refbox-embark-copy-references
                   embark-multitarget-actions))
     (refbox-embark-mode -1)
     (should-not (memq #'refbox-embark-target-reference-candidate
                       embark-target-finders))
+    (should-not (memq #'refbox-embark-selected-candidates
+                      embark-candidate-collectors))
     (should-not (assq 'refbox-reference embark-keymap-alist))
     (should-not (memq #'refbox-embark-copy-references
                       embark-multitarget-actions))))
+
+(ert-deftest refbox-embark-test-selected_candidate_collector_uses_group_metadata ()
+  "The selected-candidate collector should expose multi-select choices."
+  (let* ((selected (copy-sequence "alpha"))
+         (unselected (copy-sequence "beta"))
+         (metadata
+          `(metadata
+            (category . refbox-reference)
+            (group-function
+             . ,(lambda (candidate _transform)
+                  (when (equal candidate selected)
+                    "Selected"))))))
+    (cl-letf (((symbol-function 'embark--metadata)
+               (lambda () metadata)))
+      (let ((minibuffer-history-variable 'refbox-history)
+            (minibuffer-completion-table (list selected unselected))
+            (minibuffer-completion-predicate nil))
+        (should (equal (refbox-embark-selected-candidates)
+                       (cons 'refbox-reference (list selected))))))))
 
 (ert-deftest refbox-embark-test-actions-use-stable-reference_identity ()
   "Actions should pass stable reference plists through to core commands."

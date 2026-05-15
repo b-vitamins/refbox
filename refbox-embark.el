@@ -43,6 +43,7 @@
 (declare-function refbox-latex--completion-bounds "refbox-latex" ())
 (declare-function refbox-markdown-key-at-point "refbox-markdown" ())
 (declare-function refbox-markdown--completion-bounds "refbox-markdown" ())
+(declare-function embark--metadata "embark" ())
 
 (defvar embark-target-finders)
 (defvar embark-candidate-collectors)
@@ -100,6 +101,10 @@
   '(refbox-embark-target-reference-candidate
     refbox-embark-target-citation-at-point)
   "Target finders installed by `refbox-embark-mode'.")
+
+(defvar refbox-embark--candidate-collectors
+  '(refbox-embark-selected-candidates)
+  "Candidate collectors installed by `refbox-embark-mode'.")
 
 (defvar refbox-embark--keymap-alist
   '((refbox-reference . refbox-embark-map)
@@ -184,6 +189,24 @@
            (cons (refbox-embark--target-string key)
                  (cons start end))))))
 
+(defun refbox-embark-selected-candidates ()
+  "Return selected refbox candidates from the active multi-reference prompt."
+  (when-let* (((eq minibuffer-history-variable 'refbox-history))
+              ((fboundp 'embark--metadata))
+              (metadata (embark--metadata))
+              (group-function
+               (completion-metadata-get metadata 'group-function))
+              (candidates
+               (all-completions
+                ""
+                minibuffer-completion-table
+                (lambda (candidate)
+                  (and (equal "Selected" (funcall group-function candidate nil))
+                       (or (not minibuffer-completion-predicate)
+                           (funcall minibuffer-completion-predicate
+                                    candidate)))))))
+    (cons (completion-metadata-get metadata 'category) candidates)))
+
 (defun refbox-embark-open (target)
   "Open resources for TARGET."
   (interactive "sReference: ")
@@ -265,6 +288,9 @@
     (user-error "Embark is not available"))
   (dolist (finder (reverse refbox-embark--target-finders))
     (add-hook 'embark-target-finders finder))
+  (when (boundp 'embark-candidate-collectors)
+    (dolist (collector (reverse refbox-embark--candidate-collectors))
+      (add-hook 'embark-candidate-collectors collector)))
   (pcase-dolist (`(,category . ,map) refbox-embark--keymap-alist)
     (setf (alist-get category embark-keymap-alist) map))
   (when (boundp 'embark-multitarget-actions)
@@ -275,6 +301,9 @@
   "Remove refbox target finders and keymaps from Embark."
   (dolist (finder refbox-embark--target-finders)
     (remove-hook 'embark-target-finders finder))
+  (when (boundp 'embark-candidate-collectors)
+    (dolist (collector refbox-embark--candidate-collectors)
+      (remove-hook 'embark-candidate-collectors collector)))
   (pcase-dolist (`(,category . ,_map) refbox-embark--keymap-alist)
     (setq embark-keymap-alist
           (assq-delete-all category embark-keymap-alist)))
