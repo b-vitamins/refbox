@@ -1596,6 +1596,14 @@
             (should (equal (buffer-string) "buffer-pdf"))))
       (delete-directory root t))))
 
+(ert-deftest refbox-test-add-file-url_source_infers_extension ()
+  "The URL add-file source should infer a destination extension."
+  (cl-letf (((symbol-function 'read-string)
+             (lambda (&rest _args)
+               "https://example.test/paper.pdf")))
+    (let ((source (refbox-add-file-source-url "alpha")))
+      (should (equal (plist-get source :extension) "pdf")))))
+
 (ert-deftest refbox-test-add-file-to-library_uses_configured_writer ()
   "The interactive add-file command should dispatch through the configured writer."
   (let (called)

@@ -35,6 +35,7 @@
 (require 'cl-lib)
 (require 'seq)
 (require 'subr-x)
+(require 'url-parse)
 (require 'xml)
 (require 'refbox-rpc)
 
@@ -3624,8 +3625,11 @@ asks before replacing an existing file."
 
 (defun refbox-add-file-source-url (_reference)
   "Return an add-file source plist for a URL."
-  (let ((url (read-string "URL: ")))
+  (let* ((url (read-string "URL: "))
+         (extension (url-file-extension url)))
     (list
+     :extension (when (and extension (> (length extension) 1))
+                  (substring extension 1))
      :write-file
      (lambda (destination overwrite)
        (url-copy-file url destination overwrite)))))
