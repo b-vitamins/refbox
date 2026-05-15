@@ -120,6 +120,17 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                  (car (all-completions "" collection)))))
       (should (equal (refbox-org-select-style) "author")))))
 
+(ert-deftest refbox-org-test-style_completion_metadata_is_rich ()
+  "Style completion metadata should expose familiar groups and previews."
+  (should (equal (refbox-org--style-group "author/c" nil)
+                 "Author-Only"))
+  (should (equal (refbox-org--style-group "text/f" nil)
+                 "Textual/Narrative"))
+  (should (string-match-p
+           "De Villiers"
+           (substring-no-properties
+            (refbox-org--style-annotation "author/cf")))))
+
 (ert-deftest refbox-org-test-delete-and-kill-citation-elements ()
   "Deletion and kill commands should use Org citation boundaries."
   (refbox-org-test-with-buffer "A [cite:@al|pha; @beta] Z"

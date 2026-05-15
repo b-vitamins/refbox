@@ -113,9 +113,19 @@ Each function receives the citation datum."
 (defvar refbox-org-style-preview-alist
   '(("/" . "(de Villiers et al, 2019)")
     ("/b" . "de Villiers et al, 2019")
+    ("/c" . "(De Villiers et al, 2019)")
+    ("/bc" . "de Villiers et al, 2019")
     ("text" . "de Villiers et al (2019)")
+    ("text/c" . "De Villiers et al (2019)")
+    ("text/f" . "de Villiers, Smith, Doa, and Jones (2019)")
+    ("text/cf" . "De Villiers, Smith, Doa, and Jones (2019)")
     ("author" . "de Villiers et al")
+    ("author/c" . "De Villiers et al")
+    ("author/f" . "de Villiers, Smith, Doa, and Jones")
+    ("author/cf" . "De Villiers, Smith, Doa, and Jones")
+    ("locators" . "p23")
     ("noauthor" . "(2019)")
+    ("noauthor/b" . "2019")
     ("nocite" . "No bibliography citation"))
   "Example previews for common Org citation styles.")
 
@@ -202,12 +212,12 @@ When TRANSFORM is non-nil, return the displayed candidate."
     (if transform
         (concat "  " (truncate-string-to-width style 20 nil 32))
       (pcase base
-        ("author" "Author")
-        ("locators" "Locators")
-        ("text" "Textual")
+        ("author" "Author-Only")
+        ("locators" "Locators-Only")
+        ("text" "Textual/Narrative")
         ("nocite" "No Cite")
-        ("year" "Year")
-        ("noauthor" "No Author")
+        ("year" "Year-Only")
+        ("noauthor" "Suppress Author")
         (_ (upcase-initials base))))))
 
 (defun refbox-org--style-annotation (style)
