@@ -1813,7 +1813,7 @@ whose cdr is passed as additional arguments."
       (propertize key
                   'refbox-candidate candidate
                   'refbox-annotation
-                  (refbox-reference-format-suffix candidate)))))
+                  (refbox-capf--candidate-annotation candidate)))))
 
 (defun refbox-capf--state-candidates (state input)
   "Return bounded key candidates for INPUT using STATE."
@@ -1864,17 +1864,31 @@ whose cdr is passed as additional arguments."
          ((null (cdr candidates)) (car candidates))
          (t string)))))))
 
+(defun refbox-capf--candidate-annotation (candidate)
+  "Return Citar-style CAPF annotation text for CANDIDATE."
+  (let* ((author (refbox-reference-field candidate "author"))
+         (editor (refbox-reference-field candidate "editor"))
+         (title (refbox-reference-field candidate "title")))
+    (concat
+     "   "
+     (truncate-string-to-width
+      (refbox--shorten-names (or author editor ""))
+      20 nil 32 t)
+     "  "
+     (truncate-string-to-width
+      (refbox-template-clean title)
+      40 nil 32))))
+
 (defun refbox-capf-annotate (citekey)
   "Return a completion annotation for CITEKEY."
-  (or (when-let ((annotation (get-text-property 0 'refbox-annotation citekey)))
-        (concat " " annotation))
+  (or (get-text-property 0 'refbox-annotation citekey)
       (refbox--with-dynamic-cache nil
         (let ((candidate
                (or (get-text-property 0 'refbox-candidate citekey)
                    (ignore-errors
                      (refbox-entry-by-key (substring-no-properties citekey))))))
           (if candidate
-              (concat " " (refbox-reference-format-suffix candidate))
+              (refbox-capf--candidate-annotation candidate)
             "")))))
 
 (defun refbox-capf-at-bounds (bounds &optional source-paths)

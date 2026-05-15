@@ -496,6 +496,16 @@
                  (nth 1 affixation)))
         (should (string-empty-p (nth 2 affixation)))))))
 
+(ert-deftest refbox-test-capf_annotations_use_author_and_title ()
+  "CAPF annotations should mirror the concise author/title display."
+  (let* ((completion (refbox-capf--candidate
+                      refbox-test-reference-candidate
+                      (make-hash-table :test 'equal)))
+         (annotation (refbox-capf-annotate completion)))
+    (should (string-match-p "\\`   Smith *  Alpha Reference Title"
+                            annotation))
+    (should-not (string-match-p "smith2020" annotation))))
+
 (ert-deftest refbox-test-reference_indicators_reserve_absent_slots ()
   "Indicator prefixes should stay width-stable when indicators are absent."
   (let* ((refbox-indicators

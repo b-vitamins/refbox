@@ -34,7 +34,8 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
         :source_path source-path
         :entry_type "article"
         :score 0.0
-        :fields nil
+        :fields '((:lookup_name "author" :value "Smith, Jane")
+                  (:lookup_name "title" :value "Alpha Title"))
         :resources nil))
 
 (ert-deftest refbox-org-test-inserts-new-citation ()
@@ -301,7 +302,7 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                       (cdr (assq 'annotation-function (cdr metadata)))))
                 (should (equal (buffer-substring-no-properties start end) "al"))
                 (should (equal (substring-no-properties candidate) "alpha"))
-                (should (string-match-p "article"
+                (should (string-match-p "Smith .*Alpha Title"
                                         (funcall annotation-function candidate)))
                 (let ((params (car calls)))
                   (should (equal (plist-get params :query) "al"))
