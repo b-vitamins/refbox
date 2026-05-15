@@ -406,6 +406,19 @@
            "smith2020[[:space:]]+article"
            (refbox-reference-format-suffix refbox-test-reference-candidate))))
 
+(ert-deftest refbox-test-author_display_removes_protective_bibtex_braces ()
+  "Author shortening should not leak BibTeX protection braces into candidates."
+  (let ((candidate
+         '(:key "braced"
+           :entry_type "article"
+           :fields ((:lookup_name "author"
+                     :value "{Aaboud}, Morad and {CMS Collaboration}")
+                    (:lookup_name "year" :value "2020")
+                    (:lookup_name "title" :value "Braced Author Names"))
+           :resources nil)))
+    (should (equal (refbox-template-format "${author:30%sn}" candidate)
+                   "Aaboud, CMS Collaboration     "))))
+
 (ert-deftest refbox-test-template-formatting-supports_configured_ellipsis ()
   "Template field truncation should support a configured ellipsis marker."
   (let ((refbox-ellipsis "..."))
@@ -500,6 +513,14 @@
           (should (eq (plist-get params :include_resources) :json-false)))
         (should (string-match-p "smith2020" candidate-string))
         (should (equal (plist-get candidate :key) "smith2020"))
+        (should (eq (get-text-property 0 'face candidate-string)
+                    'refbox-highlight))
+        (should
+         (cl-loop for pos = 0 then (next-single-property-change
+                                    pos 'face candidate-string)
+                  while pos
+                  thereis (eq (get-text-property pos 'face candidate-string)
+                              'refbox)))
         (should (string-match-p
                  "F L +article main\\.bib"
                  candidate-string))

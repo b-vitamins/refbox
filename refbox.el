@@ -44,12 +44,12 @@
 (defvar truncate-string-ellipsis)
 
 (defface refbox
-  '((t :inherit default))
+  '((t :inherit font-lock-doc-face))
   "Base face for refbox completion candidates."
   :group 'refbox)
 
 (defface refbox-highlight
-  '((t :inherit highlight))
+  '((t))
   "Face for highlighted refbox text."
   :group 'refbox)
 
@@ -94,7 +94,7 @@
   :group 'refbox)
 
 (defface refbox-selection
-  '((t :inherit highlight))
+  '((t :inherit highlight :slant italic))
   "Face for selected refbox references."
   :group 'refbox)
 
@@ -1230,7 +1230,9 @@ reference key string."
 
 (defun refbox--shorten-name (name)
   "Return family name from NAME when it is written as \"family, given\"."
-  (car (split-string name ", ")))
+  (replace-regexp-in-string
+   "[{}]" ""
+   (refbox-template-clean (car (split-string name ", ")))))
 
 (defun refbox--shorten-names (names &optional truncate and-string)
   "Return shortened family names from BibTeX-style NAMES.
@@ -3742,6 +3744,16 @@ asks before replacing an existing file."
         :map (make-hash-table :test 'equal)
         :cache (make-hash-table :test 'eq)))
 
+(defun refbox--completion-display-width (prefix)
+  "Return the display width available for a completion candidate after PREFIX."
+  (max 20 (- (frame-width) (string-width (or prefix "")) 2)))
+
+(defun refbox--completion-add-face (text face)
+  "Return TEXT with FACE added without discarding existing field faces."
+  (let ((copy (copy-sequence text)))
+    (add-face-text-property 0 (length copy) face t copy)
+    copy))
+
 (defun refbox--completion-search-input (input)
   "Return the daemon search text derived from completion INPUT."
   (string-join
@@ -3810,9 +3822,15 @@ selection can still resolve to the candidate it came from."
   (let ((refbox--reference-field-cache
          (or refbox--reference-field-cache
              (make-hash-table :test 'eq))))
-    (let* ((base (refbox-reference-format-main candidate))
-           (suffix (refbox-reference-format-suffix candidate))
-           (prefix (refbox-reference-indicators candidate))
+    (let* ((prefix (refbox-reference-indicators candidate))
+           (base (refbox--completion-add-face
+                  (refbox-reference-format-main
+                   candidate
+                   (refbox--completion-display-width prefix))
+                  'refbox-highlight))
+           (suffix (refbox--completion-add-face
+                    (refbox-reference-format-suffix candidate)
+                    'refbox))
            (text (concat base suffix))
            (display text)
            (source-path (refbox-reference-field candidate "source_path"))
@@ -3983,10 +4001,13 @@ selection can still resolve to the candidate it came from."
 
 (defun refbox--setup-multiple-keymap ()
   "Install the multi-reference selector keymap in the minibuffer."
-  (let ((keymap (make-composed-keymap nil (current-local-map)))
-        (select-key (kbd (car refbox--multiple-setup)))
-        (exit-key (kbd (cdr refbox--multiple-setup))))
-    (define-key keymap select-key (lookup-key keymap exit-key))
+  (let* ((select-key (kbd (car refbox--multiple-setup)))
+         (exit-key (kbd (cdr refbox--multiple-setup)))
+         (exit-command (or (key-binding exit-key t)
+                           (lookup-key (current-local-map) exit-key)
+                           #'exit-minibuffer))
+         (keymap (make-composed-keymap nil (current-local-map))))
+    (define-key keymap select-key exit-command)
     (define-key keymap exit-key #'refbox--multiple-exit)
     (use-local-map keymap)))
 
