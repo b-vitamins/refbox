@@ -489,7 +489,8 @@ When nil, associated file lookup does not filter by extension."
 (defcustom refbox-file-sources
   '((indexed-fields
      :items refbox-resource-file-source-indexed-items
-     :hasitems refbox-resource-file-source-indexed-has-items)
+     :hasitems refbox-resource-file-source-indexed-has-items
+     :terminal t)
     (library-paths
      :items refbox-resource-file-source-library-items
      :hasitems refbox-resource-file-source-library-has-items))
@@ -501,7 +502,9 @@ and optional `:hasitems'.  Both functions receive CANDIDATE and
 RESOURCES, where RESOURCES are the indexed resources already
 loaded for CANDIDATE.  `:items' returns existing file names;
 `:hasitems' should return non-nil when the source can report a
-file association more cheaply than materializing all items."
+file association more cheaply than materializing all items.  When
+`:terminal' is non-nil, later sources are skipped after that
+source returns at least one file."
   :type 'alist
   :group 'refbox)
 
@@ -540,7 +543,7 @@ destination file name."
 
 (defcustom refbox-file-open-functions
   '(("html" . refbox-file-open-external)
-    (t . find-file))
+    (t . refbox-file-open-in-emacs))
   "Alist mapping file extensions to resource opening functions.
 
 Keys are extension strings without a leading dot.  The entry with key
@@ -2114,6 +2117,40 @@ whose cdr is passed as additional arguments."
            and return t)))))
     (nreverse (delete-dups found))))
 
+(defun refbox-resource--resolve-files-in-roots
+    (files roots recursive extensions)
+  "Resolve FILES under ROOTS via the refbox daemon."
+  (let* ((files (cl-remove-if
+                 #'string-empty-p
+                 (mapcar (lambda (file)
+                           (refbox-resource--clean-value file))
+                         files)))
+         (roots (refbox-resource--normalized-roots roots))
+         (extensions (and extensions
+                          (refbox-resource--normalize-extensions extensions))))
+    (cond
+     ((null files) nil)
+     ((not recursive)
+      (refbox-resource--find-files-in-dirs files roots extensions))
+     (t
+      (let ((absolute-files (cl-remove-if-not #'file-name-absolute-p files))
+            (relative-files (cl-remove-if #'file-name-absolute-p files)))
+        (delete-dups
+         (append
+          (refbox-resource--find-files-in-dirs absolute-files nil extensions)
+          (when (and relative-files roots)
+            (refbox--listify
+             (plist-get
+              (refbox-rpc-request
+               refbox-rpc-method-resolve-files
+               (append
+                (list :files (vconcat relative-files)
+                      :roots (vconcat roots)
+                      :recursive t)
+                (when extensions
+                  (list :extensions (vconcat extensions)))))
+              :files))))))))))
+
 (defun refbox-resource--normalized-roots (roots)
   "Return existing ROOTS as absolute directory names."
   (delete-dups
@@ -2249,8 +2286,21 @@ already exists in the dynamic cache."
      'resource-files-for-keys
      (list keys roots recursive extensions additional-sep)
      (lambda ()
-       (refbox-resource--files-for-keys-normalized
-        keys roots recursive extensions additional-sep t)))))
+       (when (and keys roots)
+         (refbox--listify
+          (plist-get
+           (refbox-rpc-request
+            refbox-rpc-method-library-files-by-keys
+            (append
+             (list :keys (vconcat keys)
+                   :roots (vconcat roots))
+             (when recursive
+               (list :recursive t))
+             (when extensions
+               (list :extensions (vconcat extensions)))
+             (when additional-sep
+               (list :additional_separator additional-sep))))
+           :files)))))))
 
 (defun refbox-resource--files-for-keys-cheap
     (keys roots recursive extensions additional-sep)
@@ -2295,14 +2345,19 @@ callable."
            when (or (equal kind "file")
                     (and lookup
                          (member lookup (refbox--file-field-names))))
-           append (refbox-resource--parse-file-field
-                   (refbox--resource-value resource))))
-         (source-dirs (refbox-resource--source-dirs candidate resources))
-         (library-dirs (refbox-resource--library-dirs)))
-    (refbox-resource--find-files-in-dirs
-     field-files
-     (append source-dirs library-dirs)
-     extensions)))
+         append (refbox-resource--parse-file-field
+                 (refbox--resource-value resource))))
+        (source-dirs (refbox-resource--source-dirs candidate resources)))
+    (or (refbox-resource--resolve-files-in-roots
+         field-files
+         source-dirs
+         nil
+         extensions)
+        (refbox-resource--resolve-files-in-roots
+         field-files
+         refbox-library-paths
+         refbox-library-paths-recursive
+         extensions))))
 
 (defun refbox-resource-file-source-indexed-has-items (candidate resources)
   "Return non-nil when CANDIDATE has indexed file declarations."
@@ -2342,14 +2397,21 @@ callable."
 (defun refbox-resource-file-source-items (candidate resources)
   "Return file items from `refbox-file-sources'."
   (delete-dups
-   (cl-loop
-    for source in refbox-file-sources
-    append
-    (refbox--listify
-     (funcall
-      (refbox-resource-file-source--function source :items t)
-      candidate
-      resources)))))
+   (let (files stop)
+     (dolist (source refbox-file-sources)
+       (unless stop
+         (let ((items
+                (refbox--listify
+                 (funcall
+                  (refbox-resource-file-source--function source :items t)
+                  candidate
+                  resources))))
+           (setq files (append files items))
+           (when (and items
+                      (plist-get (refbox-resource-file-source--plist source)
+                                 :terminal))
+             (setq stop t)))))
+     files)))
 
 (defun refbox-resource-file-source-has-items-p (candidate resources)
   "Return non-nil when any file source has items for CANDIDATE."
@@ -2408,12 +2470,13 @@ callable."
 
 (defun refbox-note-files-for-keys (keys)
   "Return existing note files for KEYS."
-  (refbox-resource--files-for-keys-in-roots
-   keys
-   refbox-notes-paths
-   nil
-   refbox-file-note-extensions
-   refbox-file-additional-files-separator))
+  (pcase-let ((`(,keys ,roots ,extensions)
+               (refbox-resource--normalize-file-search
+                keys
+                refbox-notes-paths
+                refbox-file-note-extensions)))
+    (refbox-resource--files-for-keys-normalized
+     keys roots nil extensions refbox-file-additional-files-separator t)))
 
 (defun refbox-note-source-file-all-items ()
   "Return all file-backed note items from configured note directories."
@@ -2740,8 +2803,16 @@ single choice is accepted without prompting."
 (defun refbox--resource-choice-annotation (label)
   "Return annotation text for resource choice LABEL."
   (when-let ((choice (get-text-property 0 'refbox-resource-choice label)))
-    (when (eq (plist-get choice :type) 'note)
-      (refbox-note-source--annotation (plist-get choice :target)))))
+    (pcase (plist-get choice :type)
+      ('file
+       (let ((directory (file-name-directory (plist-get choice :target))))
+         (when directory
+           (concat " "
+                   (propertize (abbreviate-file-name directory)
+                               'face 'completions-annotations)))))
+      ('note
+       (refbox-note-source--annotation (plist-get choice :target)))
+      (_ nil))))
 
 (defun refbox--open-target (function target)
   "Open TARGET with FUNCTION and return TARGET."
@@ -2763,6 +2834,25 @@ single choice is accepted without prompting."
     (refbox--open-target
      function
      file)))
+
+(defun refbox-file-open-in-emacs (file)
+  "Open FILE in Emacs using its normal major mode."
+  (let* ((file (expand-file-name file))
+         (existing (get-file-buffer file)))
+    (when (and existing
+               (buffer-live-p existing))
+      (with-current-buffer existing
+        (when (and (eq major-mode 'fundamental-mode)
+                   (not (buffer-modified-p)))
+          (kill-buffer existing))))
+    (let ((buffer (find-file file)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when (and (string-match-p "\\.[pP][dD][fF]\\'" file)
+                     (fboundp 'pdf-view-mode)
+                     (not (derived-mode-p 'pdf-view-mode)))
+            (pdf-view-mode)))))
+    file))
 
 (defun refbox-file-open-external (file)
   "Open FILE using the platform's external file opener."
@@ -2787,10 +2877,13 @@ single choice is accepted without prompting."
 
 (defun refbox--resource-choice-label (type reference target)
   "Return display label for resource TYPE, REFERENCE, and TARGET."
-  (let ((key (and reference (refbox--reference-choice-key reference))))
+  (let ((key (and reference (refbox--reference-choice-key reference)))
+        (display (if (string= type "file")
+                     (file-name-nondirectory target)
+                   target)))
     (if key
-        (format "%-7s %-24s %s" type key target)
-      (format "%-7s %s" type target))))
+        (format "%-7s %-24s %s" type key display)
+      (format "%-7s %s" type display))))
 
 (defun refbox--file-choices (references)
   "Return file resource choices for REFERENCES."
@@ -3601,7 +3694,7 @@ STYLE, when non-nil, overrides `refbox-citeproc-csl-style'."
     (user-error "`refbox-library-paths' must contain at least one directory"))
   (dolist (directory refbox-library-paths)
     (make-directory (file-name-as-directory (expand-file-name directory)) t))
-  (let* ((directories (refbox-resource--library-dirs))
+  (let* ((directories (refbox-resource--directory-list refbox-library-paths nil))
          (directory (if (cdr directories)
                         (completing-read "Library directory: "
                                          directories

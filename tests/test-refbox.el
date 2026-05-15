@@ -963,8 +963,8 @@
                          '("paper:edition.pdf"))))
       (delete-directory root t))))
 
-(ert-deftest refbox-test-reference-files-resolve-fields-library-paths-and_extensions ()
-  "File lookup should combine indexed file fields with configured libraries."
+(ert-deftest refbox-test-reference-files-resolve-fields-before-library-fallback ()
+  "File lookup should use resolved file fields before library fallback."
   (let* ((root (make-temp-file "refbox-resources-" t))
          (refs (expand-file-name "refs" root))
          (library (expand-file-name "library" root))
@@ -985,12 +985,15 @@
                 (refbox-library-paths-recursive t)
                 (refbox-library-file-extensions '("pdf"))
                 (refbox-file-additional-files-separator "-"))
-            (should
-             (equal (mapcar #'file-name-nondirectory
-                            (refbox-reference-files
-                             candidate
-                             (refbox--candidate-resources candidate)))
-                    '("paper.pdf" "smith2020.pdf" "smith2020-extra.pdf")))))
+            (cl-letf (((symbol-function 'refbox-rpc-request)
+                       (lambda (&rest _args)
+                         (error "unexpected RPC"))))
+              (should
+               (equal (mapcar #'file-name-nondirectory
+                              (refbox-reference-files
+                               candidate
+                               (refbox--candidate-resources candidate)))
+                      '("paper.pdf"))))))
       (delete-directory root t))))
 
 (ert-deftest refbox-test-resource_file_sources_are_extensible ()
@@ -1143,11 +1146,19 @@
                 (refbox-library-file-extensions '("pdf")))
             (should (equal (refbox-reference-crossref-keys candidate)
                            '("parent2020")))
-            (should (equal (mapcar #'file-name-nondirectory
-                                   (refbox-reference-files
-                                    candidate
-                                    (refbox--candidate-resources candidate)))
-                           '("parent2020.pdf")))
+            (cl-letf (((symbol-function 'refbox-rpc-request)
+                       (lambda (method params)
+                         (should (equal method
+                                        refbox-rpc-method-library-files-by-keys))
+                         (should (equal (plist-get params :keys)
+                                        ["child2021" "parent2020"]))
+                         `(:files
+                           (,(expand-file-name "parent2020.pdf" library))))))
+              (should (equal (mapcar #'file-name-nondirectory
+                                     (refbox-reference-files
+                                      candidate
+                                      (refbox--candidate-resources candidate)))
+                             '("parent2020.pdf"))))
             (cl-letf (((symbol-function 'refbox-rpc-request)
                        (lambda (&rest _args)
                          (error "unexpected RPC"))))

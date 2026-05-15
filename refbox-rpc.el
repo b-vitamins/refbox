@@ -116,6 +116,8 @@ so this timeout must allow legitimate one-time setup to finish."
 (defconst refbox-rpc-method-entry-by-key "refbox/entryByKey")
 (defconst refbox-rpc-method-resources-by-key "refbox/resourcesByKey")
 (defconst refbox-rpc-method-resources-by-keys "refbox/resourcesByKeys")
+(defconst refbox-rpc-method-resolve-files "refbox/resolveFiles")
+(defconst refbox-rpc-method-library-files-by-keys "refbox/libraryFilesByKeys")
 (defconst refbox-rpc-method-raw-entry "refbox/rawEntry")
 (defconst refbox-rpc-method-source-location "refbox/sourceLocation")
 (defconst refbox-rpc-method-format-references "refbox/formatReferences")

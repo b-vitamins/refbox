@@ -1,5 +1,6 @@
+use std::collections::{BTreeSet, HashSet};
 use std::io::{self, BufRead, BufReader, Write};
-use std::path::{Component, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -10,14 +11,16 @@ use refbox_rpc::{
     EntriesByKeysRequest, EntriesResponse, EntryByKeyRequest, EntryFieldItem, EntryItem,
     EntryRefItem, EntrySearchItem, FormatReferencesRequest, FormatReferencesResponse,
     FormattedReferenceItem, IndexedFilesResponse, JsonRpcError, JsonRpcErrorObject, JsonRpcRequest,
-    JsonRpcResponse, LimitRequest, ListEntriesRequest, METHOD_DIAGNOSTICS, METHOD_DUPLICATE_GROUPS,
-    METHOD_ENTRIES_BY_KEYS, METHOD_ENTRY_BY_KEY, METHOD_FORMAT_REFERENCES, METHOD_INDEXED_FILES,
-    METHOD_LIST_ENTRIES, METHOD_PING, METHOD_RAW_ENTRY, METHOD_RESOURCES_BY_KEY,
-    METHOD_RESOURCES_BY_KEYS, METHOD_SEARCH_ENTRIES, METHOD_SOURCE_LOCATION, METHOD_STATUS,
-    METHOD_SYNC_FILE, METHOD_SYNC_FULL, RawEntryRequest, RawEntryResponse, ResourceItem,
-    ResourcesByKeyRequest, ResourcesByKeysRequest, ResourcesResponse, SearchEntriesRequest,
-    SearchEntriesResponse, SourceLocationRequest, SourceLocationResponse, StatusResponse,
-    SyncFileRequest, SyncResponse, clamp_limit,
+    JsonRpcResponse, LibraryFilesByKeysRequest, LibraryFilesResponse, LimitRequest,
+    ListEntriesRequest, METHOD_DIAGNOSTICS, METHOD_DUPLICATE_GROUPS, METHOD_ENTRIES_BY_KEYS,
+    METHOD_ENTRY_BY_KEY, METHOD_FORMAT_REFERENCES, METHOD_INDEXED_FILES,
+    METHOD_LIBRARY_FILES_BY_KEYS, METHOD_LIST_ENTRIES, METHOD_PING, METHOD_RAW_ENTRY,
+    METHOD_RESOLVE_FILES, METHOD_RESOURCES_BY_KEY, METHOD_RESOURCES_BY_KEYS, METHOD_SEARCH_ENTRIES,
+    METHOD_SOURCE_LOCATION, METHOD_STATUS, METHOD_SYNC_FILE, METHOD_SYNC_FULL, RawEntryRequest,
+    RawEntryResponse, ResolveFilesRequest, ResourceItem, ResourcesByKeyRequest,
+    ResourcesByKeysRequest, ResourcesResponse, SearchEntriesRequest, SearchEntriesResponse,
+    SourceLocationRequest, SourceLocationResponse, StatusResponse, SyncFileRequest, SyncResponse,
+    clamp_limit,
 };
 use refbox_store::{
     RefboxStore, SearchOptions, SearchResult, StoredEntry, StoredField, StoredSearchEntry,
@@ -285,6 +288,18 @@ impl Daemon {
                     .collect();
                 self.to_value(ResourcesResponse { resources })
             }
+            METHOD_RESOLVE_FILES => {
+                let request: ResolveFilesRequest = parse_params(params)?;
+                self.to_value(LibraryFilesResponse {
+                    files: resolve_files(request),
+                })
+            }
+            METHOD_LIBRARY_FILES_BY_KEYS => {
+                let request: LibraryFilesByKeysRequest = parse_params(params)?;
+                self.to_value(LibraryFilesResponse {
+                    files: library_files_by_keys(request),
+                })
+            }
             METHOD_RAW_ENTRY => {
                 let request: RawEntryRequest = parse_params(params)?;
                 let entry = self.resolve_entry(&request.key, request.source_path.as_deref())?;
@@ -490,6 +505,201 @@ fn parse_params<T: DeserializeOwned>(
     };
     serde_json::from_value(params)
         .map_err(|error| JsonRpcError::new(JsonRpcErrorObject::invalid_params(error.to_string())))
+}
+
+fn resolve_files(request: ResolveFilesRequest) -> Vec<String> {
+    let files = normalize_nonempty_strings(request.files);
+    if files.is_empty() {
+        return Vec::new();
+    }
+
+    let roots = normalize_existing_dirs(request.roots);
+    let extensions = normalize_extensions(request.extensions);
+    let recursive = request.recursive.unwrap_or(false);
+    let mut found = BTreeSet::new();
+    let mut relative_files = Vec::new();
+
+    for file in files {
+        let path = PathBuf::from(file);
+        if path.is_absolute() {
+            insert_regular_file(&mut found, &path, extensions.as_ref());
+        } else {
+            relative_files.push(path);
+        }
+    }
+
+    if relative_files.is_empty() {
+        return found.into_iter().collect();
+    }
+    if roots.is_empty() {
+        return found.into_iter().collect();
+    }
+
+    for root in roots {
+        if recursive {
+            for relative in &relative_files {
+                insert_regular_file(&mut found, &root.join(relative), extensions.as_ref());
+            }
+            scan_regular_files(&root, true, |path| {
+                if relative_files
+                    .iter()
+                    .filter(|relative| !path_has_parent_dir(relative))
+                    .any(|relative| path.ends_with(relative))
+                {
+                    insert_regular_file(&mut found, &path, extensions.as_ref());
+                }
+            });
+        } else {
+            for relative in &relative_files {
+                insert_regular_file(&mut found, &root.join(relative), extensions.as_ref());
+            }
+        }
+    }
+
+    found.into_iter().collect()
+}
+
+fn library_files_by_keys(request: LibraryFilesByKeysRequest) -> Vec<String> {
+    let keys = normalize_nonempty_strings(request.keys)
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let roots = normalize_existing_dirs(request.roots);
+    if keys.is_empty() || roots.is_empty() {
+        return Vec::new();
+    }
+
+    let extensions = normalize_extensions(request.extensions);
+    let recursive = request.recursive.unwrap_or(false);
+    let additional_separator = request
+        .additional_separator
+        .and_then(|separator| (!separator.is_empty()).then_some(separator));
+    let mut found = BTreeSet::new();
+
+    for root in roots {
+        if recursive {
+            scan_regular_files(&root, true, |path| {
+                if keyed_file_matches(&path, &keys, additional_separator.as_deref()) {
+                    insert_regular_file(&mut found, &path, extensions.as_ref());
+                }
+            });
+        } else {
+            scan_regular_files(&root, false, |path| {
+                if keyed_file_matches(&path, &keys, additional_separator.as_deref()) {
+                    insert_regular_file(&mut found, &path, extensions.as_ref());
+                }
+            });
+        }
+    }
+
+    found.into_iter().collect()
+}
+
+fn normalize_nonempty_strings(values: Vec<String>) -> Vec<String> {
+    values
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+fn normalize_existing_dirs(roots: Vec<String>) -> Vec<PathBuf> {
+    let mut seen = BTreeSet::new();
+    let mut dirs = Vec::new();
+    for root in normalize_nonempty_strings(roots) {
+        let path = PathBuf::from(root);
+        if path.is_dir() {
+            let key = path.display().to_string();
+            if seen.insert(key) {
+                dirs.push(path);
+            }
+        }
+    }
+    dirs
+}
+
+fn normalize_extensions(extensions: Option<Vec<String>>) -> Option<HashSet<String>> {
+    let extensions = extensions
+        .unwrap_or_default()
+        .into_iter()
+        .map(|extension| {
+            extension
+                .trim()
+                .trim_start_matches('.')
+                .to_ascii_lowercase()
+        })
+        .filter(|extension| !extension.is_empty())
+        .collect::<HashSet<_>>();
+    (!extensions.is_empty()).then_some(extensions)
+}
+
+fn insert_regular_file(
+    found: &mut BTreeSet<String>,
+    path: &Path,
+    extensions: Option<&HashSet<String>>,
+) {
+    if path.metadata().is_ok_and(|metadata| metadata.is_file())
+        && extension_allowed(path, extensions)
+    {
+        found.insert(path.display().to_string());
+    }
+}
+
+fn extension_allowed(path: &Path, extensions: Option<&HashSet<String>>) -> bool {
+    match extensions {
+        Some(extensions) => path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extensions.contains(&extension.to_ascii_lowercase()))
+            .unwrap_or(false),
+        None => true,
+    }
+}
+
+fn keyed_file_matches(
+    path: &Path,
+    keys: &HashSet<String>,
+    additional_separator: Option<&str>,
+) -> bool {
+    let Some(base) = path.file_stem().and_then(|base| base.to_str()) else {
+        return false;
+    };
+    if keys.contains(base) {
+        return true;
+    }
+    additional_separator.is_some_and(|separator| {
+        keys.iter().any(|key| {
+            base.strip_prefix(key)
+                .is_some_and(|suffix| suffix.starts_with(separator))
+        })
+    })
+}
+
+fn path_has_parent_dir(path: &Path) -> bool {
+    path.components()
+        .any(|component| matches!(component, Component::ParentDir))
+}
+
+fn scan_regular_files(root: &Path, recursive: bool, mut visit: impl FnMut(PathBuf)) {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(read_dir) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut entries = read_dir.filter_map(|entry| entry.ok()).collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry.path());
+
+        for entry in entries {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if recursive && file_type.is_dir() && !file_type.is_symlink() {
+                stack.push(path);
+            } else if path.metadata().is_ok_and(|metadata| metadata.is_file()) {
+                visit(path);
+            }
+        }
+    }
 }
 
 fn sync_response(status: SyncStatus) -> SyncResponse {
@@ -895,6 +1105,62 @@ mod tests {
         assert_eq!(
             unknown.error.expect("expected error").data.expect("data")["kind"],
             "unknown_key"
+        );
+    }
+
+    #[test]
+    fn daemon_resolves_resource_files_in_rust() {
+        let project = TestProject::new("daemon-resource-files");
+        let library = project.path("library");
+        let declared = project.write("library/declared.pdf", "");
+        let nested_declared = project.write("library/nested/declared.pdf", "");
+        project.write("library/declared.txt", "");
+        let keyed = project.write("library/smith2020.pdf", "");
+        let keyed_extra = project.write("library/nested/smith2020-extra.pdf", "");
+        project.write("library/nested/smith2020-extra.html", "");
+        let mut daemon = Daemon::new(project.root.clone(), project.path("index.sqlite"))
+            .expect("daemon should start");
+
+        let resolved = result(daemon.handle_request(request(
+            METHOD_RESOLVE_FILES,
+            json!({
+                "files": ["declared.pdf"],
+                "roots": [library],
+                "recursive": true,
+                "extensions": ["pdf"],
+            }),
+        )));
+        assert_eq!(
+            resolved["files"],
+            json!([
+                declared.to_string_lossy(),
+                nested_declared.to_string_lossy()
+            ])
+        );
+
+        let absolute = result(daemon.handle_request(request(
+            METHOD_RESOLVE_FILES,
+            json!({
+                "files": [declared.to_string_lossy()],
+                "roots": [],
+                "extensions": ["pdf"],
+            }),
+        )));
+        assert_eq!(absolute["files"], json!([declared.to_string_lossy()]));
+
+        let keyed_files = result(daemon.handle_request(request(
+            METHOD_LIBRARY_FILES_BY_KEYS,
+            json!({
+                "keys": ["smith2020"],
+                "roots": [project.path("library")],
+                "recursive": true,
+                "extensions": ["pdf"],
+                "additional_separator": "-",
+            }),
+        )));
+        assert_eq!(
+            keyed_files["files"],
+            json!([keyed_extra.to_string_lossy(), keyed.to_string_lossy()])
         );
     }
 

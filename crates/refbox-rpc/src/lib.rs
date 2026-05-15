@@ -16,6 +16,8 @@ pub const METHOD_ENTRY_BY_KEY: &str = "refbox/entryByKey";
 pub const METHOD_ENTRIES_BY_KEYS: &str = "refbox/entriesByKeys";
 pub const METHOD_RESOURCES_BY_KEY: &str = "refbox/resourcesByKey";
 pub const METHOD_RESOURCES_BY_KEYS: &str = "refbox/resourcesByKeys";
+pub const METHOD_RESOLVE_FILES: &str = "refbox/resolveFiles";
+pub const METHOD_LIBRARY_FILES_BY_KEYS: &str = "refbox/libraryFilesByKeys";
 pub const METHOD_RAW_ENTRY: &str = "refbox/rawEntry";
 pub const METHOD_SOURCE_LOCATION: &str = "refbox/sourceLocation";
 pub const METHOD_FORMAT_REFERENCES: &str = "refbox/formatReferences";
@@ -256,6 +258,28 @@ pub struct ResourcesByKeysRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourcesResponse {
     pub resources: Vec<ResourceItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolveFilesRequest {
+    pub files: Vec<String>,
+    pub roots: Vec<String>,
+    pub recursive: Option<bool>,
+    pub extensions: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LibraryFilesByKeysRequest {
+    pub keys: Vec<String>,
+    pub roots: Vec<String>,
+    pub recursive: Option<bool>,
+    pub extensions: Option<Vec<String>>,
+    pub additional_separator: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LibraryFilesResponse {
+    pub files: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
