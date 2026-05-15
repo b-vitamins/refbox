@@ -95,6 +95,16 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                       (plist-get citation :end))
                      "[see @alpha pp. 1-2; @beta]")))))
 
+(ert-deftest refbox-markdown-test-detects_multiline_citation_at_point ()
+  "Citation helper should handle balanced bracket expressions across lines."
+  (refbox-markdown-test-with-buffer "See [compare @alpha;\n  @be|ta pp. 1-2]."
+    (let ((citation (refbox-markdown-citation-at-point)))
+      (should (equal (plist-get citation :keys) '("alpha" "beta")))
+      (should (equal (buffer-substring-no-properties
+                      (plist-get citation :begin)
+                      (plist-get citation :end))
+                     "[compare @alpha;\n  @beta pp. 1-2]")))))
+
 (ert-deftest refbox-markdown-test-adds-to-existing-citation ()
   "Insertion at a citation should add selected keys."
   (refbox-markdown-test-with-buffer "A [@al|pha; @beta] Z"
