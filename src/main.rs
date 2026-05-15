@@ -19,7 +19,9 @@ use refbox_rpc::{
     SearchEntriesResponse, SourceLocationRequest, SourceLocationResponse, StatusResponse,
     SyncFileRequest, SyncResponse, clamp_limit,
 };
-use refbox_store::{RefboxStore, SearchResult, StoredEntry, StoredField, StoredSearchEntry};
+use refbox_store::{
+    RefboxStore, SearchOptions, SearchResult, StoredEntry, StoredField, StoredSearchEntry,
+};
 use serde::de::DeserializeOwned;
 
 #[derive(Debug, Parser)]
@@ -166,6 +168,7 @@ impl Daemon {
                 let limit = clamp_limit(request.limit);
                 let source_paths = request.source_paths.unwrap_or_default();
                 let resource_kinds = request.resource_kinds.unwrap_or_default();
+                let search_fields = request.search_fields.unwrap_or_default();
                 let field_names = request.field_names;
                 let include_resources = request.include_resources.unwrap_or(true);
                 let include_field_sources = request.include_field_sources.unwrap_or(true);
@@ -175,10 +178,13 @@ impl Daemon {
                     .search(
                         &request.query,
                         limit,
-                        &source_paths,
-                        &resource_kinds,
-                        request.allow_empty_query.unwrap_or(false),
-                        request.ranked.unwrap_or(true),
+                        SearchOptions {
+                            source_paths: &source_paths,
+                            resource_kinds: &resource_kinds,
+                            search_fields: &search_fields,
+                            allow_empty_query: request.allow_empty_query.unwrap_or(false),
+                            ranked: request.ranked.unwrap_or(true),
+                        },
                     )
                     .map_err(store_error)?;
                 let entries = self

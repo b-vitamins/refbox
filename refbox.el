@@ -287,6 +287,24 @@ UIs should pass the raw minibuffer input through to the dynamic table."
   :type '(repeat symbol)
   :group 'refbox)
 
+(defcustom refbox-completion-search-fields
+  '("entry_key" "title" "names" "date" "venue" "keywords" "identifiers")
+  "Native index fields searched by minibuffer and CAPF completion.
+
+The default mirrors the visible reference surface and deliberately
+keeps long abstracts out of type-ahead completion results."
+  :type '(repeat string)
+  :group 'refbox)
+
+(defcustom refbox-completion-ranked-min-input 3
+  "Minimum alphanumeric input length before minibuffer completion uses ranking.
+
+Very short prefixes can match a large fraction of a massive bibliography.
+Refbox keeps those probes in fast index order, then switches to FTS ranking
+once the input is selective enough to shape useful results."
+  :type 'natnum
+  :group 'refbox)
+
 (defcustom refbox-reference-resource-indicator "F"
   "Indicator used when a reference has local resource fields."
   :type 'string
@@ -352,7 +370,7 @@ UIs should pass the raw minibuffer input through to the dynamic table."
   (tag nil)
   (symbol nil)
   (padding " ")
-  (emptysymbol "")
+  (emptysymbol " ")
   (function nil)
   (compiledfunction nil))
 
@@ -403,6 +421,11 @@ accepting a reference key or candidate."
   (add-to-list
    'completion-category-defaults
    `(refbox-reference (styles ,@refbox-completion-category-styles))))
+
+(defun refbox--completion-category-defaults ()
+  "Return completion category defaults with refbox's native style policy."
+  (cons `(refbox-reference (styles ,@refbox-completion-category-styles))
+        (cl-remove 'refbox-reference completion-category-defaults :key #'car)))
 
 (refbox--install-completion-category-defaults)
 
@@ -655,6 +678,15 @@ is non-nil."
 
 (defvar refbox-history nil
   "Minibuffer history for refbox reference selection.")
+
+(defvar refbox--multiple-setup '("TAB" . "RET")
+  "Internal key pair used for multi-reference selection.
+
+The car toggles the current candidate; the cdr accepts the current
+candidate and exits the selector.")
+
+(defvar refbox--multiple-exit-requested nil
+  "Non-nil while a multi-reference selector should exit after this read.")
 
 (defvar refbox-autosync-mode)
 
@@ -1131,17 +1163,22 @@ reference key string."
                      (refbox-indicator-symbol indicator)
                    (refbox-indicator-emptysymbol indicator)))
          (padding (refbox-indicator-padding indicator)))
-    (unless (refbox--blank-string-p symbol)
-      (concat symbol (or padding "")))))
+    (concat (or symbol "") (or padding ""))))
 
 (defun refbox-reference-indicators (candidate)
   "Return configured indicator text for CANDIDATE."
-  (string-join
-   (delq nil
-         (mapcar (lambda (indicator)
-                   (refbox--indicator-text indicator candidate))
-                 refbox-indicators))
-   ""))
+  (let ((text ""))
+    (dolist (indicator refbox-indicators text)
+      (let* ((chunk (refbox--indicator-text indicator candidate))
+             (next (concat text chunk))
+             (pos (length next)))
+        (when (> pos 0)
+          (put-text-property
+           (1- pos) pos
+           'display
+           (list 'space :align-to (string-width next))
+           next))
+        (setq text next)))))
 
 (defun refbox-template-clean (value)
   "Return VALUE with common BibTeX wrapping and whitespace cleaned."
@@ -1538,7 +1575,7 @@ direct function transform."
       matches)))
 
 (defun refbox-search-references
-    (query &optional limit source-paths unranked field-names omit-resources)
+    (query &optional limit source-paths unranked field-names omit-resources search-fields)
   "Search indexed references for QUERY using bounded LIMIT.
 
 When SOURCE-PATHS is non-nil, restrict results to those
@@ -1551,7 +1588,10 @@ When FIELD-NAMES is non-nil, hydrate only those bibliography fields.
 
 When OMIT-RESOURCES is non-nil, return the lightweight completion
 shape: resource kind summaries, no full resource payloads, and no
-per-field source spans."
+per-field source spans.
+
+When SEARCH-FIELDS is non-nil, restrict native FTS matching to those
+index fields."
   (let* ((parsed (refbox-search--parse-query query))
          (clean-query (plist-get parsed :query))
          (resource-kinds (plist-get parsed :resource-kinds))
@@ -1569,6 +1609,11 @@ per-field source spans."
            (cl-remove-if
             #'refbox--blank-string-p
             (mapcar #'refbox--field-name-normalize field-names))))
+         (search-fields
+          (delete-dups
+           (cl-remove-if
+            #'refbox--blank-string-p
+            (mapcar #'refbox--field-name-normalize search-fields))))
          (response (refbox-rpc-request
                     refbox-rpc-method-search-entries
                     (append
@@ -1578,6 +1623,8 @@ per-field source spans."
                        (list :source_paths (vconcat source-paths)))
                      (when resource-kinds
                        (list :resource_kinds (vconcat resource-kinds)))
+                     (when search-fields
+                       (list :search_fields (vconcat search-fields)))
                      (when field-names
                        (list :field_names (vconcat field-names)))
                      (when omit-resources
@@ -1784,7 +1831,8 @@ whose cdr is passed as additional arguments."
                         (plist-get state :source-paths)
                         t
                         (refbox--completion-field-names)
-                        t)))))))
+                        t
+                        refbox-completion-search-fields)))))))
   (plist-get state :candidates))
 
 (defun refbox-capf--completion-table (state)
@@ -3603,6 +3651,15 @@ asks before replacing an existing file."
      (split-string-and-unquote (substring-no-properties input))))
    " "))
 
+(defun refbox--completion-ranked-input-p (input)
+  "Return non-nil when INPUT is selective enough for ranked completion."
+  (let ((alnum-length
+         (length
+          (replace-regexp-in-string
+           "[^[:alnum:]]" ""
+           (refbox--completion-search-input input)))))
+    (>= alnum-length refbox-completion-ranked-min-input)))
+
 (defun refbox--completion-negative-components (input)
   "Return negated completion components from INPUT."
   (cl-loop for component in (split-string-and-unquote
@@ -3701,9 +3758,10 @@ selection can still resolve to the candidate it came from."
                (refbox--completion-search-input input)
                (plist-get state :limit)
                (plist-get state :source-paths)
-               t
+               (not (refbox--completion-ranked-input-p input))
                (refbox--completion-field-names)
-               t)))))))
+               t
+               refbox-completion-search-fields)))))))
   (plist-get state :candidates))
 
 (defun refbox--completion-filter (candidates predicate)
@@ -3717,9 +3775,7 @@ selection can still resolve to the candidate it came from."
   (lambda (string predicate action)
     (cond
      ((eq action 'metadata)
-      '(metadata
-        (category . refbox-reference)
-        (affixation-function . refbox--completion-affixation)))
+      (refbox--completion-metadata))
      (t
       (let ((candidates (refbox--completion-filter
                          (refbox--completion-state-candidates state string)
@@ -3769,17 +3825,77 @@ selection can still resolve to the candidate it came from."
       (when-let ((candidate (get-text-property 0 'refbox-candidate completion)))
         (funcall predicate candidate)))))
 
-(defun refbox--read-reference
-    (prompt preset limit allow-empty &optional predicate source-paths)
-  "Read one reference.
+(defun refbox--completion-metadata (&optional group-function)
+  "Return completion metadata, optionally using GROUP-FUNCTION."
+  `(metadata
+    (category . refbox-reference)
+    (affixation-function . refbox--completion-affixation)
+    ,@(when group-function
+        `((group-function . ,group-function)))))
 
-PROMPT, PRESET, LIMIT, ALLOW-EMPTY, PREDICATE, and SOURCE-PATHS
-control completion and validation."
+(defun refbox--reference-identity (reference)
+  "Return a stable identity string for REFERENCE."
+  (let ((key (refbox--reference-key reference))
+        (source-path (refbox--reference-source-path reference)))
+    (if source-path
+        (concat key "\0" source-path)
+      key)))
+
+(defun refbox--multiple-group-function (selected)
+  "Return a completion group function using SELECTED reference table."
+  (lambda (candidate transform)
+    (let* ((reference (get-text-property 0 'refbox-candidate candidate))
+           (identity (and reference (refbox--reference-identity reference)))
+           (selectedp (and identity (gethash identity selected))))
+      (pcase (list (not (not transform)) (not (not selectedp)))
+        ('(nil nil)
+         (concat "Select Multiple ["
+                 (propertize (car refbox--multiple-setup)
+                             'font-lock-face 'help-key-binding
+                             'face 'help-key-binding)
+                 "]"))
+        ('(nil t) "Selected")
+        ('(t nil) candidate)
+        ('(t t)
+         (let ((display (copy-sequence candidate)))
+           (add-face-text-property
+            0 (length display) 'refbox-selection nil display)
+           display))))))
+
+(defun refbox--multiple-completion-table (state selected)
+  "Return a reference completion table marking SELECTED entries."
+  (let ((base-table (refbox--completion-table state))
+        (group-function (refbox--multiple-group-function selected)))
+    (lambda (string predicate action)
+      (if (eq action 'metadata)
+          (refbox--completion-metadata group-function)
+        (funcall base-table string predicate action)))))
+
+(defun refbox--multiple-exit ()
+  "Accept the current candidate and exit a multi-reference selector."
+  (interactive)
+  (setq refbox--multiple-exit-requested t)
+  (setq unread-command-events
+        (listify-key-sequence (kbd (car refbox--multiple-setup)))))
+
+(defun refbox--setup-multiple-keymap ()
+  "Install the multi-reference selector keymap in the minibuffer."
+  (let ((keymap (make-composed-keymap nil (current-local-map)))
+        (select-key (kbd (car refbox--multiple-setup)))
+        (exit-key (kbd (cdr refbox--multiple-setup))))
+    (define-key keymap select-key (lookup-key keymap exit-key))
+    (define-key keymap exit-key #'refbox--multiple-exit)
+    (use-local-map keymap)))
+
+(defun refbox--read-reference-from-state
+    (prompt preset allow-empty predicate state &optional table)
+  "Read one reference using completion STATE and TABLE."
   (refbox--sync-current-bibliography-buffer-if-needed)
-  (let* ((state (refbox--completion-state limit source-paths))
+  (let* ((completion-category-defaults
+          (refbox--completion-category-defaults))
          (selection (completing-read
                      prompt
-                     (refbox--completion-table state)
+                     (or table (refbox--completion-table state))
                      (refbox--completion-predicate predicate)
                      (not allow-empty)
                      preset
@@ -3791,6 +3907,19 @@ control completion and validation."
      ((gethash selection-key (plist-get state :map)))
      ((get-text-property 0 'refbox-candidate selection))
      (t (user-error "Unknown refbox reference selection: %s" selection)))))
+
+(defun refbox--read-reference
+    (prompt preset limit allow-empty &optional predicate source-paths)
+  "Read one reference.
+
+PROMPT, PRESET, LIMIT, ALLOW-EMPTY, PREDICATE, and SOURCE-PATHS
+control completion and validation."
+  (refbox--read-reference-from-state
+   prompt
+   preset
+   allow-empty
+   predicate
+   (refbox--completion-state limit source-paths)))
 
 ;;;###autoload
 (defun refbox-insert-preset ()
@@ -4038,22 +4167,48 @@ bibliography source files."
 (defun refbox-read-references (&optional prompt preset limit predicate source-paths)
   "Read and return multiple indexed reference candidates.
 
-Each selection performs a bounded daemon search for the current
-minibuffer input.  An empty selection finishes the read.  PREDICATE,
-when non-nil, is called with each candidate and should return
-non-nil for selectable references.  SOURCE-PATHS restricts
-searches to those bibliography source files."
+`TAB' toggles the current candidate and keeps selecting.  `RET'
+accepts the current candidate and exits the read.  An empty selection
+also finishes the read.  PREDICATE, when non-nil, is called with each
+candidate and should return non-nil for selectable references.
+SOURCE-PATHS restricts searches to those bibliography source files."
   (interactive)
-  (let ((prompt (or prompt "Reference (empty when done): "))
-        (next-preset preset)
-        selected
-        candidate)
-    (while (setq candidate
-                 (refbox--read-reference
-                  prompt next-preset limit t predicate source-paths))
-      (push candidate selected)
-      (setq next-preset nil))
-    (setq selected (nreverse selected))
+  (let* ((prompt (or prompt "Reference: "))
+         (state (refbox--completion-state limit source-paths))
+         (selected (make-hash-table :test 'equal))
+         (selected-order nil)
+         (next-preset preset)
+         done
+         candidate)
+    (while (not done)
+      (let ((refbox--multiple-exit-requested nil))
+        (setq candidate
+              (minibuffer-with-setup-hook #'refbox--setup-multiple-keymap
+                (refbox--read-reference-from-state
+                 prompt
+                 next-preset
+                 t
+                 predicate
+                 state
+                 (refbox--multiple-completion-table state selected))))
+        (if candidate
+            (let ((identity (refbox--reference-identity candidate)))
+              (if (gethash identity selected)
+                  (progn
+                    (remhash identity selected)
+                    (setq selected-order (delete identity selected-order)))
+                (puthash identity candidate selected)
+                (push identity selected-order))
+              (setq next-preset nil)
+              (when (or refbox--multiple-exit-requested
+                        (eq last-command #'refbox--multiple-exit))
+                (setq done t)))
+          (setq done t))))
+    (setq selected
+          (delq nil
+                (mapcar (lambda (identity)
+                          (gethash identity selected))
+                        (nreverse selected-order))))
     (when (called-interactively-p 'interactive)
       (message "refbox: selected %d reference%s"
                (length selected)

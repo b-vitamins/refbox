@@ -180,6 +180,7 @@ pub struct SearchEntriesRequest {
     pub limit: Option<usize>,
     pub source_paths: Option<Vec<String>>,
     pub resource_kinds: Option<Vec<String>>,
+    pub search_fields: Option<Vec<String>>,
     pub field_names: Option<Vec<String>>,
     pub field_value_char_limit: Option<usize>,
     pub include_field_sources: Option<bool>,

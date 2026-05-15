@@ -12,6 +12,16 @@ use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use thiserror::Error;
 
 pub const SCHEMA_VERSION: i64 = 7;
+const ENTRY_FTS_COLUMNS: &[&str] = &[
+    "entry_key",
+    "title",
+    "names",
+    "date",
+    "venue",
+    "abstract",
+    "keywords",
+    "identifiers",
+];
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
@@ -102,6 +112,27 @@ pub struct SearchResult {
     pub key: String,
     pub entry_type: String,
     pub score: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SearchOptions<'a> {
+    pub source_paths: &'a [String],
+    pub resource_kinds: &'a [String],
+    pub search_fields: &'a [String],
+    pub allow_empty_query: bool,
+    pub ranked: bool,
+}
+
+impl Default for SearchOptions<'_> {
+    fn default() -> Self {
+        Self {
+            source_paths: &[],
+            resource_kinds: &[],
+            search_fields: &[],
+            allow_empty_query: false,
+            ranked: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -453,26 +484,25 @@ impl RefboxStore {
         &self,
         query: &str,
         limit: usize,
-        source_paths: &[String],
-        resource_kinds: &[String],
-        allow_empty_query: bool,
-        ranked: bool,
+        options: SearchOptions<'_>,
     ) -> Result<Vec<SearchResult>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
 
         let limit = i64::try_from(limit).map_err(|_| StoreError::LimitOutOfRange(limit))?;
-        let fts_query = fts_query_from_user_input(query);
-        let resource_kinds = resource_kinds
+        let fts_query = fts_query_from_user_input(query, options.search_fields);
+        let resource_kinds = options
+            .resource_kinds
             .iter()
             .map(|kind| kind.trim().to_ascii_lowercase())
             .filter(|kind| !kind.is_empty())
             .collect::<Vec<_>>();
-        if fts_query.is_none() && resource_kinds.is_empty() && !allow_empty_query {
+        if fts_query.is_none() && resource_kinds.is_empty() && !options.allow_empty_query {
             return Ok(Vec::new());
         }
-        let source_paths = source_paths
+        let source_paths = options
+            .source_paths
             .iter()
             .map(|path| path.trim())
             .filter(|path| !path.is_empty())
@@ -533,7 +563,7 @@ impl RefboxStore {
             }
         }
         if fts_query.is_some() {
-            if ranked {
+            if options.ranked {
                 sql.push_str(" ORDER BY entry_fts.rank, e.entry_key, f.path, e.id");
             } else {
                 sql.push_str(" ORDER BY entry_fts.rowid");
@@ -1630,7 +1660,7 @@ fn refresh_duplicate_groups_for_keys(connection: &Connection, keys: &[String]) -
     Ok(())
 }
 
-fn fts_query_from_user_input(query: &str) -> Option<String> {
+fn fts_query_from_user_input(query: &str, search_fields: &[String]) -> Option<String> {
     let tokens = query
         .split(|ch: char| !ch.is_alphanumeric())
         .filter(|token| !token.is_empty())
@@ -1638,8 +1668,27 @@ fn fts_query_from_user_input(query: &str) -> Option<String> {
         .collect::<Vec<_>>();
     if tokens.is_empty() {
         None
+    } else if let Some(fields) = fts_query_field_filter(search_fields) {
+        Some(format!("{{{fields}}} : {}", tokens.join(" ")))
     } else {
         Some(tokens.join(" "))
+    }
+}
+
+fn fts_query_field_filter(search_fields: &[String]) -> Option<String> {
+    if search_fields.is_empty() {
+        return None;
+    }
+
+    let fields = search_fields
+        .iter()
+        .map(|field| field.trim().to_ascii_lowercase())
+        .filter(|field| ENTRY_FTS_COLUMNS.contains(&field.as_str()))
+        .collect::<Vec<_>>();
+    if fields.is_empty() {
+        None
+    } else {
+        Some(fields.join(" "))
     }
 }
 

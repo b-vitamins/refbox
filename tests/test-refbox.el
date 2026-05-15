@@ -476,13 +476,15 @@
         (let ((params (cadar calls)))
           (should (equal (plist-get params :query) "alpha"))
           (should (equal (plist-get params :limit) 7))
-          (should (equal (plist-get params :ranked) :json-false))
+          (should-not (plist-get params :ranked))
           (should (equal (plist-get params :field_value_char_limit)
                          refbox-completion-field-value-limit))
           (should (eq (plist-get params :include_field_sources) :json-false))
           (should (equal (append (plist-get params :field_names) nil)
                          '("key" "title" "indicators"
                            "entry_type" "source_path" "crossref")))
+          (should (equal (append (plist-get params :search_fields) nil)
+                         refbox-completion-search-fields))
           (should (eq (plist-get params :include_resources) :json-false)))
         (should (string-match-p "smith2020" candidate-string))
         (should (equal (plist-get candidate :key) "smith2020"))
@@ -493,6 +495,37 @@
                  "F L"
                  (nth 1 affixation)))
         (should (string-empty-p (nth 2 affixation)))))))
+
+(ert-deftest refbox-test-reference_indicators_reserve_absent_slots ()
+  "Indicator prefixes should stay width-stable when indicators are absent."
+  (let* ((refbox-indicators
+          (list
+           (refbox-indicator-create
+            :symbol "F"
+            :emptysymbol " "
+            :padding "  "
+            :function (lambda ()
+                        (lambda (candidate)
+                          (equal (refbox-reference-field candidate "key")
+                                 "smith2020"))))
+           (refbox-indicator-create
+            :symbol "L"
+            :emptysymbol " "
+            :padding "  "
+            :function (lambda () (lambda (_candidate) nil)))))
+         (matched refbox-test-reference-candidate)
+         (unmatched (plist-put (copy-tree refbox-test-reference-candidate)
+                               :key "doe2021"))
+         (matched-text (refbox-reference-indicators matched))
+         (unmatched-text (refbox-reference-indicators unmatched)))
+    (should (= (string-width matched-text)
+               (string-width unmatched-text)))
+    (should (= (length matched-text)
+               (length unmatched-text)))
+    (should (get-text-property (1- (length matched-text))
+                               'display matched-text))
+    (should (get-text-property (1- (length unmatched-text))
+                               'display unmatched-text))))
 
 (ert-deftest refbox-test-completion-uses_completion_limit_by_default ()
   "Minibuffer completion should request the configured completion page size."
@@ -508,13 +541,27 @@
         (funcall table "alpha" nil t)
         (should (equal (plist-get (cadar calls) :limit) 87))))))
 
+(ert-deftest refbox-test-completion-short_inputs_use_fast_unranked_search ()
+  "Very short minibuffer probes should avoid expensive broad ranking."
+  (let ((refbox-completion-ranked-min-input 3)
+        calls)
+    (cl-letf (((symbol-function 'refbox-rpc-request)
+               (lambda (method params)
+                 (push (list method params) calls)
+                 (should (equal method refbox-rpc-method-search-entries))
+                 (list :entries (list refbox-test-reference-candidate)))))
+      (let* ((state (refbox--completion-state 7))
+             (table (refbox--completion-table state)))
+        (funcall table "po" nil t)
+        (should (equal (plist-get (cadar calls) :ranked) :json-false))))))
+
 (ert-deftest refbox-test-completion-delegates_visible_text_to_completion_styles ()
   "The minibuffer table should let completion styles filter display strings."
   (let ((refbox-templates '((main . "%{key} %{title}")))
         (completion-styles '(substring basic)))
     (cl-letf (((symbol-function 'refbox-search-references)
                (lambda (_query &optional _limit _source-paths _unranked
-                              _field-names _omit-resources)
+                              _field-names _omit-resources _search-fields)
                  (list refbox-test-reference-candidate
                        (plist-put
                         (copy-tree refbox-test-reference-candidate)
@@ -532,7 +579,7 @@
         (completion-styles '(basic)))
     (cl-letf (((symbol-function 'refbox-search-references)
                (lambda (query &optional _limit _source-paths _unranked
-                              _field-names _omit-resources)
+                              _field-names _omit-resources _search-fields)
                  (should (equal query "Relational Interaction"))
                  (list refbox-test-reference-candidate))))
       (let* ((state (refbox--completion-state 10))
@@ -560,7 +607,7 @@
                #'ignore)
               ((symbol-function 'refbox-search-references)
                (lambda (query &optional _limit _source-paths _unranked
-                              _field-names _omit-resources)
+                              _field-names _omit-resources _search-fields)
                  (if (equal query "xu")
                      (list refbox-test-reference-candidate)
                    nil)))
@@ -687,6 +734,20 @@
                        (list :query "" :limit 7 :allow_empty_query t)))
         (should (equal (plist-get (car results) :key) "smith2020"))))))
 
+(ert-deftest refbox-test-search-can_restrict_native_search_fields ()
+  "Search callers should be able to limit daemon FTS fields."
+  (let (calls)
+    (cl-letf (((symbol-function 'refbox-rpc-request)
+               (lambda (method params)
+                 (push (list method params) calls)
+                 (should (equal method refbox-rpc-method-search-entries))
+                 (list :entries (list refbox-test-reference-candidate)))))
+      (let ((results (refbox-search-references
+                      "alpha" 7 nil nil nil nil '("title" "entry_key"))))
+        (should (equal (append (plist-get (cadar calls) :search_fields) nil)
+                       '("title" "entry_key")))
+        (should (equal (plist-get (car results) :key) "smith2020"))))))
+
 (ert-deftest refbox-test-search_tags_support_emacs_side_predicates ()
   "Search tags backed by local predicates should filter returned candidates."
   (let* ((cited (copy-tree refbox-test-reference-candidate))
@@ -729,9 +790,11 @@
         (let ((params (cadar calls)))
           (should (equal (plist-get params :query) "smith"))
           (should (equal (plist-get params :limit) 3))
-          (should (equal (plist-get params :ranked) :json-false))
+          (should-not (plist-get params :ranked))
           (should (equal (append (plist-get params :field_names) nil)
-                         '("key" "title" "crossref"))))))))
+                         '("key" "title" "crossref")))
+          (should (equal (append (plist-get params :search_fields) nil)
+                         refbox-completion-search-fields)))))))
 
 (ert-deftest refbox-test-list-references-uses-paged-rpc ()
   "Whole-corpus enumeration should use the daemon's paged list method."
@@ -1708,14 +1771,14 @@
             (should (equal (refbox-csl--locale-file) locale-file))))
       (delete-directory root t))))
 
-(ert-deftest refbox-test-read-references_repeats_bounded_single_reads ()
-  "Multiple selection should be a sequence of bounded single-reference reads."
+(ert-deftest refbox-test-read-references_repeats_bounded_reads_until_empty ()
+  "Multiple selection should keep reading until an empty selection."
   (let ((remaining (list refbox-test-reference-candidate
                          (plist-put (copy-sequence refbox-test-reference-candidate)
                                     :key "doe2021")
                          nil))
         calls)
-    (cl-letf (((symbol-function 'refbox--read-reference)
+    (cl-letf (((symbol-function 'refbox--read-reference-from-state)
                (lambda (&rest args)
                  (push args calls)
                  (pop remaining))))
@@ -1726,6 +1789,31 @@
                        '("smith2020" "doe2021")))
         (should (= (length calls) 3))
         (should (equal (nth 1 (car (last calls))) "alpha"))))))
+
+(ert-deftest refbox-test-read-references_ret_accepts_current_and_exits ()
+  "RET in the multi-selector should accept one candidate and finish."
+  (let (calls)
+    (cl-letf (((symbol-function 'refbox--read-reference-from-state)
+               (lambda (&rest args)
+                 (push args calls)
+                 (setq refbox--multiple-exit-requested t)
+                 refbox-test-reference-candidate)))
+      (let ((selected (refbox-read-references "References: " nil 5)))
+        (should (equal (mapcar (lambda (candidate)
+                                 (plist-get candidate :key))
+                               selected)
+                       '("smith2020")))
+        (should (= (length calls) 1))))))
+
+(ert-deftest refbox-test-read-references_toggles_existing_selection ()
+  "Selecting the same reference twice should remove it from the result."
+  (let ((remaining (list refbox-test-reference-candidate
+                         refbox-test-reference-candidate
+                         nil)))
+    (cl-letf (((symbol-function 'refbox--read-reference-from-state)
+               (lambda (&rest _args)
+                 (pop remaining))))
+      (should-not (refbox-read-references "References: " nil 5)))))
 
 (ert-deftest refbox-test-select-references_dispatches_to_single_or_multiple_readers ()
   "Selection helpers should expose both multiple and single-reference reads."

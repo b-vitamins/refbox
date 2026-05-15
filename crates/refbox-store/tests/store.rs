@@ -1,5 +1,5 @@
 use refbox_index::parse_bibliography_file;
-use refbox_store::{RefboxStore, SCHEMA_VERSION};
+use refbox_store::{RefboxStore, SCHEMA_VERSION, SearchOptions};
 use rusqlite::Connection;
 use std::fs;
 use std::path::PathBuf;
@@ -86,7 +86,7 @@ fn inserts_parsed_files_and_queries_records_back() {
     );
 
     let results = store
-        .search("scalable", 5, &[], &[], false, true)
+        .search("scalable", 5, SearchOptions::default())
         .expect("search should work");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].key, "smith2020");
@@ -104,7 +104,7 @@ fn inserts_parsed_files_and_queries_records_back() {
     assert_eq!(hydrated[0].resource_kinds, vec!["doi"]);
 
     let lightweight = store
-        .search("scalable", 5, &[], &[], false, true)
+        .search("scalable", 5, SearchOptions::default())
         .and_then(|results| {
             store.hydrate_search_results(
                 results,
@@ -120,7 +120,7 @@ fn inserts_parsed_files_and_queries_records_back() {
     assert!(lightweight[0].resources.is_empty());
 
     let title_only = store
-        .search("scalable", 5, &[], &[], false, true)
+        .search("scalable", 5, SearchOptions::default())
         .and_then(|results| {
             store.hydrate_search_results(
                 results,
@@ -141,7 +141,7 @@ fn inserts_parsed_files_and_queries_records_back() {
         vec!["title"]
     );
     let capped = store
-        .search("scalable", 5, &[], &[], false, true)
+        .search("scalable", 5, SearchOptions::default())
         .and_then(|results| {
             store.hydrate_search_results(
                 results,
@@ -156,7 +156,7 @@ fn inserts_parsed_files_and_queries_records_back() {
     assert_eq!(capped[0].fields[0].value, "{Scalabl");
 
     let source_free = store
-        .search("scalable", 5, &[], &[], false, true)
+        .search("scalable", 5, SearchOptions::default())
         .and_then(|results| {
             store.hydrate_search_results(
                 results,
@@ -332,7 +332,7 @@ fn fts_queries_are_bounded_and_deterministic_for_ties() {
     store.insert_file(&file).expect("file should insert");
 
     let results = store
-        .search("shared", 2, &[], &[], false, true)
+        .search("shared", 2, SearchOptions::default())
         .expect("search should work");
     assert_eq!(
         results
@@ -364,7 +364,14 @@ fn unranked_fts_queries_use_fast_index_order_for_typeahead() {
     store.insert_file(&file).expect("file should insert");
 
     let results = store
-        .search("shared", 2, &[], &[], false, false)
+        .search(
+            "shared",
+            2,
+            SearchOptions {
+                ranked: false,
+                ..SearchOptions::default()
+            },
+        )
         .expect("search should work");
     assert_eq!(
         results
@@ -390,19 +397,60 @@ fn fts_queries_prefix_match_title_author_and_punctuation_safe_input() {
     store.insert_file(&file).expect("file should insert");
 
     let title = store
-        .search("diff", 5, &[], &[], false, true)
+        .search("diff", 5, SearchOptions::default())
         .expect("title prefix search");
     assert_eq!(title[0].key, "austin2021d3pm");
 
     let author = store
-        .search("jac aust", 5, &[], &[], false, true)
+        .search("jac aust", 5, SearchOptions::default())
         .expect("author prefix search");
     assert_eq!(author[0].key, "austin2021d3pm");
 
     let punctuation = store
-        .search("10.1000/ref", 5, &[], &[], false, true)
+        .search("10.1000/ref", 5, SearchOptions::default())
         .expect("punctuation search should not expose FTS syntax errors");
     assert_eq!(punctuation[0].key, "austin2021d3pm");
+}
+
+#[test]
+fn fts_queries_can_be_limited_to_selected_columns() {
+    let mut store = RefboxStore::open_in_memory().expect("store should open");
+    let file = parse_bibliography_file(
+        "refs/fields.bib",
+        r#"@article{titlehit,
+  title = {Needle Visible}
+}
+
+@article{abstracthit,
+  title = {Ordinary Title},
+  abstract = {Needle hidden in the abstract}
+}"#,
+    );
+
+    store.insert_file(&file).expect("file should insert");
+
+    let unrestricted = store
+        .search("needle", 5, SearchOptions::default())
+        .expect("unrestricted search should work");
+    assert_eq!(unrestricted.len(), 2);
+
+    let title_only = store
+        .search(
+            "needle",
+            5,
+            SearchOptions {
+                search_fields: &["title".to_string(), "entry_key".to_string()],
+                ..SearchOptions::default()
+            },
+        )
+        .expect("field-limited search should work");
+    assert_eq!(
+        title_only
+            .iter()
+            .map(|result| result.key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["titlehit"]
+    );
 }
 
 #[test]
@@ -449,7 +497,7 @@ PRAGMA user_version = 4;
 
     let store = RefboxStore::open(&db_path).expect("store should migrate");
     let results = store
-        .search("diff", 5, &[], &[], false, true)
+        .search("diff", 5, SearchOptions::default())
         .expect("prefix search");
     assert_eq!(results[0].key, "austin2021d3pm");
     drop(store);
@@ -492,10 +540,10 @@ fn fts_queries_can_be_scoped_to_source_paths() {
         .search(
             "shared",
             5,
-            &["refs/second.bib".to_string()],
-            &[],
-            false,
-            true,
+            SearchOptions {
+                source_paths: &["refs/second.bib".to_string()],
+                ..SearchOptions::default()
+            },
         )
         .expect("search should work");
     assert_eq!(results.len(), 1);
@@ -521,19 +569,34 @@ fn fts_queries_can_be_filtered_to_resource_kinds() {
     store.insert_file(&file).expect("file should insert");
 
     let file_results = store
-        .search("shared", 5, &[], &["file".to_string()], false, true)
+        .search(
+            "shared",
+            5,
+            SearchOptions {
+                resource_kinds: &["file".to_string()],
+                ..SearchOptions::default()
+            },
+        )
         .expect("filtered search should work");
     assert_eq!(file_results.len(), 1);
     assert_eq!(file_results[0].key, "withfile");
 
     let doi_results = store
-        .search("", 5, &[], &["doi".to_string()], true, true)
+        .search(
+            "",
+            5,
+            SearchOptions {
+                resource_kinds: &["doi".to_string()],
+                allow_empty_query: true,
+                ..SearchOptions::default()
+            },
+        )
         .expect("tag-only search should work");
     assert_eq!(doi_results.len(), 1);
     assert_eq!(doi_results[0].key, "withdoi");
 
     let empty_results = store
-        .search("", 5, &[], &[], false, true)
+        .search("", 5, SearchOptions::default())
         .expect("blank search should work");
     assert!(empty_results.is_empty());
 }
@@ -600,7 +663,7 @@ fn resource_queries_inherit_crossref_resources() {
     );
 
     let results = store
-        .search("child", 5, &[], &[], false, true)
+        .search("child", 5, SearchOptions::default())
         .expect("child search should work");
     let hydrated = store
         .hydrate_search_results(results, &["crossref".to_string()], None, true, true, None)
