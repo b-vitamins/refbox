@@ -4,7 +4,7 @@
 
 ;; Author: Ayan Das <bvits@riseup.net>
 ;; Maintainer: Ayan Das <bvits@riseup.net>
-;; Version: 0.4.1
+;; Version: 0.4.2
 ;; Package-Requires: ((emacs "29.1") (jsonrpc "1.0.27"))
 ;; Keywords: bib, tex, files, convenience
 
@@ -542,7 +542,8 @@ destination file name."
   :group 'refbox)
 
 (defcustom refbox-file-open-functions
-  '(("html" . refbox-file-open-external)
+  '(("pdf" . refbox-file-open-pdf)
+    ("html" . refbox-file-open-external)
     (t . refbox-file-open-in-emacs))
   "Alist mapping file extensions to resource opening functions.
 
@@ -2838,24 +2839,68 @@ single choice is accepted without prompting."
      function
      file)))
 
-(defun refbox-file-open-in-emacs (file)
-  "Open FILE in Emacs using its normal major mode."
-  (let* ((file (expand-file-name file))
-         (existing (get-file-buffer file)))
+(defun refbox--kill-raw-file-buffer (file)
+  "Kill an unmodified raw Fundamental buffer visiting FILE."
+  (let ((existing (get-file-buffer file)))
     (when (and existing
                (buffer-live-p existing))
       (with-current-buffer existing
         (when (and (eq major-mode 'fundamental-mode)
                    (not (buffer-modified-p)))
-          (kill-buffer existing))))
+          (kill-buffer existing))))))
+
+(defun refbox--mode-available-p (mode features)
+  "Return non-nil when MODE is defined or loadable from FEATURES."
+  (or (fboundp mode)
+      (seq-some
+       (lambda (feature)
+         (and (require feature nil t)
+              (fboundp mode)))
+       features)))
+
+(defun refbox--pdf-open-mode ()
+  "Return the best available Emacs PDF major mode."
+  (cond
+   ((refbox--mode-available-p 'pdf-view-mode '(pdf-view pdf-tools))
+    'pdf-view-mode)
+   ((refbox--mode-available-p 'doc-view-mode '(doc-view))
+    'doc-view-mode)))
+
+(defun refbox--file-open-with-mode (file mode)
+  "Open FILE in Emacs and activate MODE."
+  (refbox--kill-raw-file-buffer file)
+  (let ((buffer (find-file file)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (unless (derived-mode-p mode)
+          (funcall mode)))))
+  file)
+
+(defun refbox-file-open-in-emacs (file)
+  "Open FILE in Emacs using its normal major mode."
+  (let ((file (expand-file-name file)))
+    (refbox--kill-raw-file-buffer file)
     (let ((buffer (find-file file)))
-      (when (buffer-live-p buffer)
+      (when (and (buffer-live-p buffer)
+                 (string-match-p "\\.[pP][dD][fF]\\'" file))
         (with-current-buffer buffer
-          (when (and (string-match-p "\\.[pP][dD][fF]\\'" file)
-                     (fboundp 'pdf-view-mode)
-                     (not (derived-mode-p 'pdf-view-mode)))
-            (pdf-view-mode)))))
+          (when (eq major-mode 'fundamental-mode)
+            (user-error "PDF opened as raw text; use `refbox-file-open-pdf'")))))
     file))
+
+(defun refbox-file-open-pdf (file)
+  "Open PDF FILE with a PDF viewer, never as raw text."
+  (let ((file (expand-file-name file)))
+    (refbox--kill-raw-file-buffer file)
+    (if-let ((mode (refbox--pdf-open-mode)))
+        (condition-case err
+            (refbox--file-open-with-mode file mode)
+          (error
+           (message "refbox PDF mode failed: %s; opening externally"
+                    (error-message-string err))
+           (refbox--kill-raw-file-buffer file)
+           (refbox-file-open-external file)))
+      (refbox-file-open-external file))))
 
 (defun refbox-file-open-external (file)
   "Open FILE using the platform's external file opener."

@@ -1463,6 +1463,56 @@
                      "/tmp/refbox-test.html"))
       (should (equal opened "/tmp/refbox-test.html")))))
 
+(ert-deftest refbox-test-file_openers_default_pdf_to_pdf_opener ()
+  "PDF resources should use the dedicated PDF opener by default."
+  (let ((opened nil))
+    (cl-letf (((symbol-function 'refbox-file-open-pdf)
+               (lambda (file)
+                 (setq opened file)
+                 file)))
+      (should (equal (refbox-file-open "/tmp/refbox-test.pdf")
+                     "/tmp/refbox-test.pdf"))
+      (should (equal opened "/tmp/refbox-test.pdf")))))
+
+(defun refbox-test-pdf-mode ()
+  "Test mode used to prove PDF resources do not stay in raw text buffers."
+  (setq major-mode 'refbox-test-pdf-mode)
+  (setq mode-name "RefboxTestPDF"))
+
+(ert-deftest refbox-test-file_open_pdf_kills_raw_buffers_and_activates_viewer ()
+  "PDF opening should replace stale raw buffers with a PDF viewing mode."
+  (let* ((root (make-temp-file "refbox-pdf-open-" t))
+         (file (expand-file-name "paper.pdf" root)))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "%PDF-1.7\n"))
+          (let ((buffer (find-file-noselect file)))
+            (with-current-buffer buffer
+              (fundamental-mode)
+              (set-buffer-modified-p nil)))
+          (cl-letf (((symbol-function 'refbox--pdf-open-mode)
+                     (lambda () 'refbox-test-pdf-mode)))
+            (should (equal (refbox-file-open-pdf file) file))
+            (with-current-buffer (get-file-buffer file)
+              (should (eq major-mode 'refbox-test-pdf-mode)))))
+      (when-let ((buffer (get-file-buffer file)))
+        (kill-buffer buffer))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-file_open_pdf_falls_back_to_external_opener ()
+  "PDF opening should fall back to an external opener when no viewer exists."
+  (let ((opened nil))
+    (cl-letf (((symbol-function 'refbox--pdf-open-mode)
+               (lambda () nil))
+              ((symbol-function 'refbox-file-open-external)
+               (lambda (file)
+                 (setq opened file)
+                 file)))
+      (should (equal (refbox-file-open-pdf "/tmp/refbox-test.pdf")
+                     "/tmp/refbox-test.pdf"))
+      (should (equal opened "/tmp/refbox-test.pdf")))))
+
 (ert-deftest refbox-test-file_openers_require_matching_dispatch ()
   "File opening should fail when no extension or default opener matches."
   (let ((refbox-file-open-functions nil))

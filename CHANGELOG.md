@@ -6,6 +6,14 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-05-15
+
+### Fixed
+- Open PDF resources through a dedicated PDF opener by default instead of the generic file opener.
+- Load `pdf-view-mode`/`doc-view-mode` on demand before opening PDFs in Emacs.
+- Fall back to the external file opener when no Emacs PDF viewer is available, instead of leaving raw PDF bytes in a Fundamental-mode buffer.
+- Kill stale unmodified raw PDF buffers from earlier opener attempts before reopening the file.
+
 ## [0.4.1] - 2026-05-15
 
 ### Changed
