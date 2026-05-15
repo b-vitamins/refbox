@@ -41,6 +41,7 @@
 
 (defvar completion-category-defaults)
 (defvar org-cite-csl--fallback-locales-dir)
+(defvar truncate-string-ellipsis)
 
 (defface refbox
   '((t :inherit default))
@@ -257,9 +258,11 @@ with the field value and whose cdr supplies additional arguments."
 (defcustom refbox-ellipsis nil
   "String used to mark truncated template fields.
 
-When nil, truncated fields end at the configured display width
-without adding a marker."
-  :type '(choice (const :tag "No marker" nil) string)
+When t, use `truncate-string-ellipsis'.  When nil, truncated fields
+end at the configured display width without adding a marker."
+  :type '(choice (const :tag "Use `truncate-string-ellipsis'" t)
+                 (const :tag "No marker" nil)
+                 string)
   :group 'refbox)
 
 (defcustom refbox-capf-limit 50
@@ -1443,7 +1446,9 @@ direct function transform."
             width
             nil
             nil
-            refbox-ellipsis)))
+            (if (eq refbox-ellipsis t)
+                truncate-string-ellipsis
+              refbox-ellipsis))))
       (if (< (string-width truncated) width)
           (string-pad truncated width)
         truncated))))
@@ -2625,8 +2630,11 @@ enumerate all indexed references; when it is explicitly nil, return nil."
 
 (defun refbox-note-source-all-items ()
   "Return all items from the active note source."
-  (refbox--listify
-   (funcall (refbox-note-source--function :all-items))))
+  (if-let ((function (plist-get (refbox-note-source--plist) :all-items)))
+      (refbox--listify (funcall function))
+    (delete-dups
+     (apply #'append
+            (hash-table-values (refbox-get-notes))))))
 
 (defun refbox-note-source-has-items-p (reference)
   "Return non-nil when REFERENCE has active note source items."
@@ -3998,7 +4006,19 @@ selection can still resolve to the candidate it came from."
      ((and allow-empty (string-empty-p selection-key)) nil)
      ((gethash selection-key (plist-get state :map)))
      ((get-text-property 0 'refbox-candidate selection))
+     ((refbox--read-reference-key-fallback selection-key predicate))
      (t (user-error "Unknown refbox reference selection: %s" selection)))))
+
+(defun refbox--read-reference-key-fallback (key predicate)
+  "Return indexed reference for exact KEY when it satisfies PREDICATE."
+  (unless (refbox--blank-string-p key)
+    (condition-case nil
+        (let ((candidate (refbox-entry-by-key key)))
+          (when (and candidate
+                     (or (not predicate)
+                         (funcall predicate candidate)))
+            candidate))
+      (error nil))))
 
 (defun refbox--read-reference
     (prompt preset limit allow-empty &optional predicate source-paths)
@@ -4019,8 +4039,9 @@ control completion and validation."
   (interactive)
   (unless (minibufferp)
     (user-error "Command can only be used in minibuffer"))
-  (let ((enable-recursive-minibuffers t))
-    (insert (completing-read "Preset: " refbox-presets nil t))))
+  (when-let* ((enable-recursive-minibuffers t)
+              (search (completing-read "Preset: " refbox-presets)))
+    (insert search)))
 
 (defun refbox--normalized-bibliography-extensions ()
   "Return normalized bibliography extensions accepted by refbox."

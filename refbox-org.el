@@ -51,10 +51,12 @@
 (declare-function org-element-property "org-element" (property element))
 (declare-function org-element-interpret-data "org-element" (data))
 (declare-function org-cite-basic-activate "oc-basic" (citation))
+(declare-function org-cite-basic--set-keymap "oc-basic" (begin end follow))
 (declare-function org-id-get-create "org-id" (&optional force))
 (declare-function org-roam-buffer-p "org-roam" ())
 (declare-function org-roam-ref-add "org-roam" (ref))
 (declare-function embark-act "embark" (&optional target type action))
+(defvar org-cite-basic-mouse-over-key-face)
 
 (defgroup refbox-org nil
   "Org citation integration for refbox."
@@ -687,10 +689,73 @@ DIRECTION is -1 for left and 1 for right."
             nil
             t))
 
+(defun refbox-org--activation-candidate (key)
+  "Return the indexed reference candidate for activation KEY."
+  (condition-case nil
+      (refbox-entry-by-key key)
+    (error nil)))
+
+(defun refbox-org--activation-close-keys (key)
+  "Return bounded Refbox-backed suggestions for unknown KEY."
+  (condition-case nil
+      (let ((keys (mapcar
+                   #'refbox--reference-key
+                   (refbox-search-references
+                    key
+                    5
+                    nil
+                    nil
+                    '("key")
+                    t
+                    '("key")))))
+        (delete key (delete-dups (delq nil keys))))
+    (error nil)))
+
+(defun refbox-org--set-basic-keymap (begin end replacement)
+  "Install Org basic citation keymap from BEGIN to END."
+  (when (fboundp 'org-cite-basic--set-keymap)
+    (org-cite-basic--set-keymap begin end replacement)))
+
 (defun refbox-org-cite-basic-activate (citation)
-  "Activate Org CITATION with Org's basic citation styling."
-  (when (fboundp 'org-cite-basic-activate)
-    (org-cite-basic-activate citation)))
+  "Activate Org CITATION using Refbox-indexed citation metadata."
+  (pcase-let ((`(,begin . ,end) (org-cite-boundaries citation)))
+    (put-text-property begin end 'font-lock-multiline t)
+    (add-face-text-property begin end 'org-cite)
+    (dolist (reference (org-cite-get-references citation))
+      (pcase-let* ((`(,key-begin . ,key-end)
+                    (org-cite-key-boundaries reference))
+                   (key (org-element-property :key reference))
+                   (candidate (refbox-org--activation-candidate key)))
+        (when (boundp 'org-cite-basic-mouse-over-key-face)
+          (put-text-property
+           key-begin
+           key-end
+           'mouse-face
+           org-cite-basic-mouse-over-key-face))
+        (if candidate
+            (let ((entry (string-trim
+                          (refbox-format-reference (list candidate)))))
+              (add-face-text-property key-begin key-end 'org-cite-key)
+              (unless (string-empty-p entry)
+                (put-text-property
+                 key-begin
+                 key-end
+                 'help-echo
+                 (org-element-interpret-data entry)))
+              (refbox-org--set-basic-keymap key-begin key-end nil))
+          (add-face-text-property key-begin key-end 'error)
+          (let ((close-keys (refbox-org--activation-close-keys key)))
+            (when close-keys
+              (put-text-property
+               key-begin
+               key-end
+               'help-echo
+               (concat "Suggestions (mouse-1 to substitute): "
+                       (mapconcat #'identity close-keys " "))))
+            (refbox-org--set-basic-keymap
+             key-begin
+             key-end
+             (or close-keys 'all))))))))
 
 (defun refbox-org-activate-keymap (citation)
   "Activate Org CITATION with refbox keymap text properties."

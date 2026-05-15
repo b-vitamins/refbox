@@ -11,6 +11,7 @@
 (require 'refbox)
 
 (defvar org-cite-csl--fallback-locales-dir)
+(defvar truncate-string-ellipsis)
 
 (ert-deftest refbox-test-package-loads ()
   "The package entry feature should load cleanly."
@@ -413,6 +414,15 @@
                     refbox-test-reference-candidate)
                    "Alpha R..."))))
 
+(ert-deftest refbox-test-template-formatting_supports_default_ellipsis ()
+  "Template truncation should accept t for Emacs' default ellipsis."
+  (let ((refbox-ellipsis t)
+        (truncate-string-ellipsis "~"))
+    (should (equal (refbox-template-format
+                    "%{title:10!refbox-template-clean}"
+                    refbox-test-reference-candidate)
+                   "Alpha Ref~"))))
+
 (ert-deftest refbox-test-template-formatting-supports_display_placeholders ()
   "Templates should support familiar ${field:width%transform} placeholders."
   (let ((candidate
@@ -634,6 +644,25 @@
                  (funcall collection selected-display nil t)
                  selected-display)))
       (let ((selected (refbox--read-reference "Reference: " nil 5 nil)))
+        (should (equal (plist-get selected :key) "smith2020"))))))
+
+(ert-deftest refbox-test-read-reference_accepts_exact_key_fallback ()
+  "Selection readers should accept an exact citekey returned by completion UIs."
+  (let (requested-key)
+    (cl-letf (((symbol-function 'refbox--sync-current-bibliography-buffer-if-needed)
+               #'ignore)
+              ((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _args)
+                 (funcall collection "smith2020" nil t)
+                 "smith2020"))
+              ((symbol-function 'refbox-search-references)
+               (lambda (&rest _args) nil))
+              ((symbol-function 'refbox-entry-by-key)
+               (lambda (key)
+                 (setq requested-key key)
+                 refbox-test-reference-candidate)))
+      (let ((selected (refbox--read-reference "Reference: " nil 5 nil)))
+        (should (equal requested-key "smith2020"))
         (should (equal (plist-get selected :key) "smith2020"))))))
 
 (ert-deftest refbox-test-completion-caches_cited_indicator_scan ()
@@ -1205,6 +1234,22 @@
                    (cadr (all-completions "" collection)))))
         (refbox-open-note))
       (should (equal opened '("note:orphan" "note:smith2020"))))))
+
+(ert-deftest refbox-test-note_source_all_items_falls_back_to_items ()
+  "Note sources should not need a separate all-items implementation."
+  (let ((notes (make-hash-table :test 'equal)))
+    (puthash "alpha" '("note:alpha") notes)
+    (puthash "beta" '("note:beta") notes)
+    (let ((refbox-notes-source 'mock)
+          (refbox-notes-sources
+           `((mock
+              :items ,#'ignore
+              :open ,#'ignore))))
+      (cl-letf (((symbol-function 'refbox-get-notes)
+                 (lambda (&rest _args) notes)))
+        (should (equal (sort (refbox-note-source-all-items)
+                             #'string-lessp)
+                       '("note:alpha" "note:beta")))))))
 
 (ert-deftest refbox-test-open_notes_accepts_single_note_by_default ()
   "Opening notes should not prompt when only one note is available."
@@ -1983,6 +2028,21 @@
                                 (equal key "smith2020")))
                      '("smith2020")))
       (should filter-seen))))
+
+(ert-deftest refbox-test-insert-preset_allows_freeform_searches ()
+  "Preset insertion should not require the input to match configured presets."
+  (let (inserted)
+    (cl-letf (((symbol-function 'minibufferp)
+               (lambda (&optional _buffer) t))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt _collection &rest args)
+                 (should-not (nth 2 args))
+                 "custom query"))
+              ((symbol-function 'insert)
+               (lambda (&rest strings)
+                 (setq inserted (apply #'concat strings)))))
+      (refbox-insert-preset)
+      (should (equal inserted "custom query")))))
 
 (ert-deftest refbox-test-ensure-restarts-on-configuration-change ()
   "Connection-relevant configuration changes should force reconnection."

@@ -129,7 +129,7 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                  (lambda (&rest _args)
                    (list (refbox-markdown-test-candidate "alpha")))))
         (refbox-markdown-insert-citation)
-        (should (equal (buffer-string) "[compare @alpha chap. 3]"))))))
+        (should (equal (buffer-string) "[compare @alpha, chap. 3]"))))))
 
 (ert-deftest refbox-markdown-test-lists-current-buffer-keys ()
   "Current-buffer key listing should deduplicate Pandoc keys."

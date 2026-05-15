@@ -36,17 +36,23 @@
 (require 'refbox)
 
 (declare-function refbox-org-key-at-point "refbox-org" (&optional datum))
+(declare-function refbox-org-citation-at-point "refbox-org" (&optional datum))
 (declare-function refbox-org-reference-at-point "refbox-org" (&optional datum))
 (declare-function org-element-begin "org-element" (element))
 (declare-function org-element-end "org-element" (element))
+(declare-function org-cite-boundaries "oc" (citation))
 (declare-function refbox-latex-key-at-point "refbox-latex" ())
+(declare-function refbox-latex-citation-at-point "refbox-latex" ())
 (declare-function refbox-latex--completion-bounds "refbox-latex" ())
 (declare-function refbox-markdown-key-at-point "refbox-markdown" ())
+(declare-function refbox-markdown-citation-at-point "refbox-markdown" ())
 (declare-function refbox-markdown--completion-bounds "refbox-markdown" ())
 (declare-function embark--metadata "embark" ())
 
 (defvar embark-target-finders)
 (defvar embark-candidate-collectors)
+(defvar embark-transformer-alist)
+(defvar embark-general-map)
 (defvar embark-keymap-alist)
 (defvar embark-multitarget-actions)
 
@@ -99,6 +105,7 @@
 
 (defvar refbox-embark--target-finders
   '(refbox-embark-target-reference-candidate
+    refbox-embark-target-key-at-point
     refbox-embark-target-citation-at-point)
   "Target finders installed by `refbox-embark-mode'.")
 
@@ -106,8 +113,13 @@
   '(refbox-embark-selected-candidates)
   "Candidate collectors installed by `refbox-embark-mode'.")
 
+(defvar refbox-embark--transformer-alist
+  '((refbox-reference . refbox-embark-candidate-transformer))
+  "Embark target transformers installed by `refbox-embark-mode'.")
+
 (defvar refbox-embark--keymap-alist
   '((refbox-reference . refbox-embark-map)
+    (refbox-key . refbox-embark-citation-map)
     (refbox-citation . refbox-embark-citation-map))
   "Embark keymap entries installed by `refbox-embark-mode'.")
 
@@ -130,11 +142,43 @@
      target)
     target))
 
+(defun refbox-embark--citation-target-string (keys)
+  "Return an Embark target string for citation KEYS."
+  (let ((target (copy-sequence (string-join keys " "))))
+    (put-text-property
+     0
+     (length target)
+     'refbox-references
+     (mapcar (lambda (key) (list :key key)) keys)
+     target)
+    target))
+
 (defun refbox-embark-reference (target)
   "Return the stable reference plist represented by TARGET."
   (or (and (stringp target)
            (get-text-property 0 'refbox-reference target))
+      (and (stringp target)
+           (car (get-text-property 0 'refbox-references target)))
       (list :key (substring-no-properties target))))
+
+(defun refbox-embark-references (target)
+  "Return stable reference plists represented by TARGET."
+  (or (and (stringp target)
+           (get-text-property 0 'refbox-references target))
+      (list (refbox-embark-reference target))))
+
+(defun refbox-embark-candidate-transformer (_type target)
+  "Transform minibuffer completion TARGET to a stable refbox reference."
+  (or (when-let ((candidate (get-text-property 0 'refbox-candidate target)))
+        (cons 'refbox-reference (refbox-embark--target-string candidate)))
+      (cons 'refbox-reference target)))
+
+(defun refbox-embark--with-general-map (map)
+  "Return MAP composed with `embark-general-map' when available."
+  (if (and (boundp 'embark-general-map)
+           (keymapp embark-general-map))
+      (make-composed-keymap map embark-general-map)
+    map))
 
 (defun refbox-embark--property-position (property)
   "Return a buffer position carrying PROPERTY at point."
@@ -181,12 +225,44 @@
                 (bounds (refbox-markdown--completion-bounds)))
       (list key (car bounds) (cdr bounds))))))
 
-(defun refbox-embark-target-citation-at-point ()
+(defun refbox-embark--citation-keys-and-bounds ()
+  "Return citation keys and bounds at point for supported modes."
+  (cond
+   ((and (derived-mode-p 'org-mode)
+         (require 'refbox-org nil t))
+    (when-let* ((citation (refbox-org-citation-at-point))
+                (keys (refbox--citation-keys-from-value citation)))
+      (pcase-let ((`(,begin . ,end) (org-cite-boundaries citation)))
+        (list keys begin end))))
+   ((and (derived-mode-p 'latex-mode 'LaTeX-mode 'tex-mode)
+         (require 'refbox-latex nil t))
+    (when-let* ((citation (refbox-latex-citation-at-point))
+                (keys (plist-get citation :keys)))
+      (list keys
+            (plist-get citation :begin)
+            (plist-get citation :end))))
+   ((and (derived-mode-p 'markdown-mode 'gfm-mode)
+         (require 'refbox-markdown nil t))
+    (when-let* ((citation (refbox-markdown-citation-at-point))
+                (keys (plist-get citation :keys)))
+      (list keys
+            (plist-get citation :begin)
+            (plist-get citation :end))))))
+
+(defun refbox-embark-target-key-at-point ()
   "Return an Embark target for the citation key at point."
   (pcase (refbox-embark--citation-key-and-bounds)
     (`(,key ,start ,end)
-     (cons 'refbox-citation
+     (cons 'refbox-key
            (cons (refbox-embark--target-string key)
+                 (cons start end))))))
+
+(defun refbox-embark-target-citation-at-point ()
+  "Return an Embark target for the whole citation at point."
+  (pcase (refbox-embark--citation-keys-and-bounds)
+    (`(,keys ,start ,end)
+     (cons 'refbox-citation
+           (cons (refbox-embark--citation-target-string keys)
                  (cons start end))))))
 
 (defun refbox-embark-selected-candidates ()
@@ -210,22 +286,22 @@
 (defun refbox-embark-open (target)
   "Open resources for TARGET."
   (interactive "sReference: ")
-  (refbox-open (refbox-embark-reference target)))
+  (refbox-open (refbox-embark-references target)))
 
 (defun refbox-embark-open-files (target)
   "Open a file resource for TARGET."
   (interactive "sReference: ")
-  (refbox-open-files (refbox-embark-reference target)))
+  (refbox-open-files (refbox-embark-references target)))
 
 (defun refbox-embark-open-notes (target)
   "Open an existing note for TARGET."
   (interactive "sReference: ")
-  (refbox-open-notes (refbox-embark-reference target)))
+  (refbox-open-notes (refbox-embark-references target)))
 
 (defun refbox-embark-open-links (target)
   "Open a link resource for TARGET."
   (interactive "sReference: ")
-  (refbox-open-links (refbox-embark-reference target)))
+  (refbox-open-links (refbox-embark-references target)))
 
 (defun refbox-embark-open-source (target)
   "Open the bibliography source entry for TARGET."
@@ -240,17 +316,17 @@
 (defun refbox-embark-insert-bibtex (target)
   "Insert the BibTeX entry for TARGET."
   (interactive "sReference: ")
-  (refbox-insert-bibtex (list (refbox-embark-reference target))))
+  (refbox-insert-bibtex (refbox-embark-references target)))
 
 (defun refbox-embark-insert-raw-entry (target)
   "Insert the raw bibliography entry for TARGET."
   (interactive "sReference: ")
-  (refbox-insert-raw-entry (list (refbox-embark-reference target))))
+  (refbox-insert-raw-entry (refbox-embark-references target)))
 
 (defun refbox-embark-copy-reference (target)
   "Copy a formatted reference for TARGET."
   (interactive "sReference: ")
-  (refbox-copy-reference (list (refbox-embark-reference target))))
+  (refbox-copy-reference (refbox-embark-references target)))
 
 (defun refbox-embark-copy-references (targets)
   "Copy formatted references for explicit TARGETS."
@@ -291,8 +367,13 @@
   (when (boundp 'embark-candidate-collectors)
     (dolist (collector (reverse refbox-embark--candidate-collectors))
       (add-hook 'embark-candidate-collectors collector)))
+  (when (boundp 'embark-transformer-alist)
+    (pcase-dolist (`(,category . ,transformer)
+                   refbox-embark--transformer-alist)
+      (setf (alist-get category embark-transformer-alist) transformer)))
   (pcase-dolist (`(,category . ,map) refbox-embark--keymap-alist)
-    (setf (alist-get category embark-keymap-alist) map))
+    (setf (alist-get category embark-keymap-alist)
+          (refbox-embark--with-general-map (symbol-value map))))
   (when (boundp 'embark-multitarget-actions)
     (dolist (action refbox-embark--multitarget-actions)
       (add-to-list 'embark-multitarget-actions action))))
@@ -304,6 +385,11 @@
   (when (boundp 'embark-candidate-collectors)
     (dolist (collector refbox-embark--candidate-collectors)
       (remove-hook 'embark-candidate-collectors collector)))
+  (when (boundp 'embark-transformer-alist)
+    (cl-callf cl-set-difference
+        embark-transformer-alist
+        refbox-embark--transformer-alist
+      :test #'equal))
   (pcase-dolist (`(,category . ,_map) refbox-embark--keymap-alist)
     (setq embark-keymap-alist
           (assq-delete-all category embark-keymap-alist)))

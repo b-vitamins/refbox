@@ -251,6 +251,41 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
       (should (eq (get-text-property (point) 'keymap)
                   refbox-org-citation-map)))))
 
+(ert-deftest refbox-org-test-basic_activation_uses_refbox_index ()
+  "Basic activation should style known keys and suggest indexed alternatives."
+  (refbox-org-test-with-buffer "[cite:|@alpha; @missing]"
+    (let ((refbox-templates
+           '((preview . "%{author}: %{title}")))
+          alpha-position
+          missing-position)
+      (cl-letf (((symbol-function 'refbox-entry-by-key)
+                 (lambda (key)
+                   (if (equal key "alpha")
+                       (refbox-org-test-search-candidate key nil)
+                     (user-error "No such key: %s" key))))
+                ((symbol-function 'refbox-search-references)
+                 (lambda (&rest _args)
+                   (list (refbox-org-test-search-candidate "alpine" nil)))))
+        (let ((citation (refbox-org-citation-at-point)))
+          (refbox-org-cite-basic-activate citation)
+          (goto-char (point-min))
+          (search-forward "@alpha")
+          (setq alpha-position (1- (point)))
+          (search-forward "@missing")
+          (setq missing-position (1- (point)))
+          (should (memq 'org-cite-key
+                        (ensure-list
+                         (get-text-property alpha-position 'face))))
+          (should (string-match-p
+                   "Alpha Title"
+                   (get-text-property alpha-position 'help-echo)))
+          (should (memq 'error
+                        (ensure-list
+                         (get-text-property missing-position 'face))))
+          (should (string-match-p
+                   "alpine"
+                   (get-text-property missing-position 'help-echo))))))))
+
 (ert-deftest refbox-org-test-local-bibliography-discovery ()
   "Local Org bibliography declarations should resolve from fixture buffers."
   (let ((root (make-temp-file "refbox-org-bib-" t)))

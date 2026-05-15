@@ -340,6 +340,11 @@ COMMAND, when non-nil, is returned directly.  INVERT-PROMPT reverses
              key-end))
         (insert refbox-latex-key-separator text))))))
 
+(defun refbox-latex--move-after-citation ()
+  "Move point after the LaTeX citation command containing point."
+  (when-let ((citation (refbox-latex-citation-at-point)))
+    (goto-char (plist-get citation :end))))
+
 ;;;###autoload
 (defun refbox-latex-insert-citation (&optional keys invert-prompt command)
   "Insert a LaTeX citation at point.
@@ -359,7 +364,8 @@ the citation command directly."
       (let* ((command (refbox-latex--read-command invert-prompt command))
              (optional-args (refbox-latex--read-optional-arguments command)))
         (insert (refbox-latex-format-citation
-                 command keys optional-args))))))
+                 command keys optional-args))))
+    (refbox-latex--move-after-citation)))
 
 ;;;###autoload
 (defun refbox-latex-insert-edit (&optional arg)

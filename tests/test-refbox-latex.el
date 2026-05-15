@@ -80,7 +80,8 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                          (refbox-latex-test-candidate "beta")))))
         (refbox-latex-insert-citation)
         (should (equal (buffer-string)
-                       "Before \\parencite{alpha,beta} after"))))))
+                       "Before \\parencite{alpha,beta} after"))
+        (should (looking-at " after"))))))
 
 (ert-deftest refbox-latex-test-inserts_supplied_citation_keys ()
   "Citation insertion should accept direct key lists and command overrides."
@@ -157,7 +158,8 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                    (list (refbox-latex-test-candidate "gamma")))))
         (refbox-latex-insert-citation)
         (should (equal (buffer-string)
-                       "A \\cite{alpha,gamma, beta} Z"))))))
+                       "A \\cite{alpha,gamma, beta} Z"))
+        (should (looking-at " Z"))))))
 
 (ert-deftest refbox-latex-test-formats-biblatex-and-optional-arguments ()
   "Formatter should support biblatex-style commands and optional arguments."

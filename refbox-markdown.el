@@ -116,7 +116,7 @@ Captures the actual key in group 1.")
               "")
             body
             (if (and suffix (not (string-empty-p (string-trim suffix))))
-                (concat " " (string-trim suffix))
+                (concat ", " (string-trim suffix))
               "")
             "]")))
 

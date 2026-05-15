@@ -11,6 +11,8 @@
 (require 'refbox-embark)
 (require 'refbox-latex)
 
+(defvar embark-general-map)
+
 (defun refbox-embark-test-candidate (key source-path)
   "Return a search candidate for KEY from SOURCE-PATH."
   (list :key key
@@ -40,38 +42,82 @@
         (should (= (nth 2 target) (point-min)))
         (should (= (cdddr target) (point-max)))))))
 
-(ert-deftest refbox-embark-test-citation-target-at-point ()
-  "Citation targets should expose the key at point."
+(ert-deftest refbox-embark-test-key-target-at-point ()
+  "Key targets should expose the citation key at point."
   (with-temp-buffer
     (setq major-mode 'latex-mode)
     (insert "\\cite{alpha}")
     (search-backward "alpha")
     (forward-char 2)
-    (let* ((target (refbox-embark-target-citation-at-point))
+    (let* ((target (refbox-embark-target-key-at-point))
            (encoded (nth 1 target))
            (reference (refbox-embark-reference encoded)))
-      (should (eq (car target) 'refbox-citation))
+      (should (eq (car target) 'refbox-key))
       (should (equal reference (list :key "alpha")))
       (should (equal (substring-no-properties encoded) "alpha")))))
+
+(ert-deftest refbox-embark-test-citation-target-at-point ()
+  "Whole-citation targets should expose every key in the citation."
+  (with-temp-buffer
+    (setq major-mode 'latex-mode)
+    (insert "\\cite{alpha,beta}")
+    (search-backward "beta")
+    (let* ((target (refbox-embark-target-citation-at-point))
+           (encoded (nth 1 target)))
+      (should (eq (car target) 'refbox-citation))
+      (should (equal (refbox-embark-references encoded)
+                     (list (list :key "alpha")
+                           (list :key "beta"))))
+      (should (equal (substring-no-properties encoded) "alpha beta")))))
+
+(ert-deftest refbox-embark-test-candidate_transformer_uses_stable_identity ()
+  "Minibuffer candidate transforms should not pass display strings to actions."
+  (let* ((candidate (refbox-embark-test-candidate "alpha" "/tmp/refs.bib"))
+         (display (propertize "Alpha Search Display"
+                              'refbox-candidate
+                              candidate))
+         (target (refbox-embark-candidate-transformer
+                  'refbox-reference
+                  display)))
+    (should (eq (car target) 'refbox-reference))
+    (should (equal (refbox-embark-reference (cdr target))
+                   (list :key "alpha"
+                         :source_path "/tmp/refs.bib")))))
 
 (ert-deftest refbox-embark-test-setup-registers-finders-and-keymaps ()
   "Setup should register target finders and keymaps only when requested."
   (skip-unless (require 'embark nil t))
   (let ((embark-target-finders nil)
         (embark-candidate-collectors nil)
+        (embark-transformer-alist nil)
+        (embark-general-map (let ((map (make-sparse-keymap)))
+                              (define-key map (kbd "g") #'ignore)
+                              map))
         (embark-keymap-alist nil)
         (embark-multitarget-actions nil))
     (refbox-embark-setup)
     (should (memq #'refbox-embark-target-reference-candidate
                   embark-target-finders))
+    (should (memq #'refbox-embark-target-key-at-point
+                  embark-target-finders))
     (should (memq #'refbox-embark-target-citation-at-point
                   embark-target-finders))
     (should (memq #'refbox-embark-selected-candidates
                   embark-candidate-collectors))
-    (should (eq (cdr (assq 'refbox-reference embark-keymap-alist))
-                'refbox-embark-map))
-    (should (eq (cdr (assq 'refbox-citation embark-keymap-alist))
-                'refbox-embark-citation-map))
+    (should (eq (cdr (assq 'refbox-reference embark-transformer-alist))
+                'refbox-embark-candidate-transformer))
+    (should (eq (lookup-key (cdr (assq 'refbox-reference embark-keymap-alist))
+                            (kbd "o"))
+                #'refbox-embark-open))
+    (should (eq (lookup-key (cdr (assq 'refbox-reference embark-keymap-alist))
+                            (kbd "g"))
+                #'ignore))
+    (should (eq (lookup-key (cdr (assq 'refbox-key embark-keymap-alist))
+                            (kbd "i"))
+                #'refbox-embark-insert-edit))
+    (should (eq (lookup-key (cdr (assq 'refbox-citation embark-keymap-alist))
+                            (kbd "i"))
+                #'refbox-embark-insert-edit))
     (should (eq (lookup-key refbox-embark-map (kbd "s"))
                 #'refbox-embark-open-source))
     (should (eq (lookup-key refbox-embark-map (kbd "e"))
@@ -88,6 +134,7 @@
   (skip-unless (require 'embark nil t))
   (let ((embark-target-finders nil)
         (embark-candidate-collectors nil)
+        (embark-transformer-alist nil)
         (embark-keymap-alist nil)
         (embark-multitarget-actions nil)
         refbox-embark-mode)
@@ -96,6 +143,7 @@
                   embark-target-finders))
     (should (memq #'refbox-embark-selected-candidates
                   embark-candidate-collectors))
+    (should (assq 'refbox-reference embark-transformer-alist))
     (should (assq 'refbox-reference embark-keymap-alist))
     (should (memq #'refbox-embark-copy-references
                   embark-multitarget-actions))
@@ -104,6 +152,7 @@
                       embark-target-finders))
     (should-not (memq #'refbox-embark-selected-candidates
                       embark-candidate-collectors))
+    (should-not (assq 'refbox-reference embark-transformer-alist))
     (should-not (assq 'refbox-reference embark-keymap-alist))
     (should-not (memq #'refbox-embark-copy-references
                       embark-multitarget-actions))))
