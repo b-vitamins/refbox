@@ -81,7 +81,7 @@ arguments and `t' marks the citation-key argument."
   :type '(repeat string)
   :group 'refbox-latex)
 
-(defcustom refbox-latex-key-separator ", "
+(defcustom refbox-latex-key-separator ","
   "Separator used between LaTeX citation keys."
   :type 'string
   :group 'refbox-latex)
