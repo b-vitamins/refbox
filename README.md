@@ -309,14 +309,14 @@ count. Fix the `.bib` source file and sync again.
 
 Missing file resources: check `file` fields, `refbox-library-paths`,
 `refbox-library-paths-recursive`, and
-`refbox-resource-library-file-extensions`. `M-x refbox-add-file-to-library`
+`refbox-library-file-extensions`. `M-x refbox-add-file-to-library`
 writes new files into the first configured library path.
 
 Missing links: `refbox-open-links` uses indexed URL and identifier fields such
 as `url`, `doi`, `pmid`, and `pmcid`, configured by `refbox-link-fields`.
 
-Missing notes: configure `refbox-note-paths` and
-`refbox-note-file-extensions`. Use `M-x refbox-create-note` to create the
+Missing notes: configure `refbox-notes-paths` and
+`refbox-file-note-extensions`. Use `M-x refbox-create-note` to create the
 default note file for a reference.
 
 ## Development

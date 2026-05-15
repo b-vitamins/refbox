@@ -545,8 +545,9 @@ fn resolve_files(request: ResolveFilesRequest) -> Vec<String> {
                     .iter()
                     .filter(|relative| !path_has_parent_dir(relative))
                     .any(|relative| path.ends_with(relative))
+                    && extension_allowed(&path, extensions.as_ref())
                 {
-                    insert_regular_file(&mut found, &path, extensions.as_ref());
+                    found.insert(path.display().to_string());
                 }
             });
         } else {
@@ -578,14 +579,18 @@ fn library_files_by_keys(request: LibraryFilesByKeysRequest) -> Vec<String> {
     for root in roots {
         if recursive {
             scan_regular_files(&root, true, |path| {
-                if keyed_file_matches(&path, &keys, additional_separator.as_deref()) {
-                    insert_regular_file(&mut found, &path, extensions.as_ref());
+                if extension_allowed(&path, extensions.as_ref())
+                    && keyed_file_matches(&path, &keys, additional_separator.as_deref())
+                {
+                    found.insert(path.display().to_string());
                 }
             });
         } else {
             scan_regular_files(&root, false, |path| {
-                if keyed_file_matches(&path, &keys, additional_separator.as_deref()) {
-                    insert_regular_file(&mut found, &path, extensions.as_ref());
+                if extension_allowed(&path, extensions.as_ref())
+                    && keyed_file_matches(&path, &keys, additional_separator.as_deref())
+                {
+                    found.insert(path.display().to_string());
                 }
             });
         }
@@ -685,17 +690,17 @@ fn scan_regular_files(root: &Path, recursive: bool, mut visit: impl FnMut(PathBu
         let Ok(read_dir) = std::fs::read_dir(&dir) else {
             continue;
         };
-        let mut entries = read_dir.filter_map(|entry| entry.ok()).collect::<Vec<_>>();
-        entries.sort_by_key(|entry| entry.path());
-
-        for entry in entries {
+        for entry in read_dir.filter_map(|entry| entry.ok()) {
             let path = entry.path();
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
             if recursive && file_type.is_dir() && !file_type.is_symlink() {
                 stack.push(path);
-            } else if path.metadata().is_ok_and(|metadata| metadata.is_file()) {
+            } else if file_type.is_file()
+                || (file_type.is_symlink()
+                    && path.metadata().is_ok_and(|metadata| metadata.is_file()))
+            {
                 visit(path);
             }
         }
