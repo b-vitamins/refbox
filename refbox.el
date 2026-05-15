@@ -600,12 +600,13 @@ t is used as the default when no extension entry matches."
 
 Each entry is (SOURCE . PLIST).  Recognized plist keys are
 `:items', `:all-items', `:hasitems', `:open', `:create',
-`:create-label', and `:transform'.  `:items' and `:hasitems'
-functions receive KEY and REFERENCE.  `:all-items' receives no
-arguments and returns note items directly openable by `:open'.
-`:open' receives a note item.  `:create' and `:create-label'
-receive KEY and REFERENCE.  `:items' and `:open' are required
-when registering a note source with `refbox-register-notes-source'."
+`:create-label', `:transform', and `:annotate'.  `:items' and
+`:hasitems' functions receive KEY and REFERENCE.  `:all-items'
+receives no arguments and returns note items directly openable by
+`:open'.  `:open', `:transform', and `:annotate' receive a note
+item.  `:create' and `:create-label' receive KEY and REFERENCE.
+`:items' and `:open' are required when registering a note source with
+`refbox-register-notes-source'."
   :type 'alist
   :group 'refbox)
 
@@ -2440,7 +2441,7 @@ callable."
   "Required plist properties for registered note sources.")
 
 (defconst refbox-note-source--function-properties
-  '(:items :all-items :hasitems :open :create :create-label :transform)
+  '(:items :all-items :hasitems :open :create :create-label :transform :annotate)
   "Note source plist properties whose values must be callable.")
 
 (defconst refbox-note-source--known-properties
@@ -2503,6 +2504,11 @@ callable."
   (if-let ((transform (plist-get (refbox-note-source--plist) :transform)))
       (funcall transform item)
     (format "%s" item)))
+
+(defun refbox-note-source--annotation (item)
+  "Return annotation text for note source ITEM."
+  (when-let ((annotate (plist-get (refbox-note-source--plist) :annotate)))
+    (funcall annotate item)))
 
 (defun refbox-note-source-file-items (key reference)
   "Return file-backed note items for KEY."
@@ -2693,6 +2699,7 @@ single choice is accepted without prompting."
     (if (eq action 'metadata)
         '(metadata
           (category . refbox-resource)
+          (annotation-function . refbox--resource-choice-annotation)
           (group-function
            . (lambda (candidate transform)
                (if transform
@@ -2701,6 +2708,12 @@ single choice is accepted without prompting."
                                      0 'refbox-resource-choice candidate)))
                    (refbox--resource-choice-group choice))))))
       (complete-with-action action labels string predicate))))
+
+(defun refbox--resource-choice-annotation (label)
+  "Return annotation text for resource choice LABEL."
+  (when-let ((choice (get-text-property 0 'refbox-resource-choice label)))
+    (when (eq (plist-get choice :type) 'note)
+      (refbox-note-source--annotation (plist-get choice :target)))))
 
 (defun refbox--open-target (function target)
   "Open TARGET with FUNCTION and return TARGET."

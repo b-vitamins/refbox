@@ -1307,6 +1307,25 @@
                    '("Library Files" "Links" "Slipbox Notes"
                      "Create Slipbox Notes")))))
 
+(ert-deftest refbox-test-resource_note_choices_support_annotations ()
+  "Note-source annotations should participate in resource completion."
+  (let* ((refbox-notes-source 'mock)
+         (refbox-notes-sources
+          '((mock :items ignore
+                  :open ignore
+                  :annotate (lambda (item)
+                              (format " <%s>" item)))))
+         (choice '(:type note :target "note:alpha" :label "note alpha"))
+         (label (propertize (plist-get choice :label)
+                            'refbox-resource-choice choice))
+         (metadata (funcall (refbox--resource-choice-completion-table
+                             (list label))
+                            "" nil 'metadata))
+         (annotation-function (cdr (assq 'annotation-function
+                                         (cdr metadata)))))
+    (should (equal (funcall annotation-function label)
+                   " <note:alpha>"))))
+
 (ert-deftest refbox-test-open-resource_commands_use_configured_functions ()
   "Resource open commands should delegate to configured open functions."
   (let* ((root (make-temp-file "refbox-open-" t))
