@@ -1160,7 +1160,7 @@
       (should (equal opened '("note:smith2020")))
       (cl-letf (((symbol-function 'completing-read)
                  (lambda (_prompt collection &rest _args)
-                   (cadr collection))))
+                   (cadr (all-completions "" collection)))))
         (refbox-open-note))
       (should (equal opened '("note:orphan" "note:smith2020"))))))
 
@@ -1252,6 +1252,30 @@
                  "https://doi.org/10.1000/refbox"))
   (should (equal (refbox-resource-link-url '(:kind "url" :value "{https://example.test}"))
                  "https://example.test")))
+
+(ert-deftest refbox-test-resource_choices_are_grouped_by_type ()
+  "Resource completion should expose Citar-style type groups."
+  (let* ((refbox-notes-source 'mock)
+         (refbox-notes-sources
+          '((mock :name "Slipbox Notes"
+                  :items ignore
+                  :open ignore)))
+         (choices '((:type file :label "file alpha")
+                    (:type link :label "link alpha")
+                    (:type note :label "note alpha")
+                    (:type create-note :label "create alpha")))
+         (labels (mapcar (lambda (choice)
+                           (propertize (plist-get choice :label)
+                                       'refbox-resource-choice choice))
+                         choices))
+         (metadata (funcall (refbox--resource-choice-completion-table labels)
+                            "" nil 'metadata))
+         (group-function (cdr (assq 'group-function (cdr metadata)))))
+    (should (equal (mapcar (lambda (label)
+                             (funcall group-function label nil))
+                           labels)
+                   '("Library Files" "Links" "Slipbox Notes"
+                     "Create Slipbox Notes")))))
 
 (ert-deftest refbox-test-open-resource_commands_use_configured_functions ()
   "Resource open commands should delegate to configured open functions."

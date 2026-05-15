@@ -2648,8 +2648,42 @@ single choice is accepted without prompting."
             (setq label (format "%s <%d>" (plist-get choice :label) counter)
                   counter (1+ counter)))
           (puthash label choice table)
-          (push label labels)))
-      (gethash (completing-read prompt (nreverse labels) nil t) table)))))
+          (push (propertize label 'refbox-resource-choice choice)
+                labels)))
+      (gethash
+       (substring-no-properties
+        (completing-read
+         prompt
+         (refbox--resource-choice-completion-table (nreverse labels))
+         nil
+         t))
+       table)))))
+
+(defun refbox--resource-choice-group (choice)
+  "Return the completion group label for resource CHOICE."
+  (pcase (plist-get choice :type)
+    ('file "Library Files")
+    ('link "Links")
+    ('note (or (plist-get (refbox-note-source--plist) :name) "Notes"))
+    ('create-note
+     (format "Create %s"
+             (or (plist-get (refbox-note-source--plist) :name) "Notes")))
+    (_ nil)))
+
+(defun refbox--resource-choice-completion-table (labels)
+  "Return a completion table for resource choice LABELS."
+  (lambda (string predicate action)
+    (if (eq action 'metadata)
+        '(metadata
+          (category . refbox-resource)
+          (group-function
+           . (lambda (candidate transform)
+               (if transform
+                   candidate
+                 (when-let ((choice (get-text-property
+                                     0 'refbox-resource-choice candidate)))
+                   (refbox--resource-choice-group choice))))))
+      (complete-with-action action labels string predicate))))
 
 (defun refbox--open-target (function target)
   "Open TARGET with FUNCTION and return TARGET."
