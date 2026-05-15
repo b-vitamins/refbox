@@ -1911,12 +1911,15 @@ whose cdr is passed as additional arguments."
   "Return reference completion data at supported citation contexts."
   (cond
    ((and (derived-mode-p 'org-mode)
+         (require 'refbox-org nil t)
          (fboundp 'refbox-org-completion-at-point))
     (refbox-org-completion-at-point))
    ((and (derived-mode-p 'latex-mode 'LaTeX-mode 'tex-mode)
+         (require 'refbox-latex nil t)
          (fboundp 'refbox-latex-completion-at-point))
     (refbox-latex-completion-at-point))
    ((and (derived-mode-p 'markdown-mode 'gfm-mode)
+         (require 'refbox-markdown nil t)
          (fboundp 'refbox-markdown-completion-at-point))
     (refbox-markdown-completion-at-point))))
 
