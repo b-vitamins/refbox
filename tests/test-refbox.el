@@ -863,13 +863,43 @@
   "File field parsers should handle path lists and triplet values."
   (should (equal (refbox-resource-parse-file-field-default
                   "foo\\;bar; baz ; ")
-                 '("foo;bar" "baz")))
+                 '("foo;bar" "foo\\;bar" "baz")))
   (should (equal (refbox-resource-parse-file-field-triplet
                   ":foo.pdf:PDF,:bar.pdf:PDF")
                  '("foo.pdf" "bar.pdf")))
   (should (equal (refbox-resource-parse-file-field-triplet
+                  ":foo.pdf:PDF;:bar.pdf:PDF")
+                 '("foo.pdf" "bar.pdf")))
+  (should (equal (refbox-resource-parse-file-field-triplet
                   "Title\\: Subtitle:C\\:\\\\title.pdf:PDF")
-                 '("C:\\title.pdf"))))
+                 '("C:\\title.pdf" "C\\:\\\\title.pdf"))))
+
+(ert-deftest refbox-test-reference-files-resolve_unescaped_file_fields ()
+  "File lookup should try unescaped variants from bibliography file fields."
+  (let* ((root (make-temp-file "refbox-escaped-file-" t))
+         (refs (expand-file-name "refs" root))
+         (candidate
+          (list :key "escaped"
+                :source_path (expand-file-name "main.bib" refs)
+                :resources
+                (list (list :key "escaped"
+                            :source_path (expand-file-name "main.bib" refs)
+                            :owner_key "escaped"
+                            :owner_source_path (expand-file-name "main.bib" refs)
+                            :kind "file"
+                            :raw_name "file"
+                            :lookup_name "file"
+                            :value "paper\\:edition.pdf")))))
+    (unwind-protect
+        (progn
+          (make-directory refs t)
+          (with-temp-file (expand-file-name "paper:edition.pdf" refs))
+          (should (equal (mapcar #'file-name-nondirectory
+                                 (refbox-reference-files
+                                  candidate
+                                  (refbox--candidate-resources candidate)))
+                         '("paper:edition.pdf"))))
+      (delete-directory root t))))
 
 (ert-deftest refbox-test-reference-files-resolve-fields-library-paths-and_extensions ()
   "File lookup should combine indexed file fields with configured libraries."

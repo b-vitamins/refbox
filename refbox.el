@@ -1937,45 +1937,61 @@ whose cdr is passed as additional arguments."
 (defun refbox-resource--split-escaped-string (string sepchar)
   "Split STRING on SEPCHAR while honoring backslash escapes."
   (let ((index 0)
-        pieces
-        chars)
+        (start 0)
+        pieces)
     (while (< index (length string))
       (let ((char (aref string index)))
         (cond
          ((= char ?\\)
-          (if (< (1+ index) (length string))
-              (let ((next (aref string (1+ index))))
-                (if (or (= next sepchar) (= next ?\\))
-                    (progn
-                      (push next chars)
-                      (setq index (1+ index)))
-                  (push char chars)))
-            (push char chars)))
+          (setq index (+ index 2)))
          ((= char sepchar)
-          (push (apply #'string (nreverse chars)) pieces)
-          (setq chars nil))
+          (push (substring string start index) pieces)
+          (setq start (1+ index))
+          (setq index (1+ index)))
          (t
-          (push char chars))))
-      (setq index (1+ index)))
-    (nreverse (cons (apply #'string (nreverse chars)) pieces))))
+          (setq index (1+ index))))))
+    (nreverse (cons (substring string start) pieces))))
+
+(defun refbox-resource--unescape-file-field (value)
+  "Return VALUE with bibliography backslash escapes removed."
+  (replace-regexp-in-string "\\\\\\(.\\)" "\\1" value))
+
+(defun refbox-resource--file-field-variants (value)
+  "Return path variants for parsed file-field VALUE."
+  (let* ((trimmed (string-trim value))
+         (unescaped (refbox-resource--unescape-file-field trimmed)))
+    (unless (string-empty-p trimmed)
+      (if (string= trimmed unescaped)
+          (list trimmed)
+        (list unescaped trimmed)))))
 
 (defun refbox-resource-parse-file-field-default (file-field)
   "Parse FILE-FIELD as a semicolon-separated path list."
   (let ((text (refbox-resource--clean-value file-field)))
-    (cl-remove-if
-     #'string-empty-p
-     (mapcar #'string-trim
+    (apply
+     #'append
+     (mapcar #'refbox-resource--file-field-variants
              (refbox-resource--split-escaped-string text ?\;)))))
 
 (defun refbox-resource-parse-file-field-triplet (file-field)
   "Parse FILE-FIELD entries shaped as title:path:type triplets."
   (let ((text (refbox-resource--clean-value file-field))
         files)
-    (dolist (item (refbox-resource--split-escaped-string text ?,))
-      (let ((parts (refbox-resource--split-escaped-string item ?:)))
-        (when (>= (length parts) 3)
-          (push (string-join (butlast (cdr parts)) ":") files))))
-    (nreverse files)))
+    (dolist (sepchar (delq nil
+                            (list (and (string-search ";" text) ?\;)
+                                  (and (string-search "," text) ?,)
+                                  (unless (or (string-search ";" text)
+                                              (string-search "," text))
+                                    ?,))))
+      (dolist (item (refbox-resource--split-escaped-string text sepchar))
+        (let ((parts (refbox-resource--split-escaped-string item ?:)))
+          (when (>= (length parts) 3)
+            (setq files
+                  (append
+                   files
+                   (refbox-resource--file-field-variants
+                    (string-join (butlast (cdr parts)) ":"))))))))
+    files))
 
 (defun refbox-resource--parse-file-field (value)
   "Return candidate file paths parsed from VALUE."
