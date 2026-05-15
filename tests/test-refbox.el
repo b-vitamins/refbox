@@ -10,6 +10,8 @@
 (require 'cl-lib)
 (require 'refbox)
 
+(defvar org-cite-csl--fallback-locales-dir)
+
 (ert-deftest refbox-test-package-loads ()
   "The package entry feature should load cleanly."
   (should (featurep 'refbox)))
@@ -1758,6 +1760,26 @@
           (let ((refbox-citeproc-csl-styles-dir (list style-dir))
                 (refbox-citeproc-csl-style "http://www.zotero.org/styles/apa-test"))
             (should (equal (refbox-csl--style-file) style-file))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-csl-resolution_uses_org_fallback_directory ()
+  "CSL lookup should use Org's bundled fallback directory when available."
+  (let* ((root (make-temp-file "refbox-csl-fallback-" t))
+         (style-file (expand-file-name "apa.csl" root))
+         (locale-file (expand-file-name "locales-en-US.xml" root)))
+    (unwind-protect
+        (progn
+          (with-temp-file style-file
+            (insert "<style><info><title>APA Test</title></info></style>"))
+          (with-temp-file locale-file
+            (insert "<locale></locale>"))
+          (let ((org-cite-csl--fallback-locales-dir root)
+                (refbox-citeproc-csl-styles-dir nil)
+                (refbox-citeproc-csl-locales-dir nil)
+                (refbox-citeproc-csl-style "apa")
+                (refbox-citeproc-csl-locale "en-US"))
+            (should (equal (refbox-csl--style-file) style-file))
+            (should (equal (refbox-csl--locale-file) locale-file))))
       (delete-directory root t))))
 
 (ert-deftest refbox-test-format-reference-default_uses_preview_template ()

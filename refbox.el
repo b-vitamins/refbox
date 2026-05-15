@@ -40,6 +40,7 @@
 (require 'refbox-rpc)
 
 (defvar completion-category-defaults)
+(defvar org-cite-csl--fallback-locales-dir)
 
 (defface refbox
   '((t :inherit default))
@@ -645,9 +646,9 @@ item.  `:create' and `:create-label' receive KEY and REFERENCE.
   :type '(choice (const :tag "Unset" nil) string)
   :group 'refbox)
 
-(defcustom refbox-citeproc-csl-locale nil
+(defcustom refbox-citeproc-csl-locale "en-US"
   "Selected CSL locale file or locale id."
-  :type '(choice (const :tag "Unset" nil) string)
+  :type 'string
   :group 'refbox)
 
 (defcustom refbox-format-reference-function #'refbox-format-reference
@@ -3363,6 +3364,12 @@ passed to the adapter command."
   "Return existing CSL DIRS."
   (refbox-resource--directory-list dirs nil))
 
+(defun refbox-csl--fallback-directories ()
+  "Return Org-provided fallback CSL directories when available."
+  (when (and (boundp 'org-cite-csl--fallback-locales-dir)
+             (stringp org-cite-csl--fallback-locales-dir))
+    (list org-cite-csl--fallback-locales-dir)))
+
 (defun refbox-csl--readable-file-p (file)
   "Return non-nil when FILE is a readable regular file."
   (and (file-regular-p file)
@@ -3376,7 +3383,9 @@ passed to the adapter command."
              (cl-remove-if-not
               #'refbox-csl--readable-file-p
               (directory-files dir t "\\.csl\\'")))
-           (refbox-csl--directories refbox-citeproc-csl-styles-dir))))
+           (refbox-csl--directories
+            (append refbox-citeproc-csl-styles-dir
+                    (refbox-csl--fallback-directories))))))
 
 (defun refbox-csl--locale-files ()
   "Return configured CSL locale files."
@@ -3386,7 +3395,9 @@ passed to the adapter command."
              (cl-remove-if-not
               #'refbox-csl--readable-file-p
               (directory-files dir t "\\.xml\\'")))
-           (refbox-csl--directories refbox-citeproc-csl-locales-dir))))
+           (refbox-csl--directories
+            (append refbox-citeproc-csl-locales-dir
+                    (refbox-csl--fallback-directories))))))
 
 (defun refbox-csl--node-children (node)
   "Return XML NODE children."
