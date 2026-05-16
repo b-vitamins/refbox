@@ -11,6 +11,7 @@
 (require 'refbox)
 
 (defvar org-cite-csl--fallback-locales-dir)
+(defvar pdf-tools-enabled-modes)
 (defvar truncate-string-ellipsis)
 
 (ert-deftest refbox-test-package-loads ()
@@ -1583,16 +1584,45 @@
                      "/tmp/refbox-test.html"))
       (should (equal opened "/tmp/refbox-test.html")))))
 
-(ert-deftest refbox-test-file_openers_default_pdf_to_pdf_opener ()
-  "PDF resources should use the dedicated PDF opener by default."
+(ert-deftest refbox-test-file_openers_default_pdf_uses_find_file ()
+  "PDF resources should use the normal Emacs file opener by default."
   (let ((opened nil))
-    (cl-letf (((symbol-function 'refbox-file-open-pdf)
+    (cl-letf (((symbol-function 'find-file)
                (lambda (file)
                  (setq opened file)
                  file)))
       (should (equal (refbox-file-open "/tmp/refbox-test.pdf")
                      "/tmp/refbox-test.pdf"))
       (should (equal opened "/tmp/refbox-test.pdf")))))
+
+(ert-deftest refbox-test-pdf_open_mode_requires_pdf_tools_state ()
+  "`pdf-view-mode' should only be selected after `pdf-tools' state exists."
+  (let ((original-bound (boundp 'pdf-tools-enabled-modes))
+        (original-value (and (boundp 'pdf-tools-enabled-modes)
+                             (symbol-value 'pdf-tools-enabled-modes)))
+        (required nil))
+    (unwind-protect
+        (progn
+          (when (boundp 'pdf-tools-enabled-modes)
+            (makunbound 'pdf-tools-enabled-modes))
+          (cl-letf (((symbol-function 'require)
+                     (lambda (feature &optional _filename _noerror)
+                       (push feature required)
+                       (pcase feature
+                         ('pdf-tools t)
+                         ('pdf-view t)
+                         ('doc-view nil)
+                         (_ nil))))
+                    ((symbol-function 'fboundp)
+                     (lambda (symbol)
+                       (eq symbol 'pdf-view-mode))))
+            (should-not (refbox--pdf-open-mode))
+            (should (equal (nreverse required)
+                           '(pdf-tools pdf-view doc-view)))))
+      (if original-bound
+          (set 'pdf-tools-enabled-modes original-value)
+        (when (boundp 'pdf-tools-enabled-modes)
+          (makunbound 'pdf-tools-enabled-modes))))))
 
 (defun refbox-test-pdf-mode ()
   "Test mode used to prove PDF resources do not stay in raw text buffers."
@@ -1614,6 +1644,31 @@
           (cl-letf (((symbol-function 'refbox--pdf-open-mode)
                      (lambda () 'refbox-test-pdf-mode)))
             (should (equal (refbox-file-open-pdf file) file))
+            (with-current-buffer (get-file-buffer file)
+              (should (eq major-mode 'refbox-test-pdf-mode)))))
+      (when-let ((buffer (get-file-buffer file)))
+        (kill-buffer buffer))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-file_open_with_mode_bypasses_raw_pdf_auto_mode ()
+  "Mode-specific opening should not let PDF auto-mode expose raw bytes."
+  (let* ((root (make-temp-file "refbox-pdf-auto-mode-" t))
+         (file (expand-file-name "paper.pdf" root)))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "%PDF-1.7\n"))
+          (let ((auto-mode-alist
+                 `(("\\.pdf\\'" . ,(lambda ()
+                                      (error "PDF auto-mode should not run")))))
+                (magic-mode-alist
+                 `(("%PDF" . ,(lambda ()
+                                (error "PDF magic-mode should not run")))))
+                (magic-fallback-mode-alist nil))
+            (should (equal (refbox--file-open-with-mode
+                            file
+                            'refbox-test-pdf-mode)
+                           file))
             (with-current-buffer (get-file-buffer file)
               (should (eq major-mode 'refbox-test-pdf-mode)))))
       (when-let ((buffer (get-file-buffer file)))

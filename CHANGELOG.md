@@ -6,6 +6,15 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.4.7] - 2026-05-16
+
+### Changed
+- Matched the standard file-opening dispatch model: HTML resources open externally, while other file resources use Emacs' normal `find-file` path unless users configure extension-specific openers.
+
+### Fixed
+- Hardened the optional PDF opener so it only enters `pdf-view-mode` after `pdf-tools` has initialized the state that `pdf-view-mode` expects.
+- Prevented the optional mode-specific file opener from exposing raw PDF bytes through auto-mode or magic-mode before activating the requested viewer.
+
 ## [0.4.6] - 2026-05-16
 
 ### Changed

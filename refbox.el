@@ -4,7 +4,7 @@
 
 ;; Author: Ayan Das <bvits@riseup.net>
 ;; Maintainer: Ayan Das <bvits@riseup.net>
-;; Version: 0.4.6
+;; Version: 0.4.7
 ;; Package-Requires: ((emacs "29.1") (jsonrpc "1.0.27"))
 ;; Keywords: bib, tex, files, convenience
 
@@ -558,9 +558,8 @@ destination file name."
   :group 'refbox)
 
 (defcustom refbox-file-open-functions
-  '(("pdf" . refbox-file-open-pdf)
-    ("html" . refbox-file-open-external)
-    (t . refbox-file-open-in-emacs))
+  '(("html" . refbox-file-open-external)
+    (t . find-file))
   "Alist mapping file extensions to resource opening functions.
 
 Keys are extension strings without a leading dot.  The entry with key
@@ -3086,10 +3085,17 @@ single choice is accepted without prompting."
               (fboundp mode)))
        features)))
 
+(defun refbox--pdf-view-mode-available-p ()
+  "Return non-nil when `pdf-view-mode' can be entered safely."
+  (and (require 'pdf-tools nil t)
+       (require 'pdf-view nil t)
+       (fboundp 'pdf-view-mode)
+       (boundp 'pdf-tools-enabled-modes)))
+
 (defun refbox--pdf-open-mode ()
   "Return the best available Emacs PDF major mode."
   (cond
-   ((refbox--mode-available-p 'pdf-view-mode '(pdf-view pdf-tools))
+   ((refbox--pdf-view-mode-available-p)
     'pdf-view-mode)
    ((refbox--mode-available-p 'doc-view-mode '(doc-view))
     'doc-view-mode)))
@@ -3097,7 +3103,10 @@ single choice is accepted without prompting."
 (defun refbox--file-open-with-mode (file mode)
   "Open FILE in Emacs and activate MODE."
   (refbox--kill-raw-file-buffer file)
-  (let ((buffer (find-file file)))
+  (let* ((auto-mode-alist nil)
+         (magic-mode-alist nil)
+         (magic-fallback-mode-alist nil)
+         (buffer (find-file file)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (unless (derived-mode-p mode)
