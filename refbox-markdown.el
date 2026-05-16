@@ -169,32 +169,27 @@ Captures the actual key in group 1.")
 
 (defun refbox-markdown-citation-at-point ()
   "Return Markdown citation metadata at point, or nil."
-  (let ((point (point))
-        citation)
-    (cond
-     ((eq ?\[ (char-after point))
-      (setq point (1+ point)))
-     ((eq ?\] (char-before point))
-      (setq point (1- point))))
+  (let ((original-point (point)))
     (save-excursion
-      (goto-char point)
-      (while (and (not citation)
-                  (search-backward "[" nil t))
-        (let ((begin (point)))
-          (when-let ((end (ignore-errors (scan-lists begin 1 0))))
-            (let* ((body-begin (1+ begin))
-                   (body-end (1- end))
-                   (body (buffer-substring-no-properties body-begin body-end)))
-              (when (and (<= begin point)
-                         (<= point end)
-                         (string-match-p refbox-markdown--key-regexp body))
-                (setq citation
-                      (list :begin begin
-                            :end end
-                            :body-begin body-begin
-                            :body-end body-end
-                            :keys (refbox-markdown--keys-in-string body)))))))))
-    citation))
+      (cond
+       ((eq ?\[ (char-after)) (forward-char))
+       ((eq ?\] (char-before)) (backward-char)))
+      (catch 'citation
+        (dolist (begin (reverse (nth 9 (syntax-ppss))))
+          (when (eq ?\[ (char-after begin))
+            (when-let ((end (ignore-errors (scan-lists begin 1 0))))
+              (let* ((body-begin (1+ begin))
+                     (body-end (1- end))
+                     (body (buffer-substring-no-properties body-begin body-end)))
+                (when (and (<= begin original-point)
+                           (<= original-point end)
+                           (string-match-p refbox-markdown--key-regexp body))
+                  (throw 'citation
+                         (list :begin begin
+                               :end end
+                               :body-begin body-begin
+                               :body-end body-end
+                               :keys (refbox-markdown--keys-in-string body))))))))))))
 
 (defun refbox-markdown--keys-in-string (string)
   "Return citation keys found in STRING without leading @ markers."
@@ -205,19 +200,32 @@ Captures the actual key in group 1.")
       (setq position (match-end 0)))
     (nreverse keys)))
 
+(defun refbox-markdown--key-and-bounds-at-point ()
+  "Return the Markdown citation key and bounds at point, or nil."
+  (let ((point (point)))
+    (or
+     (when-let ((citation (refbox-markdown-citation-at-point)))
+       (cl-loop
+        for (key begin end) in (refbox-markdown--key-spans citation)
+        when (and (<= begin point) (<= point end))
+        return (list key begin end)))
+     (save-excursion
+       (goto-char (line-beginning-position))
+       (catch 'key
+         (while (re-search-forward refbox-markdown--key-regexp
+                                   (line-end-position)
+                                   t)
+           (when (and (<= (match-beginning 0) point)
+                      (<= point (match-end 0)))
+             (throw 'key
+                    (list (refbox-markdown--match-key)
+                          (match-beginning 0)
+                          (match-end 0)))))
+         nil)))))
+
 (defun refbox-markdown-key-at-point ()
   "Return the Markdown citation key at point, or nil."
-  (let ((point (point)))
-    (save-excursion
-      (goto-char (line-beginning-position))
-      (catch 'key
-        (while (re-search-forward refbox-markdown--key-regexp
-                                  (line-end-position)
-                                  t)
-          (when (and (<= (match-beginning 0) point)
-                     (<= point (match-end 0)))
-            (throw 'key (refbox-markdown--match-key))))
-        nil))))
+  (car (refbox-markdown--key-and-bounds-at-point)))
 
 (defun refbox-markdown--completion-bounds ()
   "Return Markdown citation key bounds for completion at point."
@@ -267,7 +275,9 @@ keys directly.  INVERT-PROMPT reverses
          (keys (or keys (refbox-markdown--selected-keys))))
     (unless keys
       (user-error "No references selected"))
-    (if citation
+    (if (and citation
+             (/= (point) (plist-get citation :begin))
+             (/= (point) (plist-get citation :end)))
         (refbox-markdown--insert-keys-into-citation citation keys)
       (let* ((affixes (refbox-markdown--read-affixes invert-prompt)))
         (insert (refbox-markdown-format-citation

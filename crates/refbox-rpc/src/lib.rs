@@ -248,9 +248,9 @@ pub struct EntriesByKeysRequest {
     pub limit_per_key: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EntriesResponse {
-    pub entries: Vec<EntryItem>,
+    pub entries: Vec<EntrySearchItem>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

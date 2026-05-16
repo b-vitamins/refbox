@@ -9,8 +9,8 @@ use std::time::UNIX_EPOCH;
 
 use bibtex_parser::{
     Diagnostic as BibDiagnostic, DiagnosticSeverity as BibDiagnosticSeverity,
-    DiagnosticTarget as BibDiagnosticTarget, ParsedDocument, ParsedEntry, ParsedField,
-    Parser as BibParser, SourceSpan as BibSourceSpan,
+    DiagnosticTarget as BibDiagnosticTarget, ExpansionOptions, ParsedDocument, ParsedEntry,
+    ParsedField, Parser as BibParser, SourceSpan as BibSourceSpan, UnresolvedVariablePolicy,
 };
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use refbox_core::{
@@ -554,7 +554,7 @@ fn bibliography_file_from_document(
     let entries = document
         .entries()
         .iter()
-        .map(|entry| bibliography_entry_from_parsed(&path, input, entry))
+        .map(|entry| bibliography_entry_from_parsed(&path, input, document, entry))
         .collect::<Vec<_>>();
     let diagnostics = document
         .diagnostics()
@@ -573,16 +573,17 @@ fn bibliography_file_from_document(
 fn bibliography_entry_from_parsed(
     path: &str,
     input: &str,
+    document: &ParsedDocument<'_>,
     entry: &ParsedEntry<'_>,
 ) -> BibliographyEntry {
     let id = EntryId::new(path, entry.key().to_string());
     let fields = entry
         .fields
         .iter()
-        .map(|field| bibliography_field_from_parsed(path, input, field))
+        .map(|field| bibliography_field_from_parsed(path, document, field))
         .collect::<Vec<_>>();
-    let names = name_lists_from_parsed_fields(path, &entry.fields);
-    let dates = dates_from_parsed_fields(path, &entry.fields);
+    let names = name_lists_from_fields(&fields);
+    let dates = dates_from_fields(&fields);
     let resources = fields
         .iter()
         .filter_map(ResourceField::from_field)
@@ -612,27 +613,27 @@ fn bibliography_entry_from_parsed(
 
 fn bibliography_field_from_parsed(
     path: &str,
-    input: &str,
+    document: &ParsedDocument<'_>,
     field: &ParsedField<'_>,
 ) -> BibliographyField {
     BibliographyField::new(
         field.name.as_ref(),
-        field_value_text(input, field),
+        field_value_text(document, field),
         field.source.map(|span| source_span(path, span)),
     )
 }
 
-fn name_lists_from_parsed_fields(path: &str, fields: &[ParsedField<'_>]) -> Vec<NameList> {
+fn name_lists_from_fields(fields: &[BibliographyField]) -> Vec<NameList> {
     fields
         .iter()
         .filter(|field| {
             matches!(
-                normalize_lookup_name(&field.name),
-                ref name if name == "author" || name == "editor" || name == "translator"
+                field.lookup_name.as_str(),
+                "author" | "editor" | "translator"
             )
         })
         .map(|field| {
-            let raw = field.value.plain_text();
+            let raw = field.value.clone();
             let names = bibtex_parser::parse_names(&raw)
                 .into_iter()
                 .map(|name| PersonName {
@@ -643,32 +644,27 @@ fn name_lists_from_parsed_fields(path: &str, fields: &[ParsedField<'_>]) -> Vec<
                     literal: name.literal,
                 })
                 .collect();
-            NameList::new(
-                field.name.as_ref(),
-                raw,
-                names,
-                field.source.map(|span| source_span(path, span)),
-            )
+            NameList::new(field.raw_name.as_str(), raw, names, field.source.clone())
         })
         .collect()
 }
 
-fn dates_from_parsed_fields(path: &str, fields: &[ParsedField<'_>]) -> Vec<EntryDate> {
+fn dates_from_fields(fields: &[BibliographyField]) -> Vec<EntryDate> {
     fields
         .iter()
         .filter(|field| {
             matches!(
-                normalize_lookup_name(&field.name).as_str(),
+                field.lookup_name.as_str(),
                 "date" | "year" | "urldate" | "eventdate" | "origdate" | "issued"
             )
         })
         .map(|field| {
-            let raw = field.value.plain_text();
+            let raw = field.value.clone();
             EntryDate::new(
-                field.name.as_ref(),
+                field.raw_name.as_str(),
                 raw.clone(),
                 date_parts_from_parser(&raw),
-                field.source.map(|span| source_span(path, span)),
+                field.source.clone(),
             )
         })
         .collect()
@@ -698,18 +694,54 @@ fn entry_raw_text(input: &str, entry: &ParsedEntry<'_>) -> String {
         .unwrap_or_default()
 }
 
-fn field_value_text(input: &str, field: &ParsedField<'_>) -> String {
-    field
-        .value
-        .raw_text()
-        .map(ToOwned::to_owned)
-        .or_else(|| {
-            field
-                .value
-                .source
-                .and_then(|span| source_slice(input, span))
-        })
-        .unwrap_or_else(|| field.value.plain_text())
+fn field_value_text(document: &ParsedDocument<'_>, field: &ParsedField<'_>) -> String {
+    let lookup_name = normalize_lookup_name(&field.name);
+    if lookup_name == "month" {
+        if let Some(raw) = bare_raw_value_text(field) {
+            return raw;
+        }
+    }
+
+    let text = document
+        .expand_value(
+            field.value.parsed(),
+            ExpansionOptions {
+                expand_strings: true,
+                expand_months: false,
+                unresolved_variables: UnresolvedVariablePolicy::Preserve,
+            },
+        )
+        .unwrap_or_else(|_| field.value.plain_text());
+
+    if matches!(lookup_name.as_str(), "title" | "shorttitle") {
+        strip_unescaped_braces(&text)
+    } else {
+        text
+    }
+}
+
+fn bare_raw_value_text(field: &ParsedField<'_>) -> Option<String> {
+    let raw = field.value.raw_text()?.trim();
+    raw.chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+        .then(|| raw.to_string())
+}
+
+fn strip_unescaped_braces(text: &str) -> String {
+    let mut stripped = String::with_capacity(text.len());
+    let mut escaped = false;
+    for character in text.chars() {
+        if escaped {
+            stripped.push(character);
+            escaped = false;
+        } else if character == '\\' {
+            stripped.push(character);
+            escaped = true;
+        } else if character != '{' && character != '}' {
+            stripped.push(character);
+        }
+    }
+    stripped
 }
 
 fn source_slice(input: &str, span: BibSourceSpan) -> Option<String> {

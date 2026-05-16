@@ -96,6 +96,16 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
       (should (equal (buffer-string)
                      "[cite:@gamma;@alpha; @beta]")))))
 
+(ert-deftest refbox-org-test-dwim_uses_whole_citation_on_command_text ()
+  "DWIM on citation command text should act on every key in the citation."
+  (refbox-org-test-with-buffer "[ci|te:@alpha; @beta]"
+    (let (seen)
+      (let ((refbox-default-action
+             (lambda (references)
+               (setq seen references))))
+        (refbox-dwim))
+      (should (equal seen '("alpha" "beta"))))))
+
 (ert-deftest refbox-org-test-edits-existing-citation-style ()
   "Org insertion on the style area should update the citation style."
   (refbox-org-test-with-buffer "[cite/au|thor:@alpha]"
@@ -206,6 +216,16 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
     (should (eq (org-element-type (refbox-org-citation-at-point)) 'citation))
     (should (eq (org-element-type (refbox-org-reference-at-point))
                 'citation-reference))))
+
+(ert-deftest refbox-org-test-key-at-point_requires_actual_reference ()
+  "Citation command/style positions should not masquerade as a key."
+  (dolist (fixture '("|[cite:@alpha]"
+                     "[ci|te:@alpha]"
+                     "[cite:@alpha]|"))
+    (refbox-org-test-with-buffer fixture
+      (should-not (refbox-org-key-at-point))
+      (when (not (string-suffix-p "|" fixture))
+        (should (equal (refbox-citation-at-point) '("alpha")))))))
 
 (ert-deftest refbox-org-test-key-at-point_reads_node_property_refs ()
   "Org key helper should find @KEY references in property drawers."

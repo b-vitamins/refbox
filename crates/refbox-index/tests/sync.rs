@@ -71,9 +71,9 @@ fn single_file_sync_updates_only_that_file() {
     assert_eq!(status.indexed_file_count, 2);
     assert_eq!(
         store.field_value_for_key("a2020", "title"),
-        Some("{Alpha Updated}")
+        Some("Alpha Updated")
     );
-    assert_eq!(store.field_value_for_key("b2020", "title"), Some("{Beta}"));
+    assert_eq!(store.field_value_for_key("b2020", "title"), Some("Beta"));
 }
 
 #[test]
@@ -93,7 +93,7 @@ fn file_removal_drops_only_that_file() {
     assert_eq!(status.removed_file_count, 1);
     assert_eq!(status.indexed_file_count, 1);
     assert_eq!(store.field_value_for_key("a2020", "title"), None);
-    assert_eq!(store.field_value_for_key("b2020", "title"), Some("{Beta}"));
+    assert_eq!(store.field_value_for_key("b2020", "title"), Some("Beta"));
 }
 
 #[test]
@@ -112,7 +112,7 @@ fn single_file_sync_respects_discovery_policy() {
         .sync_file(&mut store, &hidden_path)
         .expect("hidden file should be rejected through normal removal path");
 
-    assert_eq!(store.field_value_for_key("a2020", "title"), Some("{Alpha}"));
+    assert_eq!(store.field_value_for_key("a2020", "title"), Some("Alpha"));
     assert_eq!(store.field_value_for_key("hidden", "title"), None);
 }
 
@@ -137,8 +137,8 @@ fn explicit_bibliography_files_are_authoritative_corpus_members() {
             .path_ending("outside/not-a-bib-extension.txt")
             .is_some()
     );
-    assert_eq!(store.field_value_for_key("a2020", "title"), Some("{Alpha}"));
-    assert_eq!(store.field_value_for_key("b2020", "title"), Some("{Beta}"));
+    assert_eq!(store.field_value_for_key("a2020", "title"), Some("Alpha"));
+    assert_eq!(store.field_value_for_key("b2020", "title"), Some("Beta"));
 
     fs::remove_file(explicit).expect("explicit fixture should remove");
     let status = engine
@@ -165,7 +165,7 @@ fn targeted_sync_accepts_explicit_files_outside_roots() {
         .expect("explicit file sync should work");
 
     assert_eq!(status.changed_file_count, 1);
-    assert_eq!(store.field_value_for_key("x2020", "title"), Some("{Exact}"));
+    assert_eq!(store.field_value_for_key("x2020", "title"), Some("Exact"));
 }
 
 #[test]
@@ -184,7 +184,7 @@ fn explicit_file_sync_indexes_local_files_outside_policy() {
     assert_eq!(status.changed_file_count, 1);
     assert_eq!(
         store.field_value_for_key("local2020", "title"),
-        Some("{Local}")
+        Some("Local")
     );
 
     fs::remove_file(local).expect("local fixture should remove");

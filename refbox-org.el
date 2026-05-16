@@ -351,12 +351,11 @@ argument."
       ('citation-reference context)
       ('citation
        (let ((references (org-cite-get-references context)))
-         (or (cl-find-if
-              (lambda (reference)
-                (and (>= (point) (org-element-begin reference))
-                     (<= (point) (org-element-end reference))))
-              references)
-             (car references))))
+         (cl-find-if
+          (lambda (reference)
+            (and (>= (point) (org-element-begin reference))
+                 (<= (point) (org-element-end reference))))
+          references)))
       (_ nil))))
 
 (defun refbox-org-citation-at-point (&optional datum)
@@ -637,7 +636,10 @@ DIRECTION is -1 for left and 1 for right."
 (defun refbox-org-follow (datum arg)
   "Follow Org citation DATUM with ARG through `refbox-org-follow-action'."
   (interactive (list (org-element-context) current-prefix-arg))
-  (let ((key (refbox-org-key-at-point datum)))
+  (let* ((citation (refbox-org-citation-at-point datum))
+         (key (or (refbox-org-key-at-point datum)
+                  (car (and citation
+                            (org-cite-get-references citation t))))))
     (unless key
       (user-error "No Org citation key at point"))
     (funcall refbox-org-follow-action key datum arg)))

@@ -20,6 +20,13 @@ The format follows Keep a Changelog, and this project follows SemVer.
 - Removed implicit whole-bibliography materialization from entry/resource/note helper paths; global note listing now requires note-source enumeration instead of scanning every reference.
 - Recognized BibLaTeX `\addbibresource[...]{...}` declarations when scoping LaTeX completion and insertion to local bibliography files.
 - Used RefTeX's bibliography file list when available so LaTeX project bibliography discovery matches Citar-backed setups.
+- Normalized indexed field values with Citar-style string expansion, title brace cleanup, and raw-entry preservation so display, search, and resource lookup no longer expose ordinary BibTeX delimiters.
+- Added bounded Emacs diagnostic and duplicate-key list commands backed by daemon RPCs, with source jumps from the list views.
+- Routed exact multi-key hydration through one daemon request while preserving duplicate-key ambiguity errors.
+- Allocated star-width template remainders deterministically so multi-star completion displays consume the requested display width.
+- Bounded Markdown citation detection to containing bracket syntax state instead of scanning backward through unrelated bracketed text.
+- Used exact Markdown citation-key spans for at-point and Embark targets, including brace-delimited Pandoc keys.
+- Parsed LaTeX citation optional arguments with escaped brackets and brace-protected bracket content instead of stopping at the first `]`.
 - Stopped mutating completion category defaults while loading the package.
 
 ## [0.4.8] - 2026-05-17

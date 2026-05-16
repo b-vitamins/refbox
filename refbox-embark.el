@@ -44,9 +44,8 @@
 (declare-function refbox-latex-key-at-point "refbox-latex" ())
 (declare-function refbox-latex-citation-at-point "refbox-latex" ())
 (declare-function refbox-latex--completion-bounds "refbox-latex" ())
-(declare-function refbox-markdown-key-at-point "refbox-markdown" ())
 (declare-function refbox-markdown-citation-at-point "refbox-markdown" ())
-(declare-function refbox-markdown--completion-bounds "refbox-markdown" ())
+(declare-function refbox-markdown--key-and-bounds-at-point "refbox-markdown" ())
 (declare-function refbox--open-resource-choice "refbox" (choice))
 (declare-function embark--metadata "embark" ())
 
@@ -297,9 +296,7 @@
       (list key (car bounds) (cdr bounds))))
    ((and (derived-mode-p 'markdown-mode 'gfm-mode)
          (require 'refbox-markdown nil t))
-    (when-let* ((key (refbox-markdown-key-at-point))
-                (bounds (refbox-markdown--completion-bounds)))
-      (list key (car bounds) (cdr bounds))))))
+    (refbox-markdown--key-and-bounds-at-point))))
 
 (defun refbox-embark--citation-keys-and-bounds ()
   "Return citation keys and bounds at point for supported modes."

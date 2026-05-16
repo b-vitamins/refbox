@@ -518,6 +518,93 @@
             (should (equal (refbox-source-location "local2020") location))))
       (delete-directory root t))))
 
+(ert-deftest refbox-test-diagnostics_requests_bounded_rpc ()
+  "Diagnostic lookup should use the bounded daemon diagnostics method."
+  (let ((refbox-diagnostics-limit 12)
+        (refbox-search-maximum-limit 50)
+        (diagnostic '(:severity "error" :message "bad entry"))
+        calls)
+    (cl-letf (((symbol-function 'refbox-rpc-request)
+               (lambda (method params)
+                 (push (list method params) calls)
+                 (should (equal method refbox-rpc-method-diagnostics))
+                 (list :diagnostics (list diagnostic)))))
+      (should (equal (refbox-diagnostics)
+                     (list diagnostic)))
+      (should (equal (cadr (car calls))
+                     (list :limit 12)))
+      (setq calls nil)
+      (should (equal (refbox-diagnostics 200)
+                     (list diagnostic)))
+      (should (equal (cadr (car calls))
+                     (list :limit 50))))))
+
+(ert-deftest refbox-test_duplicate_groups_request_bounded_rpc ()
+  "Duplicate-key lookup should use the bounded daemon duplicate-group method."
+  (let ((refbox-duplicate-groups-limit 9)
+        (refbox-search-maximum-limit 25)
+        (group '(:key "dup2020"
+                 :entries ((:id 1 :key "dup2020" :source_path "/tmp/a.bib")
+                           (:id 2 :key "dup2020" :source_path "/tmp/b.bib"))))
+        calls)
+    (cl-letf (((symbol-function 'refbox-rpc-request)
+               (lambda (method params)
+                 (push (list method params) calls)
+                 (should (equal method refbox-rpc-method-duplicate-groups))
+                 (list :groups (list group)))))
+      (should (equal (refbox-duplicate-groups)
+                     (list group)))
+      (should (equal (cadr (car calls))
+                     (list :limit 9)))
+      (setq calls nil)
+      (should (equal (refbox-duplicate-groups 200)
+                     (list group)))
+      (should (equal (cadr (car calls))
+                     (list :limit 25))))))
+
+(ert-deftest refbox-test-diagnostic_location_includes_source_position ()
+  "Diagnostic row locations should include indexed source spans."
+  (let ((file (expand-file-name "bad.bib" temporary-file-directory)))
+    (should (equal (refbox--diagnostic-location
+                    `(:file_path ,file
+                      :source (:start (:line 3 :column 5))))
+                   (concat (abbreviate-file-name file) ":3:5")))))
+
+(ert-deftest refbox-test-diagnostic_and_duplicate_lists_use_tabulated_buffers ()
+  "Diagnostic and duplicate commands should build bounded list buffers."
+  (let ((diagnostic '(:severity "error"
+                     :code "parse"
+                     :file_path "/tmp/bad.bib"
+                     :message "bad entry"
+                     :source (:start (:line 3 :column 5))))
+        (group '(:key "dup2020"
+                 :entries ((:id 1 :key "dup2020" :source_path "/tmp/a.bib")
+                           (:id 2 :key "dup2020" :source_path "/tmp/b.bib")))))
+    (cl-letf (((symbol-function 'refbox-diagnostics)
+               (lambda (limit)
+                 (should (equal limit 7))
+                 (list diagnostic)))
+              ((symbol-function 'refbox-duplicate-groups)
+               (lambda (limit)
+                 (should (equal limit 4))
+                 (list group)))
+              ((symbol-function 'pop-to-buffer)
+               (lambda (buffer &rest _args) buffer)))
+      (unwind-protect
+          (progn
+            (refbox-list-diagnostics 7)
+            (with-current-buffer refbox-diagnostics-buffer-name
+              (should (eq major-mode 'refbox-diagnostics-list-mode))
+              (should (equal (caar tabulated-list-entries) diagnostic)))
+            (refbox-list-duplicates 4)
+            (with-current-buffer refbox-duplicates-buffer-name
+              (should (eq major-mode 'refbox-duplicates-list-mode))
+              (should (equal (caar tabulated-list-entries) group))))
+        (when (get-buffer refbox-diagnostics-buffer-name)
+          (kill-buffer refbox-diagnostics-buffer-name))
+        (when (get-buffer refbox-duplicates-buffer-name)
+          (kill-buffer refbox-duplicates-buffer-name))))))
+
 (ert-deftest refbox-test-template-formatting-supports_field_features ()
   "Reference templates should support width, star width, fallback, and transforms."
   (should
@@ -575,6 +662,18 @@
     (should (= (string-width (substring formatted 0
                                          (string-match-p "|" formatted)))
                6))))
+
+(ert-deftest refbox-test-template-formatting_allocates_star_width_remainder ()
+  "Star-width fields should consume all leftover display columns."
+  (let* ((candidate '(:key "k"
+                      :fields ((:lookup_name "title" :value "abcdef")
+                               (:lookup_name "journal" :value "wxyzuv"))))
+         (formatted (refbox-template-format
+                     "%{title:*}|%{journal:*}|%{key}"
+                     candidate
+                     12)))
+    (should (equal formatted "abcde|wxyz|k"))
+    (should (= (string-width formatted) 12))))
 
 (ert-deftest refbox-test-author_display_removes_protective_bibtex_braces ()
   "Author shortening should not leak BibTeX protection braces into candidates."
@@ -1267,6 +1366,56 @@
         (should (equal (plist-get (car entries) :key) "smith2020"))
         (should (equal (cadar calls) (list :limit 25 :offset 50)))))))
 
+(ert-deftest refbox-test-entries-by-keys-uses_batched_rpc ()
+  "Exact key hydration should use the daemon's batched key lookup."
+  (let ((candidate (copy-tree refbox-test-reference-candidate))
+        calls)
+    (cl-letf (((symbol-function 'refbox-rpc-request)
+               (lambda (method params)
+                 (push (list method params) calls)
+                 (should (equal method refbox-rpc-method-entries-by-keys))
+                 (should (equal (append (plist-get params :keys) nil)
+                                '("smith2020" "doe2021")))
+                 (should (equal (plist-get params :limit_per_key) 2))
+                 (list :entries (list candidate)))))
+      (should (equal (refbox-entries-by-keys
+                      '("smith2020" "doe2021" "smith2020")
+                      2)
+                     (list candidate)))
+      (should (= (length calls) 1)))))
+
+(ert-deftest refbox-test-resolved_references_batch_exact_key_hydration ()
+  "Reference resolution should not issue one lookup per citation key."
+  (let ((alpha (list :key "alpha" :source_path "/tmp/a.bib"))
+        (beta (list :key "beta" :source_path "/tmp/b.bib")))
+    (cl-letf (((symbol-function 'refbox-entries-by-keys)
+               (lambda (keys limit)
+                 (should (equal keys '("beta" "alpha")))
+                 (should (equal limit 2))
+                 (list alpha beta)))
+              ((symbol-function 'refbox-entry-by-key)
+               (lambda (_key)
+                 (error "unique batched keys should not use scalar lookup"))))
+      (should (equal (mapcar #'refbox--reference-key
+                             (refbox--resolved-reference-list
+                              '("beta" "alpha" "beta")))
+                     '("beta" "alpha" "beta"))))))
+
+(ert-deftest refbox-test-resolved_references_preserve_ambiguous_key_errors ()
+  "Batched exact lookup should still defer ambiguous keys to scalar errors."
+  (let ((fallback-key nil))
+    (cl-letf (((symbol-function 'refbox-entries-by-keys)
+               (lambda (_keys _limit)
+                 '((:key "dup2020" :source_path "/tmp/a.bib")
+                   (:key "dup2020" :source_path "/tmp/b.bib"))))
+              ((symbol-function 'refbox-entry-by-key)
+               (lambda (key)
+                 (setq fallback-key key)
+                 (list :key key :fallback t))))
+      (should (equal (refbox--resolved-reference-list '("dup2020"))
+                     '((:key "dup2020" :fallback t))))
+      (should (equal fallback-key "dup2020")))))
+
 (ert-deftest refbox-test-get_entries_requires_explicit_limit ()
   "Entry hash materialization should stay bounded."
   (should-error (refbox-get-entries nil) :type 'user-error)
@@ -1497,10 +1646,14 @@
                     :items ,(lambda (key _reference)
                               (list (format "note:%s" key)))
                     :open ,#'ignore))))
-            (cl-letf (((symbol-function 'refbox-entry-by-key)
-                       (lambda (key)
-                         (should (equal key "alpha"))
-                         candidate)))
+            (cl-letf (((symbol-function 'refbox-entries-by-keys)
+                       (lambda (keys limit)
+                         (should (equal keys '("alpha")))
+                         (should (equal limit 2))
+                         (list candidate)))
+                      ((symbol-function 'refbox-entry-by-key)
+                       (lambda (_key)
+                         (error "resource lookup should use batched hydration"))))
               (let ((files (refbox-get-files "alpha"))
                     (links (refbox-get-links "alpha"))
                     (notes (refbox-get-notes '("alpha" "alpha"))))
@@ -1527,10 +1680,14 @@
              :hasitems ,(lambda (key _reference)
                           (equal key "smith2020"))
              :open ,#'ignore))))
-    (cl-letf (((symbol-function 'refbox-entry-by-key)
-               (lambda (key)
-                 (should (equal key "smith2020"))
-                 candidate)))
+    (cl-letf (((symbol-function 'refbox-entries-by-keys)
+               (lambda (keys limit)
+                 (should (equal keys '("smith2020")))
+                 (should (equal limit 2))
+                 (list candidate)))
+              ((symbol-function 'refbox-entry-by-key)
+               (lambda (_key)
+                 (error "resource predicates should use batched hydration"))))
       (should (funcall (refbox-has-files) "smith2020"))
       (should (funcall (refbox-has-files) candidate))
       (should (funcall (refbox-has-links) "smith2020"))

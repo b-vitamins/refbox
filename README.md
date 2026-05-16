@@ -126,6 +126,13 @@ M-x refbox-insert-raw-entry
 M-x refbox-export-bibliography
 ```
 
+Inspect indexed bibliography problems:
+
+```text
+M-x refbox-list-diagnostics
+M-x refbox-list-duplicates
+```
+
 Formatted references use the `preview` entry in `refbox-templates` by default.
 For CSL output, set `refbox-format-reference-function` to
 `refbox-citeproc-format-reference` and configure citeproc:
@@ -261,9 +268,11 @@ entries, copying formatted references, and adding library files.
 Malformed bibliography files do not discard the entire corpus. Sync preserves
 recoverable entries and stores parse diagnostics in the derived index.
 
-`M-x refbox-status` reports the current diagnostic count. After fixing a source
-file, run `M-x refbox-sync-current-file` from that buffer or `M-x refbox-sync`
-for the full root.
+`M-x refbox-status` reports the current diagnostic count, and
+`M-x refbox-list-diagnostics` opens a bounded diagnostic list with source
+jumps. `M-x refbox-list-duplicates` lists duplicate-key groups. After fixing a
+source file, run `M-x refbox-sync-current-file` from that buffer or
+`M-x refbox-sync` for the full root.
 
 ## Performance
 
@@ -308,8 +317,8 @@ Stale search results: enable `refbox-autosync-mode`, or run
 Emacs, remove `refbox-database-file`, and run `M-x refbox-sync` to rebuild the
 derived index.
 
-Malformed bibliography files: run `M-x refbox-status` and check the diagnostic
-count. Fix the `.bib` source file and sync again.
+Malformed bibliography files: run `M-x refbox-list-diagnostics`, open the
+reported source location, fix the `.bib` source file, and sync again.
 
 Missing file resources: check `file` fields, `refbox-library-paths`,
 `refbox-library-paths-recursive`, and

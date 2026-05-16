@@ -15,9 +15,9 @@ fn parses_valid_bibtex_and_biblatex_records() {
     assert_eq!(article.raw.source.start.column, 1);
 
     let title = field_value(article, "title");
-    assert_eq!(title, "{Fast {Bibliography} Indexing}");
+    assert_eq!(title, "Fast Bibliography Indexing");
     assert_eq!(field_value(article, "month"), "jan");
-    assert_eq!(field_value(article, "note"), "{Escaped \\{ delimiter \\}}");
+    assert_eq!(field_value(article, "note"), "Escaped \\{ delimiter \\}");
     assert!(field_value(article, "abstract").contains("second line with {nested} braces"));
     assert!(
         article.fields.iter().any(|field| {
@@ -42,7 +42,7 @@ fn parses_valid_bibtex_and_biblatex_records() {
     );
 
     let book = entry(&file, "knuth1984");
-    assert_eq!(field_value(book, "title"), "\"The \\\"TeX\\\" book\"");
+    assert_eq!(field_value(book, "title"), "The \\\"TeX\\\" book");
     assert_eq!(book.dates[0].parts.year, Some(1984));
     assert!(
         book.resources
@@ -53,9 +53,9 @@ fn parses_valid_bibtex_and_biblatex_records() {
     let proceedings = entry(&file, "unicode2024");
     assert_eq!(
         field_value(proceedings, "title"),
-        "{Unicode and Nested {Braces}}"
+        "Unicode and Nested Braces"
     );
-    assert_eq!(field_value(proceedings, "author"), "{Núñez, Ana}");
+    assert_eq!(field_value(proceedings, "author"), "Núñez, Ana");
     assert!(
         proceedings
             .resources
@@ -74,7 +74,31 @@ fn parses_valid_bibtex_and_biblatex_records() {
             .iter()
             .any(|field| field.kind == ResourceKind::Pmcid)
     );
-    assert_eq!(field_value(proceedings, "customfield"), "{kept}");
+    assert_eq!(field_value(proceedings, "customfield"), "kept");
+}
+
+#[test]
+fn expands_string_variables_without_expanding_month_abbreviations() {
+    let file = parse_bibliography_file(
+        "strings.bib",
+        r#"@string{jmlr = {Journal of Machine Learning Research}}
+@article{macro2024,
+  title = {Protected {Title}},
+  journal = jmlr # { X},
+  month = jan,
+}
+"#,
+    );
+
+    assert!(file.diagnostics.is_empty());
+    let entry = entry(&file, "macro2024");
+    assert!(entry.raw.text.contains("journal = jmlr # { X}"));
+    assert_eq!(field_value(entry, "title"), "Protected Title");
+    assert_eq!(
+        field_value(entry, "journal"),
+        "Journal of Machine Learning Research X"
+    );
+    assert_eq!(field_value(entry, "month"), "jan");
 }
 
 #[test]
@@ -90,7 +114,7 @@ fn recovers_following_entries_from_localized_field_errors() {
 
     let recovered = entry(&file, "next2021");
     assert!(recovered.diagnostics.is_empty());
-    assert_eq!(field_value(recovered, "title"), "{Recovered Entry}");
+    assert_eq!(field_value(recovered, "title"), "Recovered Entry");
 }
 
 #[test]
@@ -110,7 +134,7 @@ fn malformed_files_return_diagnostics_without_panics() {
     );
 
     let recovered = entry(&file, "afterbroken");
-    assert_eq!(field_value(recovered, "title"), "{Recovered After Broken}");
+    assert_eq!(field_value(recovered, "title"), "Recovered After Broken");
 }
 
 fn entry<'file>(

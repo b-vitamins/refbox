@@ -47,6 +47,24 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
       (should (equal (plist-get citation :keys) '("alpha")))
       (should (equal (refbox-latex-key-at-point) "alpha")))))
 
+(ert-deftest refbox-latex-test-key-at-point_requires_actual_key ()
+  "Citation command positions should not masquerade as a key."
+  (refbox-latex-test-with-buffer "\\ci|te{alpha,beta}"
+    (should-not (refbox-latex-key-at-point))
+    (should (equal (plist-get (refbox-latex-citation-at-point) :keys)
+                   '("alpha" "beta")))))
+
+(ert-deftest refbox-latex-test-dwim_uses_whole_citation_on_command_text ()
+  "DWIM on citation command text should act on every key in the citation."
+  (refbox-latex-test-with-buffer "\\ci|te{alpha,beta}"
+    (let (seen)
+      (let ((major-mode 'latex-mode)
+            (refbox-default-action
+             (lambda (references)
+               (setq seen references))))
+        (refbox-dwim))
+      (should (equal seen '("alpha" "beta"))))))
+
 (ert-deftest refbox-latex-test-detects-natbib-optional-arguments ()
   "Natbib-style citations should preserve optional arguments and multiple keys."
   (refbox-latex-test-with-buffer "\\citet[see][p. 7]{alpha, be|ta}"
@@ -55,6 +73,17 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
       (should (equal (plist-get citation :optional-args) '("see" "p. 7")))
       (should (equal (plist-get citation :keys) '("alpha" "beta")))
       (should (equal (refbox-latex-key-at-point) "beta")))))
+
+(ert-deftest refbox-latex-test-detects_complex_optional_arguments ()
+  "Optional argument parsing should honor escapes and balanced braces."
+  (refbox-latex-test-with-buffer
+      "\\parencite[see {Appendix [A]} and \\] literal][p. 7]{al|pha}"
+    (let ((citation (refbox-latex-citation-at-point)))
+      (should (equal (plist-get citation :command) "parencite"))
+      (should (equal (plist-get citation :optional-args)
+                     '("see {Appendix [A]} and \\] literal" "p. 7")))
+      (should (equal (plist-get citation :keys) '("alpha")))
+      (should (equal (refbox-latex-key-at-point) "alpha")))))
 
 (ert-deftest refbox-latex-test-recognizes_extended_citation_commands ()
   "Default command recognition should cover common BibLaTeX and Natbib forms."

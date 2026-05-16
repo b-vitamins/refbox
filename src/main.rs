@@ -393,17 +393,37 @@ impl Daemon {
             METHOD_ENTRIES_BY_KEYS => {
                 let request: EntriesByKeysRequest = parse_params(params)?;
                 let limit = clamp_limit(request.limit_per_key);
-                let mut entries = Vec::new();
+                let mut search_results = Vec::new();
                 for key in request.keys {
-                    entries.extend(
+                    search_results.extend(
                         self.store
                             .entries_by_key(&key)
                             .map_err(store_error)?
                             .into_iter()
                             .take(limit)
-                            .map(entry_item),
+                            .map(|entry| SearchResult {
+                                entry_id: entry.id,
+                                file_path: entry.file_path,
+                                key: entry.key,
+                                entry_type: entry.entry_type,
+                                score: 0.0,
+                            }),
                     );
                 }
+                let entries = self
+                    .store
+                    .hydrate_search_results(
+                        search_results,
+                        &default_crossref_fields(),
+                        None,
+                        true,
+                        true,
+                        None,
+                    )
+                    .map_err(store_error)?
+                    .into_iter()
+                    .map(Self::entry_search_item)
+                    .collect();
                 self.to_value(EntriesResponse { entries })
             }
             METHOD_RESOURCES_BY_KEY => {
@@ -497,12 +517,14 @@ impl Daemon {
                 self.to_value(DiagnosticsResponse { diagnostics })
             }
             METHOD_DUPLICATE_GROUPS => {
-                let _: EmptyParams = parse_params(params)?;
+                let request: LimitRequest = parse_params(params)?;
+                let limit = clamp_limit(request.limit);
                 let groups = self
                     .store
                     .duplicate_groups()
                     .map_err(store_error)?
                     .into_iter()
+                    .take(limit)
                     .map(|group| DuplicateGroupItem {
                         key: group.key,
                         entries: group
@@ -1152,7 +1174,7 @@ mod tests {
         let resources = result(
             daemon.handle_request(request(METHOD_RESOURCES_BY_KEY, json!({ "key": "a2020" }))),
         );
-        assert_eq!(resources["resources"][0]["value"], "{10.1000/alpha}");
+        assert_eq!(resources["resources"][0]["value"], "10.1000/alpha");
 
         let resources_for_keys = result(daemon.handle_request(request(
             METHOD_RESOURCES_BY_KEYS,

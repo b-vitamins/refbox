@@ -85,6 +85,22 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
     (should (equal (refbox-markdown-list-keys)
                    '("braced-key" "neg key")))))
 
+(ert-deftest refbox-markdown-test-key_at_point_uses_actual_key_span ()
+  "Key lookup should preserve full Pandoc key bounds."
+  (refbox-markdown-test-with-buffer "See [@{bra|ced key}; @beta]."
+    (pcase-let ((`(,key ,begin ,end)
+                 (refbox-markdown--key-and-bounds-at-point)))
+      (should (equal key "braced key"))
+      (should (equal (buffer-substring-no-properties begin end)
+                     "@{braced key}"))
+      (should (equal (refbox-markdown-key-at-point) "braced key"))))
+  (refbox-markdown-test-with-buffer "Text @al|pha outside."
+    (pcase-let ((`(,key ,begin ,end)
+                 (refbox-markdown--key-and-bounds-at-point)))
+      (should (equal key "alpha"))
+      (should (equal (buffer-substring-no-properties begin end)
+                     "@alpha")))))
+
 (ert-deftest refbox-markdown-test-detects-citation-at-point ()
   "Citation helper should return bracketed citation metadata."
   (refbox-markdown-test-with-buffer "See [see @al|pha pp. 1-2; @beta]."
@@ -105,6 +121,17 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                       (plist-get citation :end))
                      "[compare @alpha;\n  @beta pp. 1-2]")))))
 
+(ert-deftest refbox-markdown-test-citation_lookup_uses_containing_brackets ()
+  "Citation lookup should ignore unrelated previous bracketed text."
+  (refbox-markdown-test-with-buffer "[not @alpha]\n\nplain |text"
+    (should-not (refbox-markdown-citation-at-point)))
+  (refbox-markdown-test-with-buffer "|[@alpha]"
+    (should (equal (plist-get (refbox-markdown-citation-at-point) :keys)
+                   '("alpha"))))
+  (refbox-markdown-test-with-buffer "[@alpha]|"
+    (should (equal (plist-get (refbox-markdown-citation-at-point) :keys)
+                   '("alpha")))))
+
 (ert-deftest refbox-markdown-test-adds-to-existing-citation ()
   "Insertion at a citation should add selected keys."
   (refbox-markdown-test-with-buffer "A [@al|pha; @beta] Z"
@@ -115,6 +142,16 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                    (list (refbox-markdown-test-candidate "gamma")))))
         (refbox-markdown-insert-citation)
         (should (equal (buffer-string) "A [@alpha; @gamma; @beta] Z"))))))
+
+(ert-deftest refbox-markdown-test-inserts_new_citation_at_bracket_edges ()
+  "Insertion at citation bracket edges should match Citar's boundary behavior."
+  (let ((refbox-markdown-prompt-for-extra-arguments nil))
+    (refbox-markdown-test-with-buffer "A |[@alpha] Z"
+      (refbox-markdown-insert-citation '("beta"))
+      (should (equal (buffer-string) "A [@beta][@alpha] Z")))
+    (refbox-markdown-test-with-buffer "A [@alpha]| Z"
+      (refbox-markdown-insert-citation '("beta"))
+      (should (equal (buffer-string) "A [@alpha][@beta] Z")))))
 
 (ert-deftest refbox-markdown-test-prompted-affixes ()
   "Prompted affixes should be reflected in inserted citations."

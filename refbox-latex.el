@@ -111,20 +111,61 @@ arguments and `t' marks the citation-key argument."
   (concat "\\\\\\(" (regexp-opt (refbox-latex--command-names)) "\\)"))
 
 (defun refbox-latex--scan-braced-group (position)
-  "Return bounds of braced group at POSITION, or nil."
+  "Return bounds of braced group at POSITION, or nil.
+
+Escaped braces are literal content and do not affect group balance."
   (save-excursion
     (goto-char position)
     (when (eq (char-after) ?{)
       (let ((depth 0)
             (start position)
-            end)
+            end
+            escaped)
         (while (and (not end) (not (eobp)))
           (let ((char (char-after)))
             (cond
-             ((eq char ?{) (setq depth (1+ depth)))
+             (escaped
+              (setq escaped nil))
+             ((eq char ?\\)
+              (setq escaped t))
+             ((eq char ?{)
+              (setq depth (1+ depth)))
              ((eq char ?})
               (setq depth (1- depth))
               (when (= depth 0)
+                (setq end (1+ (point)))))))
+          (forward-char 1))
+        (when end (cons start end))))))
+
+(defun refbox-latex--scan-optional-group (position)
+  "Return bounds of optional group at POSITION, or nil.
+
+Escaped brackets are literal content.  Braces protect bracket content
+inside optional arguments, matching ordinary LaTeX argument structure."
+  (save-excursion
+    (goto-char position)
+    (when (eq (char-after) ?\[)
+      (let ((bracket-depth 0)
+            (brace-depth 0)
+            (start position)
+            end
+            escaped)
+        (while (and (not end) (not (eobp)))
+          (let ((char (char-after)))
+            (cond
+             (escaped
+              (setq escaped nil))
+             ((eq char ?\\)
+              (setq escaped t))
+             ((eq char ?{)
+              (setq brace-depth (1+ brace-depth)))
+             ((and (eq char ?}) (> brace-depth 0))
+              (setq brace-depth (1- brace-depth)))
+             ((and (= brace-depth 0) (eq char ?\[))
+              (setq bracket-depth (1+ bracket-depth)))
+             ((and (= brace-depth 0) (eq char ?\]))
+              (setq bracket-depth (1- bracket-depth))
+              (when (= bracket-depth 0)
                 (setq end (1+ (point)))))))
           (forward-char 1))
         (when end (cons start end))))))
@@ -135,12 +176,13 @@ arguments and `t' marks the citation-key argument."
     (while (progn
              (skip-chars-forward " \t\n")
              (eq (char-after) ?\[))
-      (let ((start (1+ (point))))
-        (forward-char 1)
-        (unless (search-forward "]" nil t)
-          (user-error "Unclosed LaTeX citation optional argument"))
-        (push (buffer-substring-no-properties start (1- (point)))
-              arguments)))
+      (if-let ((group (refbox-latex--scan-optional-group (point))))
+          (progn
+            (push (buffer-substring-no-properties (1+ (car group))
+                                                  (1- (cdr group)))
+                  arguments)
+            (goto-char (cdr group)))
+        (user-error "Unclosed LaTeX citation optional argument")))
     (nreverse arguments)))
 
 (defun refbox-latex--parse-citation-at-match ()
@@ -206,11 +248,10 @@ arguments and `t' marks the citation-key argument."
   "Return the LaTeX citation key at point, or nil."
   (when-let ((citation (refbox-latex-citation-at-point)))
     (let ((point (point)))
-      (or (cl-loop
-	   for (key begin end) in (refbox-latex--key-spans citation)
-	   when (and (<= begin point) (<= point end))
-	   return key)
-          (car (plist-get citation :keys))))))
+      (cl-loop
+       for (key begin end) in (refbox-latex--key-spans citation)
+       when (and (<= begin point) (<= point end))
+       return key))))
 
 (defun refbox-latex-list-keys (&optional buffer)
   "Return unique LaTeX citation keys in BUFFER."

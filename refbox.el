@@ -35,6 +35,7 @@
 (require 'cl-lib)
 (require 'seq)
 (require 'subr-x)
+(require 'tabulated-list)
 (require 'url-parse)
 (require 'xml)
 (require 'refbox-rpc)
@@ -303,6 +304,16 @@ end at the configured display width without adding a marker."
 This bounds large author, abstract, and title fields on the
 type-ahead path while leaving explicit entry and resource commands
 untruncated."
+  :type 'natnum
+  :group 'refbox)
+
+(defcustom refbox-diagnostics-limit 200
+  "Default number of indexed parse diagnostics shown in one request."
+  :type 'natnum
+  :group 'refbox)
+
+(defcustom refbox-duplicate-groups-limit 200
+  "Default number of duplicate-key groups shown in one request."
   :type 'natnum
   :group 'refbox)
 
@@ -1653,8 +1664,12 @@ direct function transform."
          (t
           (setq used-width (+ used-width (string-width value)))))))
     (setq rendered (nreverse rendered))
-    (let ((star-width (when (and width (> star-count 0))
-                        (/ (max 0 (- width used-width)) star-count))))
+    (let* ((star-alloc (when (and width (> star-count 0))
+                         (max 0 (- width used-width))))
+           (star-width (when star-alloc
+                         (/ star-alloc star-count)))
+           (star-remainder (if star-alloc (% star-alloc star-count) 0))
+           (star-index 0))
       (mapconcat
        (lambda (rendered-token)
          (let* ((token (car rendered-token))
@@ -1664,11 +1679,15 @@ direct function transform."
            (refbox-template--fit
             value
             (cond
-             ((eq field-width '*) star-width)
+             ((eq field-width '*)
+              (when star-width
+                (setq star-index (1+ star-index))
+                (+ star-width
+                   (if (<= star-index star-remainder) 1 0))))
              ((integerp field-width) field-width)
              (t nil)))))
-	       rendered
-	       ""))))
+       rendered
+       ""))))
 
 (defun refbox-template--default-transform-p (name value)
   "Return non-nil when display transform NAME is VALUE."
@@ -2082,6 +2101,26 @@ and source path."
                                       source-path))))
                     candidates)
         (append resolved (list :score 0.0 :fields nil :resources nil))))))
+
+(defun refbox-entries-by-keys (keys &optional limit-per-key)
+  "Return indexed reference candidates for KEYS.
+
+LIMIT-PER-KEY bounds duplicate-key expansion for each requested key."
+  (let ((keys (delete-dups
+               (cl-remove-if
+                #'refbox--blank-string-p
+                (append keys nil)))))
+    (when keys
+      (let* ((params
+              (append
+               (list :keys (vconcat keys))
+               (when limit-per-key
+                 (list :limit_per_key
+                       (refbox-rpc--search-limit limit-per-key)))))
+             (response (refbox-rpc-request
+                        refbox-rpc-method-entries-by-keys
+                        params)))
+        (refbox--listify (plist-get response :entries))))))
 
 (defun refbox-get-entry (reference)
   "Return REFERENCE as a bibliography entry alist."
@@ -3672,6 +3711,21 @@ non-nil, is a bibliography entry alist used as candidate metadata."
    refbox-rpc-method-source-location
    (refbox--reference-rpc-params reference)))
 
+(defun refbox--open-source-position (path source)
+  "Open PATH and move point to SOURCE's start span when available."
+  (unless path
+    (user-error "No source file path available"))
+  (funcall refbox-source-open-function path)
+  (when (buffer-live-p (current-buffer))
+    (let* ((start (plist-get source :start))
+           (line (plist-get start :line))
+           (column (plist-get start :column)))
+      (goto-char (point-min))
+      (when line
+        (forward-line (1- line)))
+      (when column
+        (move-to-column (max 0 (1- column)))))))
+
 ;;;###autoload
 (defun refbox-open-source (&optional reference)
   "Open REFERENCE's bibliography source at its indexed location."
@@ -3679,20 +3733,194 @@ non-nil, is a bibliography entry alist used as candidate metadata."
   (let* ((reference (or reference (refbox-read-reference)))
          (location (refbox-source-location reference))
          (path (plist-get location :source_path))
-         (source (plist-get location :source))
-         (start (plist-get source :start))
-         (line (plist-get start :line))
-         (column (plist-get start :column)))
+         (source (plist-get location :source)))
     (unless (and path source)
       (user-error "Reference has no indexed source location"))
-    (funcall refbox-source-open-function path)
-    (when (buffer-live-p (current-buffer))
-      (goto-char (point-min))
-      (when line
-        (forward-line (1- line)))
-      (when column
-        (move-to-column (max 0 (1- column)))))
+    (refbox--open-source-position path source)
     location))
+
+(defun refbox--bounded-list-limit (limit default option)
+  "Return LIMIT clamped to the configured request ceiling.
+
+DEFAULT is used when LIMIT is nil.  OPTION names the user option to
+report if the effective limit is invalid."
+  (let ((maximum refbox-search-maximum-limit)
+        (limit (or limit default)))
+    (unless (and (integerp maximum) (> maximum 0))
+      (user-error "`refbox-search-maximum-limit' must be a positive integer"))
+    (unless (and (integerp limit) (> limit 0))
+      (user-error "`%s' must be a positive integer" option))
+    (min limit maximum)))
+
+(defun refbox-diagnostics (&optional limit)
+  "Return up to LIMIT indexed parse diagnostics."
+  (let* ((limit (refbox--bounded-list-limit
+                 limit
+                 refbox-diagnostics-limit
+                 "refbox-diagnostics-limit"))
+         (response (refbox-rpc-request
+                    refbox-rpc-method-diagnostics
+                    (list :limit limit))))
+    (plist-get response :diagnostics)))
+
+(defun refbox-duplicate-groups (&optional limit)
+  "Return up to LIMIT duplicate-key groups."
+  (let* ((limit (refbox--bounded-list-limit
+                 limit
+                 refbox-duplicate-groups-limit
+                 "refbox-duplicate-groups-limit"))
+         (response (refbox-rpc-request
+                    refbox-rpc-method-duplicate-groups
+                    (list :limit limit))))
+    (plist-get response :groups)))
+
+(defconst refbox-diagnostics-buffer-name "*refbox diagnostics*")
+(defconst refbox-duplicates-buffer-name "*refbox duplicate keys*")
+
+(defun refbox--source-position-suffix (source)
+  "Return a display suffix for SOURCE's start position."
+  (let* ((start (plist-get source :start))
+         (line (plist-get start :line))
+         (column (plist-get start :column)))
+    (cond
+     ((and line column)
+      (format ":%s:%s" line column))
+     (line
+      (format ":%s" line))
+     (t ""))))
+
+(defun refbox--diagnostic-location (diagnostic)
+  "Return a compact source location string for DIAGNOSTIC."
+  (let ((path (plist-get diagnostic :file_path)))
+    (concat (if (refbox--blank-string-p path)
+                "<unknown>"
+              (abbreviate-file-name path))
+            (refbox--source-position-suffix
+             (plist-get diagnostic :source)))))
+
+(defun refbox--diagnostic-row (diagnostic)
+  "Return a `tabulated-list-mode' row for DIAGNOSTIC."
+  (list diagnostic
+        (vector
+         (or (plist-get diagnostic :severity) "")
+         (or (plist-get diagnostic :code) "")
+         (refbox--diagnostic-location diagnostic)
+         (or (plist-get diagnostic :message) ""))))
+
+(defvar refbox-diagnostics-list-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map tabulated-list-mode-map)
+    (define-key map (kbd "RET") #'refbox-diagnostics-list-open-source)
+    map)
+  "Keymap for `refbox-diagnostics-list-mode'.")
+
+(define-derived-mode refbox-diagnostics-list-mode tabulated-list-mode
+  "Refbox Diagnostics"
+  "Major mode for indexed refbox parse diagnostics."
+  (setq tabulated-list-format
+        [("Severity" 10 t)
+         ("Code" 20 t)
+         ("Location" 46 t)
+         ("Message" 0 t)])
+  (setq tabulated-list-padding 2)
+  (tabulated-list-init-header))
+
+(defun refbox-diagnostics-list-open-source ()
+  "Open the source file for the diagnostic at point."
+  (interactive)
+  (let ((diagnostic (tabulated-list-get-id)))
+    (unless diagnostic
+      (user-error "No diagnostic on this line"))
+    (refbox--open-source-position
+     (plist-get diagnostic :file_path)
+     (plist-get diagnostic :source))))
+
+;;;###autoload
+(defun refbox-list-diagnostics (&optional limit)
+  "List up to LIMIT indexed parse diagnostics."
+  (interactive
+   (list (when current-prefix-arg
+           (prefix-numeric-value current-prefix-arg))))
+  (let ((diagnostics (refbox-diagnostics limit)))
+    (with-current-buffer (get-buffer-create refbox-diagnostics-buffer-name)
+      (refbox-diagnostics-list-mode)
+      (setq tabulated-list-entries
+            (mapcar #'refbox--diagnostic-row diagnostics))
+      (tabulated-list-print t)
+      (pop-to-buffer (current-buffer)))))
+
+(defun refbox--duplicate-group-sources (group)
+  "Return a compact source summary for duplicate-key GROUP."
+  (let ((paths (mapcar (lambda (entry)
+                         (plist-get entry :source_path))
+                       (plist-get group :entries))))
+    (mapconcat #'abbreviate-file-name (delete-dups (delq nil paths)) ", ")))
+
+(defun refbox--duplicate-group-row (group)
+  "Return a `tabulated-list-mode' row for duplicate-key GROUP."
+  (let ((entries (plist-get group :entries)))
+    (list group
+          (vector
+           (or (plist-get group :key) "")
+           (number-to-string (length entries))
+           (refbox--duplicate-group-sources group)))))
+
+(defvar refbox-duplicates-list-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map tabulated-list-mode-map)
+    (define-key map (kbd "RET") #'refbox-duplicates-list-open-source)
+    map)
+  "Keymap for `refbox-duplicates-list-mode'.")
+
+(define-derived-mode refbox-duplicates-list-mode tabulated-list-mode
+  "Refbox Duplicates"
+  "Major mode for indexed duplicate-key groups."
+  (setq tabulated-list-format
+        [("Key" 28 t)
+         ("Count" 8 t)
+         ("Sources" 0 t)])
+  (setq tabulated-list-padding 2)
+  (tabulated-list-init-header))
+
+(defun refbox--duplicate-entry-label (entry)
+  "Return a completion label for duplicate-key ENTRY."
+  (format "#%s  %s  %s"
+          (or (plist-get entry :id) "?")
+          (or (plist-get entry :key) "")
+          (or (plist-get entry :source_path) "")))
+
+(defun refbox-duplicates-list-open-source ()
+  "Open one source entry from the duplicate-key group at point."
+  (interactive)
+  (let* ((group (tabulated-list-get-id))
+         (entries (plist-get group :entries)))
+    (unless entries
+      (user-error "No duplicate group on this line"))
+    (let ((entry (if (= (length entries) 1)
+                     (car entries)
+                   (let* ((choices
+                           (mapcar (lambda (entry)
+                                     (cons (refbox--duplicate-entry-label entry)
+                                           entry))
+                                   entries))
+                          (choice (completing-read
+                                   "Duplicate entry: " choices nil t)))
+                     (cdr (assoc choice choices))))))
+      (refbox-open-source entry))))
+
+;;;###autoload
+(defun refbox-list-duplicates (&optional limit)
+  "List up to LIMIT duplicate-key groups."
+  (interactive
+   (list (when current-prefix-arg
+           (prefix-numeric-value current-prefix-arg))))
+  (let ((groups (refbox-duplicate-groups limit)))
+    (with-current-buffer (get-buffer-create refbox-duplicates-buffer-name)
+      (refbox-duplicates-list-mode)
+      (setq tabulated-list-entries
+            (mapcar #'refbox--duplicate-group-row groups))
+      (tabulated-list-print t)
+      (pop-to-buffer (current-buffer)))))
 
 ;;;###autoload
 (defun refbox-open-entry (&optional reference)
@@ -3807,7 +4035,20 @@ public key-list contract."
          (keys (cl-loop for reference in references
                         when (stringp reference)
                         collect reference))
-         (context-map (and keys (refbox--context-reference-map keys))))
+         (context-map (and keys (refbox--context-reference-map keys)))
+         (global-keys
+          (and keys
+               (cl-remove-if
+                (lambda (key)
+                  (and context-map (gethash key context-map)))
+                (delete-dups (copy-sequence keys)))))
+         (global-map
+          (when global-keys
+            (let ((table (make-hash-table :test 'equal)))
+              (dolist (candidate (refbox-entries-by-keys global-keys 2))
+                (push candidate
+                      (gethash (refbox--reference-key candidate) table)))
+              table))))
     (mapcar
      (lambda (reference)
        (cond
@@ -3815,7 +4056,14 @@ public key-list contract."
          reference)
         ((stringp reference)
          (or (and context-map (gethash reference context-map))
-             (refbox-entry-by-key reference)))
+             (let ((candidates (and global-map
+                                    (gethash reference global-map))))
+               (cond
+                ((= (length candidates) 1)
+                 (car candidates))
+                ;; Preserve exact lookup errors for missing and ambiguous keys.
+                (t
+                 (refbox-entry-by-key reference))))))
         (t reference)))
      references)))
 

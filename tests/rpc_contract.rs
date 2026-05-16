@@ -5,9 +5,9 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use refbox_rpc::{
-    METHOD_DIAGNOSTICS, METHOD_DUPLICATE_GROUPS, METHOD_ENTRY_BY_KEY, METHOD_LIST_ENTRIES,
-    METHOD_RAW_ENTRY, METHOD_RESOURCES_BY_KEY, METHOD_SEARCH_ENTRIES, METHOD_SOURCE_LOCATION,
-    METHOD_STATUS, METHOD_SYNC_FILE, METHOD_SYNC_FULL,
+    METHOD_DIAGNOSTICS, METHOD_DUPLICATE_GROUPS, METHOD_ENTRIES_BY_KEYS, METHOD_ENTRY_BY_KEY,
+    METHOD_LIST_ENTRIES, METHOD_RAW_ENTRY, METHOD_RESOURCES_BY_KEY, METHOD_SEARCH_ENTRIES,
+    METHOD_SOURCE_LOCATION, METHOD_STATUS, METHOD_SYNC_FILE, METHOD_SYNC_FULL,
 };
 use serde_json::{Value, json};
 
@@ -24,18 +24,26 @@ fn stdio_rpc_contract_covers_success_and_error_shapes() {
         "duplicates-b.bib",
         include_str!("fixtures/duplicates-b.bib"),
     );
+    project.write(
+        "duplicates-c.bib",
+        "@article{zdup2021,\n  title = {Second Duplicate Article},\n  date = {2021}\n}\n",
+    );
+    project.write(
+        "duplicates-d.bib",
+        "@book{zdup2021,\n  title = {Second Duplicate Book},\n  date = {2021}\n}\n",
+    );
     project.write("malformed.bib", include_str!("fixtures/malformed.bib"));
     let mut rpc = RpcProcess::spawn(project.root.clone(), project.path("index.sqlite"));
 
     let sync = rpc.result(1, METHOD_SYNC_FULL, json!({}));
-    assert_eq!(sync["discovered_file_count"], 5);
-    assert!(sync["indexed_entry_count"].as_u64().expect("entry count") >= 5);
+    assert_eq!(sync["discovered_file_count"], 7);
+    assert!(sync["indexed_entry_count"].as_u64().expect("entry count") >= 7);
     assert!(sync["diagnostic_count"].as_u64().expect("diagnostics") >= 1);
 
     let status = rpc.result(2, METHOD_STATUS, json!({}));
     assert_eq!(status["schema_version"], 9);
-    assert_eq!(status["counts"]["file_count"], 5);
-    assert!(status["counts"]["entry_count"].as_u64().expect("entries") >= 5);
+    assert_eq!(status["counts"]["file_count"], 7);
+    assert!(status["counts"]["entry_count"].as_u64().expect("entries") >= 7);
 
     let scoped_search = rpc.result(
         3,
@@ -72,6 +80,25 @@ fn stdio_rpc_contract_covers_success_and_error_shapes() {
             .is_empty()
     );
 
+    let entries_by_keys = rpc.result(
+        41,
+        METHOD_ENTRIES_BY_KEYS,
+        json!({
+            "keys": ["alpha2020", "res2020"],
+            "limit_per_key": 1,
+        }),
+    );
+    let keyed_entries = entries_by_keys["entries"]
+        .as_array()
+        .expect("entries by keys array");
+    assert_eq!(keyed_entries.len(), 2);
+    assert!(
+        !keyed_entries[0]["fields"]
+            .as_array()
+            .expect("keyed fields")
+            .is_empty()
+    );
+
     let resources = rpc.result(5, METHOD_RESOURCES_BY_KEY, json!({ "key": "res2020" }));
     let mut kinds = resources["resources"]
         .as_array()
@@ -83,6 +110,13 @@ fn stdio_rpc_contract_covers_success_and_error_shapes() {
     assert_eq!(kinds, vec!["doi", "file", "url"]);
 
     let duplicates = rpc.result(6, METHOD_DUPLICATE_GROUPS, json!({ "limit": 20 }));
+    assert_eq!(
+        duplicates["groups"]
+            .as_array()
+            .expect("duplicate groups")
+            .len(),
+        2
+    );
     assert_eq!(duplicates["groups"][0]["key"], "dup2020");
     assert_eq!(
         duplicates["groups"][0]["entries"]
@@ -90,6 +124,15 @@ fn stdio_rpc_contract_covers_success_and_error_shapes() {
             .expect("duplicate entries")
             .len(),
         2
+    );
+
+    let limited_duplicates = rpc.result(61, METHOD_DUPLICATE_GROUPS, json!({ "limit": 1 }));
+    assert_eq!(
+        limited_duplicates["groups"]
+            .as_array()
+            .expect("limited duplicate groups")
+            .len(),
+        1
     );
 
     let diagnostics = rpc.result(7, METHOD_DIAGNOSTICS, json!({ "limit": 20 }));

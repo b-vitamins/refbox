@@ -75,7 +75,7 @@ fn inserts_parsed_files_and_queries_records_back() {
         .iter()
         .find(|field| field.lookup_name == "title")
         .expect("title field should be stored");
-    assert_eq!(title.value, "{Scalable Reference Indexing}");
+    assert_eq!(title.value, "Scalable Reference Indexing");
     assert_eq!(
         title
             .source
@@ -154,7 +154,7 @@ fn inserts_parsed_files_and_queries_records_back() {
             )
         })
         .expect("capped search results should hydrate");
-    assert_eq!(capped[0].fields[0].value, "{Scalabl");
+    assert_eq!(capped[0].fields[0].value, "Scalable");
 
     let source_free = store
         .search("scalable", 5, SearchOptions::default())

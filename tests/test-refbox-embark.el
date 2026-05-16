@@ -10,6 +10,7 @@
 (require 'cl-lib)
 (require 'refbox-embark)
 (require 'refbox-latex)
+(require 'refbox-markdown)
 
 (defvar embark-general-map)
 
@@ -55,6 +56,26 @@
       (should (eq (car target) 'refbox-key))
       (should (equal reference (list :key "alpha")))
       (should (equal (substring-no-properties encoded) "alpha")))))
+
+(ert-deftest refbox-embark-test-markdown-key-target_uses_actual_key_bounds ()
+  "Markdown key targets should use the full Pandoc key span."
+  (with-temp-buffer
+    (cl-letf (((symbol-function 'derived-mode-p)
+               (lambda (&rest modes) (memq 'markdown-mode modes))))
+      (setq major-mode 'markdown-mode)
+      (insert "See [@{braced key}; @beta].")
+      (search-backward "braced")
+      (forward-char 3)
+      (let* ((target (refbox-embark-target-key-at-point))
+             (encoded (nth 1 target))
+             (reference (refbox-embark-reference encoded)))
+        (should (eq (car target) 'refbox-key))
+        (should (equal reference (list :key "braced key")))
+        (should (equal (substring-no-properties encoded) "braced key"))
+        (should (equal (buffer-substring-no-properties
+                        (nth 2 target)
+                        (cdddr target))
+                       "@{braced key}"))))))
 
 (ert-deftest refbox-embark-test-citation-target-at-point ()
   "Whole-citation targets should expose every key in the citation."
