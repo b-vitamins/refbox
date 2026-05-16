@@ -1177,18 +1177,22 @@ reference key string."
 
 (defun refbox-reference-indicators (candidate)
   "Return configured indicator text for CANDIDATE."
-  (let ((text ""))
-    (dolist (indicator refbox-indicators text)
-      (let* ((chunk (refbox--indicator-text indicator candidate))
-             (next (concat text chunk))
-             (pos (length next)))
-        (when (> pos 0)
-          (put-text-property
-           (1- pos) pos
-           'display
-           (list 'space :align-to (string-width next))
-           next))
-        (setq text next)))))
+  (refbox--dynamic-cache-get
+   'reference-indicators
+   candidate
+   (lambda ()
+     (let ((text ""))
+       (dolist (indicator refbox-indicators text)
+         (let* ((chunk (refbox--indicator-text indicator candidate))
+                (next (concat text chunk))
+                (pos (length next)))
+           (when (> pos 0)
+             (put-text-property
+              (1- pos) pos
+              'display
+              (list 'space :align-to (string-width next))
+              next))
+           (setq text next)))))))
 
 (defun refbox-template-clean (value)
   "Return VALUE with common BibTeX wrapping and whitespace cleaned."
@@ -2536,7 +2540,7 @@ callable."
   "Required plist properties for registered note sources.")
 
 (defconst refbox-note-source--function-properties
-  '(:items :all-items :hasitems :open :create :create-label :transform :annotate)
+  '(:items :all-items :hasitems :preload :open :create :create-label :transform :annotate)
   "Note source plist properties whose values must be callable.")
 
 (defconst refbox-note-source--known-properties
@@ -2718,6 +2722,11 @@ enumerate all indexed references; when it is explicitly nil, return nil."
          (if-let ((hasitems (plist-get (refbox-note-source--plist) :hasitems)))
              (funcall hasitems key reference)
            (not (null (refbox-note-source-items reference)))))))
+
+(defun refbox-note-source-preload (references)
+  "Preload active note source metadata for REFERENCES when supported."
+  (when-let ((preload (plist-get (refbox-note-source--plist) :preload)))
+    (funcall preload references)))
 
 (defun refbox-note-source-open (item)
   "Open active note source ITEM."
@@ -3956,6 +3965,16 @@ asks before replacing an existing file."
        completions))))
 
 
+(defun refbox--completion-preload-candidates (candidates)
+  "Preload optional per-page metadata for completion CANDIDATES."
+  (when (and candidates
+             refbox-reference-note-predicate
+             (cl-some (lambda (indicator)
+                        (eq (refbox-indicator-function indicator)
+                            #'refbox-has-notes))
+                      refbox-indicators))
+    (refbox-note-source-preload candidates))
+  candidates)
 
 (defun refbox--completion-candidate-display (candidate seen selection-map)
   "Return a propertized display string for CANDIDATE.
@@ -4020,14 +4039,15 @@ selection can still resolve to the candidate it came from."
                (mapcar (lambda (candidate)
                          (refbox--completion-candidate-display
                           candidate seen selection-map))
-              (refbox-search-references
-               (refbox--completion-search-input input)
-               (plist-get state :limit)
-               (plist-get state :source-paths)
-               (not (refbox--completion-ranked-input-p input))
-               (refbox--completion-field-names)
-               t
-               refbox-completion-search-fields)))))))
+                       (refbox--completion-preload-candidates
+                        (refbox-search-references
+                         (refbox--completion-search-input input)
+                         (plist-get state :limit)
+                         (plist-get state :source-paths)
+                         (not (refbox--completion-ranked-input-p input))
+                         (refbox--completion-field-names)
+                         t
+                         refbox-completion-search-fields))))))))
   (plist-get state :candidates))
 
 (defun refbox--completion-filter (candidates predicate)

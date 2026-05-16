@@ -762,6 +762,45 @@
                      "C"
                      (refbox--completion-annotation (cadr candidates))))))))
 
+(ert-deftest refbox-test-completion-preloads_note_source_once_per_page ()
+  "Completion rendering should batch preload note-source metadata."
+  (let* ((first (copy-tree refbox-test-reference-candidate))
+         (second (plist-put (copy-tree refbox-test-reference-candidate)
+                            :key "doe2021"))
+         (preloaded nil)
+         (hasitems 0)
+         (refbox-templates '((main . "%{key}")
+                             (suffix . "%{indicators}")))
+         (refbox-indicators
+          (list (refbox-indicator-create
+                 :symbol "N"
+                 :function #'refbox-has-notes
+                 :tag "has:notes")))
+         (refbox-notes-source 'mock)
+         (refbox-notes-sources
+          `((mock
+             :name "Mock Notes"
+             :items ,#'ignore
+             :open ,#'ignore
+             :preload ,(lambda (references)
+                         (setq preloaded
+                               (mapcar
+                                (lambda (reference)
+                                  (refbox-reference-field reference "key"))
+                                references)))
+             :hasitems ,(lambda (_key _reference)
+                          (setq hasitems (1+ hasitems))
+                          nil)))))
+    (cl-letf (((symbol-function 'refbox-rpc-request)
+               (lambda (method _params)
+                 (should (equal method refbox-rpc-method-search-entries))
+                 (list :entries (list first second)))))
+      (let* ((state (refbox--completion-state 2))
+             (table (refbox--completion-table state)))
+        (funcall table "" nil t)
+        (should (equal preloaded '("smith2020" "doe2021")))
+        (should (= hasitems 2))))))
+
 (ert-deftest refbox-test-completion-skips_expensive_recursive_library_indicators ()
   "Recursive library source indicators should not scan directories cold."
   (let* ((root (make-temp-file "refbox-recursive-library-" t))
