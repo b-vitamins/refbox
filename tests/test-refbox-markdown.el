@@ -157,9 +157,9 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
   "Prompted affixes should be reflected in inserted citations."
   (refbox-markdown-test-with-buffer "|"
     (let ((refbox-markdown-prompt-for-extra-arguments t))
-      (cl-letf (((symbol-function 'read-string)
+      (cl-letf (((symbol-function 'read-from-minibuffer)
                  (lambda (prompt &rest _args)
-                   (if (string-prefix-p "Citation prefix" prompt)
+                   (if (string-prefix-p "Prenote" prompt)
                        "compare"
                      "chap. 3")))
                 ((symbol-function 'refbox-read-references)

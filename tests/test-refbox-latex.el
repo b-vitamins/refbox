@@ -149,7 +149,9 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
     (let ((refbox-latex-prompt-for-cite-style t)
           (refbox-latex-prompt-for-extra-arguments t))
       (cl-letf (((symbol-function 'completing-read)
-                 (lambda (&rest _args) "textcite"))
+                 (lambda (prompt &rest _args)
+                   (should (equal prompt "Cite command: "))
+                   "textcite"))
                 ((symbol-function 'read-string)
                  (lambda (prompt &rest _args)
                    (if (string-prefix-p "Prenote" prompt) "see" "p. 2")))
@@ -196,6 +198,73 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
         (refbox-latex-insert-citation)
         (should (equal (buffer-string)
                        "\\postcite[see]{alpha}[p. 9]"))))))
+
+(ert-deftest refbox-latex-test-command_specs_support_mandatory_prompts ()
+  "String citation command specs should prompt for mandatory arguments."
+  (refbox-latex-test-with-buffer "|"
+    (let ((refbox-latex-cite-commands
+           '((("chaptercite") . ("Chapter" t))))
+          (refbox-latex-default-cite-command "chaptercite")
+          (refbox-latex-prompt-for-cite-style nil)
+          (refbox-latex-prompt-for-extra-arguments t))
+      (cl-letf (((symbol-function 'read-string)
+                 (lambda (prompt &rest _args)
+                   (should (string-prefix-p "Chapter" prompt))
+                   "ch. 2"))
+                ((symbol-function 'refbox-read-references)
+                 (lambda (&rest _args)
+                   (list (refbox-latex-test-candidate "alpha")))))
+        (refbox-latex-insert-citation)
+        (should (equal (buffer-string)
+                       "\\chaptercite{ch. 2}{alpha}"))))))
+
+(ert-deftest refbox-latex-test-command_specs_parse_key_slot_after_mandatory_args ()
+  "Citation parsing should use the configured key slot."
+  (refbox-latex-test-with-buffer "\\chaptercite{ch. 2}{al|pha}"
+    (let ((refbox-latex-cite-commands
+           '((("chaptercite") . ("Chapter" t)))))
+      (let ((citation (refbox-latex-citation-at-point)))
+        (should (equal (plist-get citation :command) "chaptercite"))
+        (should (equal (plist-get citation :keys) '("alpha")))
+        (should (equal (refbox-latex-key-at-point) "alpha"))))))
+
+(ert-deftest refbox-latex-test-command_specs_do_not_treat_mandatory_args_as_keys ()
+  "Point in a non-key mandatory argument should still find citation keys."
+  (refbox-latex-test-with-buffer "\\chaptercite{ch. |2}{alpha}"
+    (let ((refbox-latex-cite-commands
+           '((("chaptercite") . ("Chapter" t)))))
+      (let ((citation (refbox-latex-citation-at-point)))
+        (should (equal (plist-get citation :keys) '("alpha")))
+        (should-not (refbox-latex-key-at-point))))))
+
+(ert-deftest refbox-latex-test-command_specs_preserve_optional_positions ()
+  "Later optional arguments should not slide into earlier empty slots."
+  (refbox-latex-test-with-buffer "|"
+    (let ((refbox-latex-default-cite-command "textcite")
+          (refbox-latex-prompt-for-cite-style nil)
+          (refbox-latex-prompt-for-extra-arguments t)
+          (answers '("" "p. 9")))
+      (cl-letf (((symbol-function 'read-string)
+                 (lambda (&rest _args)
+                   (pop answers)))
+                ((symbol-function 'refbox-read-references)
+                 (lambda (&rest _args)
+                   (list (refbox-latex-test-candidate "alpha")))))
+        (refbox-latex-insert-citation)
+        (should (equal (buffer-string)
+                       "\\textcite[][p. 9]{alpha}"))))))
+
+(ert-deftest refbox-latex-test-adds-to-configured-key-slot ()
+  "Insertion in a configured command should append to the key argument."
+  (refbox-latex-test-with-buffer "\\chaptercite{ch. 2}{al|pha}"
+    (let ((refbox-latex-cite-commands
+           '((("chaptercite") . ("Chapter" t)))))
+      (cl-letf (((symbol-function 'refbox-read-references)
+                 (lambda (&rest _args)
+                   (list (refbox-latex-test-candidate "gamma")))))
+        (refbox-latex-insert-citation)
+        (should (equal (buffer-string)
+                       "\\chaptercite{ch. 2}{alpha,gamma}"))))))
 
 (ert-deftest refbox-latex-test-adds-to-existing-citation ()
   "Insertion at an existing citation should add selected keys."

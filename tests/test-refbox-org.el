@@ -123,12 +123,14 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                  '((("nil") ("/b"))
                    (("text") ("/f")))))
               ((symbol-function 'completing-read)
-               (lambda (_prompt collection &rest _args)
+               (lambda (prompt collection &rest _args)
+                 (should (equal prompt "Styles: "))
                  (car (all-completions "text" collection)))))
       (should (equal (refbox-org-select-style) "text"))))
   (let ((refbox-org-citation-styles '("author")))
     (cl-letf (((symbol-function 'completing-read)
-               (lambda (_prompt collection &rest _args)
+               (lambda (prompt collection &rest _args)
+                 (should (equal prompt "Styles: "))
                  (car (all-completions "" collection)))))
       (should (equal (refbox-org-select-style) "author")))))
 
@@ -230,7 +232,12 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
 (ert-deftest refbox-org-test-key-at-point_reads_node_property_refs ()
   "Org key helper should find @KEY references in property drawers."
   (refbox-org-test-with-buffer ":PROPERTIES:\n:ROAM_REFS: @smi|th2020\n:END:\n"
-    (should (equal (refbox-org-key-at-point) "smith2020"))))
+    (should (equal (refbox-org-key-at-point) "smith2020"))
+    (pcase-let ((`(,key ,begin ,end)
+                 (refbox-org--property-key-and-bounds-at-point)))
+      (should (equal key "smith2020"))
+      (should (equal (buffer-substring-no-properties begin end)
+                     "@smith2020")))))
 
 (ert-deftest refbox-org-test-follow-at-citation-and-reference-locations ()
   "Follow should dispatch the key through the configured action."

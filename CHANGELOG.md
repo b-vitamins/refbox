@@ -36,6 +36,12 @@ The format follows Keep a Changelog, and this project follows SemVer.
 - Carried note-source completion categories through resource choices and Embark targets, with file-backed notes exposed as file resources by default.
 - Normalized protective braces out of indexed `author` and `editor` values to match Citar's parsebib-backed field values.
 - Hydrated preview, note, and configured additional fields on bounded completion candidates so selected-reference actions see the same metadata Citar parsed for them.
+- Honored mandatory string arguments in configured LaTeX citation command specs instead of dropping non-key required arguments.
+- Preserved empty LaTeX optional-argument slots when later optional citation arguments are supplied.
+- Parsed existing LaTeX citations with the configured command specs so mandatory non-key arguments no longer masquerade as citation keys.
+- Matched Citar's Org, LaTeX, and Markdown citation prompt labels.
+- Initialized new Org note files with Citar's title/body/print-bibliography layout and side-effecting formatter contract.
+- Exposed Org property-drawer `@key` references as Embark key targets.
 - Stopped mutating completion category defaults while loading the package.
 
 ## [0.4.8] - 2026-05-17

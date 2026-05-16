@@ -9,6 +9,7 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'refbox-embark)
+(require 'refbox-org)
 (require 'refbox-latex)
 (require 'refbox-markdown)
 
@@ -56,6 +57,24 @@
       (should (eq (car target) 'refbox-key))
       (should (equal reference (list :key "alpha")))
       (should (equal (substring-no-properties encoded) "alpha")))))
+
+(ert-deftest refbox-embark-test-org-property-key-target-at-point ()
+  "Org property @KEY references should expose Embark key targets."
+  (with-temp-buffer
+    (org-mode)
+    (insert ":PROPERTIES:\n:ROAM_REFS: @alpha\n:END:\n")
+    (search-backward "alpha")
+    (forward-char 2)
+    (let* ((target (refbox-embark-target-key-at-point))
+           (encoded (nth 1 target))
+           (reference (refbox-embark-reference encoded)))
+      (should (eq (car target) 'refbox-key))
+      (should (equal reference (list :key "alpha")))
+      (should (equal (substring-no-properties encoded) "alpha"))
+      (should (equal (buffer-substring-no-properties
+                      (nth 2 target)
+                      (cdddr target))
+                     "@alpha")))))
 
 (ert-deftest refbox-embark-test-markdown-key-target_uses_actual_key_bounds ()
   "Markdown key targets should use the full Pandoc key span."

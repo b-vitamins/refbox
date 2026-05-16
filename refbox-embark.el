@@ -38,6 +38,8 @@
 (declare-function refbox-org-key-at-point "refbox-org" (&optional datum))
 (declare-function refbox-org-citation-at-point "refbox-org" (&optional datum))
 (declare-function refbox-org-reference-at-point "refbox-org" (&optional datum))
+(declare-function refbox-org--property-key-and-bounds-at-point
+                  "refbox-org" (&optional datum))
 (declare-function org-element-begin "org-element" (element))
 (declare-function org-element-end "org-element" (element))
 (declare-function org-cite-boundaries "oc" (citation))
@@ -293,9 +295,11 @@
   (cond
    ((and (derived-mode-p 'org-mode)
          (require 'refbox-org nil t))
-    (when-let* ((key (refbox-org-key-at-point))
-                (reference (refbox-org-reference-at-point)))
-      (list key (org-element-begin reference) (org-element-end reference))))
+    (or
+     (when-let* ((key (refbox-org-key-at-point))
+                 (reference (refbox-org-reference-at-point)))
+       (list key (org-element-begin reference) (org-element-end reference)))
+     (refbox-org--property-key-and-bounds-at-point)))
    ((and (derived-mode-p 'latex-mode 'LaTeX-mode 'tex-mode)
          (require 'refbox-latex nil t))
     (when-let* ((key (refbox-latex-key-at-point))

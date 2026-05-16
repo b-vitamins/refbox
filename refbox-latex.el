@@ -170,20 +170,67 @@ inside optional arguments, matching ordinary LaTeX argument structure."
           (forward-char 1))
         (when end (cons start end))))))
 
-(defun refbox-latex--parse-optional-arguments ()
-  "Parse optional arguments at point and return their strings."
-  (let (arguments)
-    (while (progn
-             (skip-chars-forward " \t\n")
-             (eq (char-after) ?\[))
-      (if-let ((group (refbox-latex--scan-optional-group (point))))
-          (progn
-            (push (buffer-substring-no-properties (1+ (car group))
-                                                  (1- (cdr group)))
-                  arguments)
-            (goto-char (cdr group)))
-        (user-error "Unclosed LaTeX citation optional argument")))
-    (nreverse arguments)))
+(defun refbox-latex--parse-optional-argument ()
+  "Parse one optional argument at point and return its string."
+  (skip-chars-forward " \t\n")
+  (when (eq (char-after) ?\[)
+    (if-let ((group (refbox-latex--scan-optional-group (point))))
+        (prog1
+            (buffer-substring-no-properties (1+ (car group))
+                                            (1- (cdr group)))
+          (goto-char (cdr group)))
+      (user-error "Unclosed LaTeX citation optional argument"))))
+
+(defun refbox-latex--parse-braced-argument ()
+  "Parse one braced argument at point and return its bounds."
+  (skip-chars-forward " \t\n")
+  (when (eq (char-after) ?{)
+    (if-let ((group (refbox-latex--scan-braced-group (point))))
+        (prog1 group
+          (goto-char (cdr group)))
+      (user-error "Unclosed LaTeX citation argument"))))
+
+(defun refbox-latex--keys-in-braced-group (group)
+  "Return citation keys from braced GROUP bounds."
+  (let ((text (buffer-substring-no-properties (1+ (car group))
+                                              (1- (cdr group)))))
+    (mapcar #'string-trim
+            (split-string text "," t "[ \t\n]+"))))
+
+(defun refbox-latex--parse-citation-arguments (specs)
+  "Parse citation arguments at point according to SPECS.
+
+Return a plist with `:optional-args', `:key-group', and `:end', or nil
+when the configured key argument is absent."
+  (let (optional-args key-group end optional)
+    (catch 'invalid
+      (dolist (spec specs)
+        (cond
+         ((vectorp spec)
+          (when-let ((argument (refbox-latex--parse-optional-argument)))
+            (push argument optional-args)
+            (setq end (point))))
+         ((stringp spec)
+          (if-let ((group (refbox-latex--parse-braced-argument)))
+              (setq end (cdr group))
+            (throw 'invalid nil)))
+         ((eq spec t)
+          (if-let ((group (refbox-latex--parse-braced-argument)))
+              (setq key-group group
+                    end (cdr group))
+            (throw 'invalid nil)))))
+      (unless key-group
+        (unless specs
+          (while (setq optional (refbox-latex--parse-optional-argument))
+            (push optional optional-args)
+            (setq end (point))))
+        (if-let ((group (refbox-latex--parse-braced-argument)))
+            (setq key-group group
+                  end (cdr group))
+          (throw 'invalid nil)))
+      (list :optional-args (nreverse optional-args)
+            :key-group key-group
+            :end end))))
 
 (defun refbox-latex--parse-citation-at-match ()
   "Parse a citation command at current regexp match."
@@ -191,20 +238,16 @@ inside optional arguments, matching ordinary LaTeX argument structure."
         (command (match-string-no-properties 1)))
     (save-excursion
       (goto-char (match-end 0))
-      (let* ((optional-args (refbox-latex--parse-optional-arguments))
-             (group (progn
-                      (skip-chars-forward " \t\n")
-                      (refbox-latex--scan-braced-group (point)))))
-        (when group
+      (when-let ((parsed (refbox-latex--parse-citation-arguments
+                          (cdr (refbox-latex--command-entry command)))))
+        (let ((group (plist-get parsed :key-group)))
           (let* ((key-begin (1+ (car group)))
                  (key-end (1- (cdr group)))
-                 (keys-text (buffer-substring-no-properties key-begin key-end))
-                 (keys (mapcar #'string-trim
-                               (split-string keys-text "," t "[ \t\n]+"))))
+                 (keys (refbox-latex--keys-in-braced-group group)))
             (list :begin begin
-                  :end (cdr group)
+                  :end (plist-get parsed :end)
                   :command command
-                  :optional-args optional-args
+                  :optional-args (plist-get parsed :optional-args)
                   :key-begin key-begin
                   :key-end key-end
                   :keys keys)))))))
@@ -301,7 +344,7 @@ COMMAND, when non-nil, is returned directly.  INVERT-PROMPT reverses
               (not refbox-latex-prompt-for-cite-style)
             refbox-latex-prompt-for-cite-style)
           (completing-read
-           "Citation command: "
+           "Cite command: "
            (refbox-latex--command-names)
            nil
            nil
@@ -310,21 +353,37 @@ COMMAND, when non-nil, is returned directly.  INVERT-PROMPT reverses
            refbox-latex-default-cite-command)
         refbox-latex-default-cite-command)))
 
-(defun refbox-latex--argument-prompts (command)
-  "Return optional argument prompts configured for COMMAND."
-  (cl-loop for spec in (cdr (refbox-latex--command-entry command))
-           when (vectorp spec)
-           collect (or (aref spec 0) "Optional argument")))
+(defun refbox-latex--argument-prompt (spec fallback)
+  "Return prompt text for argument SPEC, falling back to FALLBACK."
+  (cond
+   ((vectorp spec) (or (aref spec 0) fallback))
+   ((stringp spec) spec)
+   (t fallback)))
 
-(defun refbox-latex--read-optional-arguments (command)
-  "Read or return configured optional LaTeX citation arguments for COMMAND."
-  (if refbox-latex-prompt-for-extra-arguments
-      (delq nil
-            (mapcar (lambda (prompt)
-                      (let ((value (read-string (format "%s: " prompt))))
-                        (unless (string-empty-p value) value)))
-                    (refbox-latex--argument-prompts command)))
-    refbox-latex-default-optional-arguments))
+(defun refbox-latex--read-arguments (command)
+  "Read or return configured LaTeX arguments for COMMAND."
+  (let ((specs (cdr (refbox-latex--command-entry command))))
+    (if refbox-latex-prompt-for-extra-arguments
+        (cl-loop for spec in specs
+                 when (vectorp spec)
+                 collect
+                 (let ((value (read-string
+                               (format "%s: "
+                                       (refbox-latex--argument-prompt
+                                        spec "Optional argument")))))
+                   (list :optional
+                         (unless (string-empty-p value) value)))
+                 when (stringp spec)
+                 collect
+                 (list :mandatory
+                       (read-string
+                        (format "%s: "
+                                (refbox-latex--argument-prompt
+                                 spec "Mandatory argument")))))
+      (let ((defaults (copy-sequence refbox-latex-default-optional-arguments)))
+        (cl-loop for spec in specs
+                 when (vectorp spec)
+                 collect (list :optional (pop defaults)))))))
 
 (defun refbox-latex-format-citation (command keys &optional optional-args)
   "Return a LaTeX citation COMMAND for KEYS and OPTIONAL-ARGS."
@@ -341,31 +400,65 @@ COMMAND, when non-nil, is returned directly.  INVERT-PROMPT reverses
   "Return KEYS formatted as a LaTeX mandatory citation argument."
   (concat "{" (string-join keys refbox-latex-key-separator) "}"))
 
+(defun refbox-latex--spec-argument-items (specs arguments)
+  "Return SPECS paired with their consumed ARGUMENTS."
+  (let ((arguments (copy-sequence arguments)))
+    (mapcar
+     (lambda (spec)
+       (list spec
+             (when (or (vectorp spec) (stringp spec))
+               (pop arguments))))
+     specs)))
+
+(defun refbox-latex--later-optional-value-p (items)
+  "Return non-nil when later consecutive optional ITEMS have a value."
+  (cl-loop for (spec argument) in (cdr items)
+           while (vectorp spec)
+           thereis (pcase argument
+                     (`(:optional ,value) value))))
+
 (defun refbox-latex--format-citation-from-spec
     (command keys &optional optional-args)
   "Return citation COMMAND for KEYS following its configured argument spec.
 
-Vector specs consume OPTIONAL-ARGS and emit bracketed optional arguments.
+Vector specs consume optional argument records and emit bracketed
+optional arguments.
+String specs consume mandatory argument records and emit braced arguments.
 A `t' spec marks where the citation-key argument belongs.  When no `t'
 is configured, append the key argument after configured optional args."
-  (let ((specs (cdr (refbox-latex--command-entry command)))
-        (optional-args (copy-sequence optional-args))
+  (let ((items (refbox-latex--spec-argument-items
+                (cdr (refbox-latex--command-entry command))
+                optional-args))
         key-inserted)
     (concat
      "\\"
      command
      (mapconcat
-      (lambda (spec)
-        (cond
-         ((vectorp spec)
-          (if-let ((value (pop optional-args)))
-              (format "[%s]" value)
-            ""))
-         ((eq spec t)
-          (setq key-inserted t)
-          (refbox-latex--key-argument keys))
-         (t "")))
-      specs
+      (lambda (items)
+        (pcase-let ((`(,spec ,argument) (car items)))
+          (cond
+           ((vectorp spec)
+            (pcase argument
+              (`(:optional ,value)
+               (if value
+                   (format "[%s]" value)
+                 (if (refbox-latex--later-optional-value-p items)
+                     "[]"
+                   "")))
+              (_
+               (if (refbox-latex--later-optional-value-p items)
+                   "[]"
+                 ""))))
+           ((stringp spec)
+            (pcase argument
+              (`(:mandatory ,value)
+               (format "{%s}" (or value "")))
+              (_ "")))
+           ((eq spec t)
+            (setq key-inserted t)
+            (refbox-latex--key-argument keys))
+           (t ""))))
+      (cl-loop for tail on items collect tail)
       "")
      (unless key-inserted
        (refbox-latex--key-argument keys)))))
@@ -437,7 +530,7 @@ the citation command directly."
     (if citation
         (refbox-latex--insert-keys-into-citation citation keys)
       (let* ((command (refbox-latex--read-command invert-prompt command))
-             (optional-args (refbox-latex--read-optional-arguments command)))
+             (optional-args (refbox-latex--read-arguments command)))
         (insert (refbox-latex--format-citation-from-spec
                  command keys optional-args))))
     (refbox-latex--move-after-citation)))

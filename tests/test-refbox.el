@@ -1829,6 +1829,34 @@
     (should (equal (refbox-reference-field (cadr seen) "entry_type")
                    "article"))))
 
+(ert-deftest refbox-test-default_org_note_format_matches_citar_layout ()
+  "The default Org note template should include a bibliography section."
+  (with-temp-buffer
+    (refbox-org-format-note-default "smith2020" refbox-test-reference-candidate)
+    (should (equal (buffer-string)
+                   "#+title: Notes on Smith, Alpha Reference Title\n\n\n\n#+print_bibliography:"))
+    (should (looking-at "\n\n#\\+print_bibliography:"))))
+
+(ert-deftest refbox-test-file_note_creation_uses_side_effect_formatter ()
+  "File-backed note creation should let formatters initialize the note buffer."
+  (let* ((root (make-temp-file "refbox-create-note-" t))
+         (file (expand-file-name "alpha.org" root)))
+    (unwind-protect
+        (let ((refbox-notes-paths (list root))
+              (refbox-file-note-extensions '("org"))
+              (refbox-open-note-function #'find-file)
+              (refbox-note-format-function
+               (lambda (key reference)
+                 (insert "note:" key ":" (refbox--reference-key reference)))))
+          (should (equal (refbox-note-source-file-create "alpha" '(:key "alpha"))
+                         file))
+          (should (equal (buffer-string) "note:alpha:alpha")))
+      (when-let ((buffer (find-buffer-visiting file)))
+        (with-current-buffer buffer
+          (set-buffer-modified-p nil))
+        (kill-buffer buffer))
+      (delete-directory root t))))
+
 (ert-deftest refbox-test-file_notes_use_crossref_parent_keys ()
   "File-backed note lookup should include cross-reference parent keys."
   (let* ((root (make-temp-file "refbox-crossref-notes-" t))

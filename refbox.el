@@ -53,6 +53,8 @@
 (declare-function citeproc-create "citeproc")
 (declare-function citeproc-locale-getter-from-dir "citeproc")
 (declare-function citeproc-render-bib "citeproc")
+(declare-function evil-insert "ext:evil")
+(declare-function refbox-org-roam-make-preamble "refbox-org")
 
 (defface refbox
   '((t :inherit font-lock-doc-face))
@@ -640,7 +642,7 @@ t is used as the default when no extension entry matches."
   :group 'refbox)
 
 (defcustom refbox-note-format-function #'refbox-org-format-note-default
-  "Function called with KEY and CANDIDATE to initialize a new note."
+  "Function called with KEY and CANDIDATE in a newly opened note buffer."
   :type '(choice (const :tag "Empty note" nil) function)
   :group 'refbox)
 
@@ -3016,11 +3018,17 @@ callable."
        (car refbox-notes-paths))))
 
 (defun refbox-org-format-note-default (key candidate)
-  "Return default note content for KEY and CANDIDATE."
+  "Insert default Org note content for KEY and CANDIDATE."
   (let ((title (string-trim (refbox-reference-format-note candidate))))
-    (if (string-empty-p title)
-        (format "#+title: %s\n\n" key)
-      (format "#+title: %s\n\n" title))))
+    (when (fboundp 'refbox-org-roam-make-preamble)
+      (ignore-errors (refbox-org-roam-make-preamble key)))
+    (insert "#+title: "
+            (if (string-empty-p title) key title)
+            "\n\n|\n\n#+print_bibliography:")
+    (search-backward "|")
+    (delete-char 1)
+    (when (fboundp 'evil-insert)
+      (evil-insert 1))))
 
 (defun refbox-note-source--plist ()
   "Return the configured plist for `refbox-notes-source'."
@@ -3133,14 +3141,11 @@ callable."
     (make-directory (file-name-directory file) t)
     (funcall refbox-open-note-function file)
     (unless exists
-      (when-let* ((content-function refbox-note-format-function)
-                  (content (funcall content-function key reference)))
-        (when (and (stringp content)
-                   (not (string-empty-p content))
-                   buffer-file-name
-                   (equal (file-truename buffer-file-name)
-                          (file-truename file)))
-          (insert content))))
+      (when (and refbox-note-format-function
+                 buffer-file-name
+                 (equal (file-truename buffer-file-name)
+                        (file-truename file)))
+        (funcall refbox-note-format-function key reference)))
     file))
 
 (defun refbox-note-source-items (reference)

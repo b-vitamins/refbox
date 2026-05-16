@@ -237,7 +237,7 @@ When TRANSFORM is non-nil, return the displayed candidate."
   (interactive)
   (let* ((candidates (refbox-org-style-candidates))
          (style (completing-read
-                 "Citation style: "
+                 "Styles: "
                  (lambda (string predicate action)
                    (if (eq action 'metadata)
                        '(metadata
@@ -373,15 +373,21 @@ argument."
           (org-element-property :key reference)))
       (refbox-org-property-key-at-point datum)))
 
-(defun refbox-org-property-key-at-point (&optional datum)
-  "Return an @KEY citation key from an Org node property at point."
+(defun refbox-org--property-key-and-bounds-at-point (&optional datum)
+  "Return an Org node-property citation key and bounds at point."
   (let ((context (or datum (org-element-context))))
     (when (and (eq (org-element-type context) 'node-property)
                (org-in-regexp
                 (concat "[[:space:]]@\\("
                         refbox-org--key-regexp
                         "\\)")))
-      (match-string-no-properties 1))))
+      (list (match-string-no-properties 1)
+            (1- (match-beginning 1))
+            (match-end 1)))))
+
+(defun refbox-org-property-key-at-point (&optional datum)
+  "Return an @KEY citation key from an Org node property at point."
+  (car (refbox-org--property-key-and-bounds-at-point datum)))
 
 (defun refbox-org--id-get-create (&optional force)
   "Call `org-id-get-create' while maintaining point.
