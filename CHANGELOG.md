@@ -6,6 +6,8 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-05-16
+
 ### Changed
 - Kept common minibuffer prefixes on the fast unranked FTS path for longer, avoiding broad ranked queries while users are still typing.
 - Added a direct formatter for the standard reference completion templates, cutting generic Elisp template overhead on the hot path.
