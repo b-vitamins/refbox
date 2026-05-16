@@ -24,8 +24,8 @@ pub const METHOD_FORMAT_REFERENCES: &str = "refbox/formatReferences";
 pub const METHOD_DIAGNOSTICS: &str = "refbox/diagnostics";
 pub const METHOD_DUPLICATE_GROUPS: &str = "refbox/duplicateGroups";
 
-pub const DEFAULT_LIMIT: usize = 20;
-pub const MAX_LIMIT: usize = 100;
+pub const DEFAULT_LIMIT: usize = 100;
+pub const MAX_LIMIT: usize = 10_000;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JsonRpcRequest {

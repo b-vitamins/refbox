@@ -77,13 +77,20 @@ names."
   :type 'boolean
   :group 'refbox)
 
-(defcustom refbox-search-default-limit 20
-  "Default maximum number of search results requested by refbox commands."
+(defcustom refbox-search-default-limit 100
+  "Default number of search results requested by non-completion refbox commands.
+
+Interactive completion has its own page-size defaults in
+`refbox-completion-limit' and `refbox-capf-limit'."
   :type 'natnum
   :group 'refbox)
 
-(defcustom refbox-search-maximum-limit 100
-  "Hard maximum number of search results requested by refbox commands."
+(defcustom refbox-search-maximum-limit 10000
+  "Safety ceiling for a single refbox search or list RPC page.
+
+This is a transport and accidental-request guard, not an index-scale
+limit.  Completion commands use smaller page-size defaults and can be
+raised independently."
   :type 'natnum
   :group 'refbox)
 
