@@ -6,6 +6,8 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-05-16
+
 ### Changed
 - Moved the standard completion row shaping into the daemon response so the common minibuffer UI no longer formats author, year, title, key, and type columns in Elisp.
 - Used a bounded ranked FTS preselection window for unfiltered ranked searches, cutting broad real-corpus search latency while preserving deterministic final ordering inside the window.
