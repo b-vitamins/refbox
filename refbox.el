@@ -4,7 +4,7 @@
 
 ;; Author: Ayan Das <bvits@riseup.net>
 ;; Maintainer: Ayan Das <bvits@riseup.net>
-;; Version: 0.4.7
+;; Version: 0.4.8
 ;; Package-Requires: ((emacs "29.1") (jsonrpc "1.0.27"))
 ;; Keywords: bib, tex, files, convenience
 
@@ -2010,6 +2010,9 @@ whose cdr is passed as additional arguments."
         :candidates nil
         :cache (make-hash-table :test 'eq)))
 
+(defconst refbox-capf--field-names '("author" "editor" "title")
+  "Bibliography fields hydrated for citation key completion annotations.")
+
 (defun refbox-capf--candidate (candidate seen)
   "Return a key completion candidate from CANDIDATE using SEEN."
   (let ((key (refbox-reference-field candidate "key")))
@@ -2040,20 +2043,26 @@ whose cdr is passed as additional arguments."
                           (plist-get state :limit)
                           (plist-get state :source-paths)
                           t
-                          (refbox--completion-field-names)
+                          refbox-capf--field-names
                           t
                           refbox-completion-search-fields))))))))
   (plist-get state :candidates))
+
+(defun refbox-capf--metadata ()
+  "Return metadata for citation key completion."
+  '(metadata
+    (category . refbox-reference)
+    (annotation-function . refbox-capf-annotate)
+    (company-docsig . refbox-capf-annotate)
+    (display-sort-function . identity)
+    (cycle-sort-function . identity)))
 
 (defun refbox-capf--completion-table (state)
   "Return a CAPF completion table backed by bounded daemon search STATE."
   (lambda (string predicate action)
     (cond
      ((eq action 'metadata)
-      '(metadata
-        (category . refbox-reference)
-        (annotation-function . refbox-capf-annotate)
-        (affixation-function . refbox--completion-affixation)))
+      (refbox-capf--metadata))
      (t
       (let ((candidates (refbox--completion-filter
                          (refbox-capf--state-candidates state string)
@@ -4169,7 +4178,8 @@ asks before replacing an existing file."
   "Return searchable visible text for COMPLETION."
   (string-join
    (delq nil
-         (list (substring-no-properties completion)
+         (list (or (get-text-property 0 'refbox-visible-text completion)
+                   (substring-no-properties completion))
                (get-text-property 0 'refbox-affixation-suffix completion)
                (unless (get-text-property 0 'refbox-candidate completion)
                  (refbox--completion-annotation-text completion))))
@@ -4190,6 +4200,16 @@ asks before replacing an existing file."
        completions))))
 
 
+(defun refbox--completion-hidden-identity (candidate counter)
+  "Return an invisible identity marker for duplicate CANDIDATE rows."
+  (propertize
+   (format "\0refbox:%s:%d"
+           (refbox--reference-identity candidate)
+           counter)
+   'display ""
+   'invisible t
+   'refbox-internal-identity t))
+
 (defun refbox--completion-preload-candidates (candidates)
   "Preload optional per-page metadata for completion CANDIDATES."
   (when (and candidates
@@ -4204,7 +4224,7 @@ asks before replacing an existing file."
 (defun refbox--completion-candidate-display (candidate seen selection-map)
   "Return a propertized display string for CANDIDATE.
 
-SEEN tracks duplicate displays in the current result page.  SELECTION-MAP
+SEEN tracks visible duplicate rows in the current result page.  SELECTION-MAP
 is retained across minibuffer input changes so a final plain-string
 selection can still resolve to the candidate it came from."
   (let ((refbox--reference-field-cache
@@ -4225,19 +4245,19 @@ selection can still resolve to the candidate it came from."
                         (refbox-reference-format-suffix candidate))
                     'refbox))
            (text (concat base suffix))
-           (display text)
-           (source-path (refbox-reference-field candidate "source_path"))
-           (counter 2))
-      (when (gethash display seen)
-        (setq display (format "%s  [%s]" text source-path)))
-      (while (gethash display seen)
-        (setq display (format "%s <%d>" text counter)
-              counter (1+ counter)))
-      (puthash display candidate seen)
-      (puthash display candidate selection-map)
+           (visible-text (substring-no-properties text))
+           (counter (1+ (or (gethash visible-text seen) 0)))
+           (display (if (= counter 1)
+                        text
+                      (concat text
+                              (refbox--completion-hidden-identity
+                               candidate counter)))))
+      (puthash visible-text counter seen)
+      (puthash (substring-no-properties display) candidate selection-map)
       (propertize display
                   'refbox-candidate candidate
                   'refbox-prefix prefix
+                  'refbox-visible-text visible-text
                   'refbox-annotation suffix
                   'refbox-affixation-suffix ""))))
 

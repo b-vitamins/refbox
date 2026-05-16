@@ -6,6 +6,12 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-05-17
+
+### Fixed
+- Made CAPF completion return clean citation-key candidates with author/title annotations instead of minibuffer affixation, while hydrating only the fields needed for annotation.
+- Kept duplicate completion rows visually clean by storing source-path identity in an invisible internal marker instead of appending full bibliography paths to the displayed candidate.
+
 ## [0.4.7] - 2026-05-16
 
 ### Changed

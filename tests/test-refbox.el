@@ -557,6 +557,49 @@
     (should (string-match-p "Native MainNative Suffix" display))
     (should-not (string-match-p "Alpha Reference Title" display))))
 
+(ert-deftest refbox-test-completion-hides_duplicate_source_identity ()
+  "Duplicate rows should not expose source paths in the visible display."
+  (let* ((refbox-templates
+          '((main . "%{author:16} %{date:4} %{title:24}")
+            (suffix . "  %{=key=:12} %{=type=:10}")))
+         (refbox-indicators nil)
+         (first
+          '(:key "krotov2018dense"
+            :entry_type "article"
+            :source_path "/home/b/projects/bibliography/journals/neco/2018.bib"
+            :fields ((:lookup_name "author" :value "Krotov, Hopfield")
+                     (:lookup_name "date" :value "2018")
+                     (:lookup_name "title" :value "Dense Associative Memory"))))
+         (second
+          '(:key "krotov2018dense"
+            :entry_type "article"
+            :source_path "/home/b/projects/bibliography/references/references.bib"
+            :fields ((:lookup_name "author" :value "Krotov, Hopfield")
+                     (:lookup_name "date" :value "2018")
+                     (:lookup_name "title" :value "Dense Associative Memory"))))
+         (seen (make-hash-table :test 'equal))
+         (selection-map (make-hash-table :test 'equal))
+         (first-display (refbox--completion-candidate-display
+                         first seen selection-map))
+         (second-display (refbox--completion-candidate-display
+                          second seen selection-map))
+         (hidden-pos (text-property-any
+                      0 (length second-display)
+                      'refbox-internal-identity t second-display)))
+    (should (equal (get-text-property 0 'refbox-visible-text first-display)
+                   (get-text-property 0 'refbox-visible-text second-display)))
+    (should hidden-pos)
+    (should (equal (get-text-property hidden-pos 'display second-display) ""))
+    (should-not (string-match-p
+                 "bibliography"
+                 (get-text-property 0 'refbox-visible-text second-display)))
+    (should (equal (gethash (substring-no-properties first-display)
+                            selection-map)
+                   first))
+    (should (equal (gethash (substring-no-properties second-display)
+                            selection-map)
+                   second))))
+
 (ert-deftest refbox-test-completion_preserves_suffix_column_alignment ()
   "Completion display should keep main-field padding before suffix columns."
   (let* ((refbox-templates
@@ -597,6 +640,32 @@
     (should (string-match-p "\\`   Smith *  Alpha Reference Title"
                             annotation))
     (should-not (string-match-p "smith2020" annotation))))
+
+(ert-deftest refbox-test-capf_metadata_uses_key_annotations_not_affixation ()
+  "CAPF metadata should expose citekey candidates with concise annotations."
+  (let* ((table (refbox-capf--completion-table (refbox-capf--state 10)))
+         (metadata (funcall table "" nil 'metadata)))
+    (should (assq 'annotation-function (cdr metadata)))
+    (should (assq 'company-docsig (cdr metadata)))
+    (should-not (assq 'affixation-function (cdr metadata)))))
+
+(ert-deftest refbox-test-capf_hydrates_only_annotation_fields ()
+  "CAPF search should not hydrate minibuffer display fields."
+  (let ((calls nil))
+    (cl-letf (((symbol-function 'refbox-rpc-request)
+               (lambda (method params)
+                 (push (list method params) calls)
+                 (should (equal method refbox-rpc-method-search-entries))
+                 (list :entries (list refbox-test-reference-candidate)))))
+      (let* ((table (refbox-capf--completion-table (refbox-capf--state 13)))
+             (candidates (funcall table "smith" nil t))
+             (params (cadar calls)))
+        (should (equal (mapcar #'substring-no-properties candidates)
+                       '("smith2020")))
+        (should (equal (append (plist-get params :field_names) nil)
+                       refbox-capf--field-names))
+        (should (equal (plist-get params :include_resources) :json-false))
+        (should-not (plist-member params :include_completion_display))))))
 
 (ert-deftest refbox-test-reference_indicators_reserve_absent_slots ()
   "Indicator prefixes should stay width-stable when indicators are absent."
