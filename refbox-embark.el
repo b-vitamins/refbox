@@ -231,6 +231,13 @@
     (pcase (plist-get choice :type)
       ('file (cons 'file (plist-get choice :target)))
       ('link (cons 'url (plist-get choice :target)))
+      ('note
+       (if-let ((category (plist-get choice :category)))
+           (cons category (plist-get choice :target))
+         (cons 'refbox-resource
+               (if choice
+                   (refbox-embark--resource-target-string choice)
+                 target))))
       (_ (cons 'refbox-resource
                (if choice
                    (refbox-embark--resource-target-string choice)

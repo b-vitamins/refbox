@@ -102,6 +102,30 @@ fn expands_string_variables_without_expanding_month_abbreviations() {
 }
 
 #[test]
+fn normalizes_protective_braces_in_primary_name_fields() {
+    let file = parse_bibliography_file(
+        "names.bib",
+        r#"@book{names2024,
+  author = {{Aaboud}, Morad and {CMS Collaboration}},
+  editor = {{Team Refbox}},
+  translator = {{Translation Team}},
+  note = {{Keep Braces}},
+}
+"#,
+    );
+
+    assert!(file.diagnostics.is_empty());
+    let entry = entry(&file, "names2024");
+    assert_eq!(
+        field_value(entry, "author"),
+        "Aaboud, Morad and CMS Collaboration"
+    );
+    assert_eq!(field_value(entry, "editor"), "Team Refbox");
+    assert_eq!(field_value(entry, "translator"), "{Translation Team}");
+    assert_eq!(field_value(entry, "note"), "{Keep Braces}");
+}
+
+#[test]
 fn recovers_following_entries_from_localized_field_errors() {
     let file = parse_bibliography_file("mixed.bib", include_str!("fixtures/mixed.bib"));
 

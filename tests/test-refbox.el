@@ -747,6 +747,20 @@
                     refbox-test-reference-candidate)
                    "Smith, Jane"))))
 
+(ert-deftest refbox-test-completion_field_names_cover_selected_actions ()
+  "Completion hydration should include fields needed after selection."
+  (let ((refbox-templates
+         '((main . "%{key}")
+           (suffix . "%{entry_type}")
+           (preview . "${journal journaltitle}")
+           (note . "${abstract}")))
+        (refbox-crossref-field-names '("crossref"))
+        (refbox-crossref-variable "xref")
+        (refbox-additional-fields '("custom" "journal")))
+    (should (equal (refbox--completion-field-names)
+                   '("key" "entry_type" "journal" "journaltitle"
+                     "abstract" "crossref" "xref" "custom")))))
+
 (ert-deftest refbox-test-completion-candidates-carry_metadata ()
   "Completion candidates should come from bounded RPC search and carry metadata."
   (let ((refbox-templates
@@ -777,6 +791,8 @@
           (should (equal (append (plist-get params :field_names) nil)
                          '("key" "title" "indicators"
                            "entry_type" "source_path" "crossref")))
+          (should (equal (append (plist-get params :crossref_fields) nil)
+                         '("crossref")))
           (should (equal (append (plist-get params :search_fields) nil)
                          refbox-completion-search-fields))
           (should (eq (plist-get params :include_resources) :json-false)))
@@ -791,12 +807,17 @@
                   thereis (eq (get-text-property pos 'face candidate-string)
                               'refbox)))
         (should (string-match-p
-                 "F L +article main\\.bib"
+                 "L F +article main\\.bib"
                  candidate-string))
         (should (string-match-p
-                 "F L"
+                 "L F"
                  (nth 1 affixation)))
         (should (string-empty-p (nth 2 affixation)))))))
+
+(ert-deftest refbox-test-default_indicator_order_matches_citar ()
+  "Default indicators should preserve Citar's link/file/note/cited order."
+  (should (equal (mapcar #'refbox-indicator-tag refbox-indicators)
+                 '("has:links" "has:files" "has:notes" "is:cited"))))
 
 (ert-deftest refbox-test-completion-uses_daemon_shaped_default_display ()
   "Default completion display should use daemon-shaped rows when present."
@@ -1226,6 +1247,8 @@
         (should (equal (plist-get (cadar calls) :limit) 7))
         (should (equal (plist-get (cadar calls) :resource_kinds)
                        ["file"]))
+        (should (equal (plist-get (cadar calls) :crossref_fields)
+                       ["crossref"]))
         (should (equal (plist-get (car results) :key) "smith2020"))))))
 
 (ert-deftest refbox-test-search-tag_aliases_use_daemon_resource_filters ()
@@ -1240,7 +1263,31 @@
         (should (equal (plist-get (cadar calls) :query) "alpha"))
         (should (equal (plist-get (cadar calls) :resource_kinds)
                        ["file"]))
+        (should (equal (plist-get (cadar calls) :crossref_fields)
+                       ["crossref"]))
         (should (equal (plist-get (car results) :key) "smith2020"))))))
+
+(ert-deftest refbox-test-search_link_tags_follow_link_fields ()
+  "Link search tags should use the configured openable link fields."
+  (let (calls)
+    (cl-letf (((symbol-function 'refbox-rpc-request)
+               (lambda (method params)
+                 (push (list method params) calls)
+                 (should (equal method refbox-rpc-method-search-entries))
+                 (list :entries (list refbox-test-reference-candidate)))))
+      (let ((results (refbox-search-references "has:links alpha" 7)))
+        (should (equal (plist-get (cadar calls) :query) "alpha"))
+        (should (equal (plist-get (cadar calls) :resource_kinds)
+                       ["doi" "pmid" "pmcid" "url"]))
+        (should (equal (plist-get (car results) :key) "smith2020")))))
+  (let ((refbox-link-fields nil)
+        calls)
+    (cl-letf (((symbol-function 'refbox-rpc-request)
+               (lambda (&rest _args)
+                 (setq calls t)
+                 (error "empty link field set should not query"))))
+      (should-not (refbox-search-references "has:links alpha" 7))
+      (should-not calls))))
 
 (ert-deftest refbox-test-search-empty_query_requests_bounded_page ()
   "Empty searches should ask the daemon for the first bounded page."
@@ -1252,7 +1299,9 @@
                  (list :entries (list refbox-test-reference-candidate)))))
       (let ((results (refbox-search-references "" 7)))
         (should (equal (cadar calls)
-                       (list :query "" :limit 7 :allow_empty_query t)))
+                       (list :query "" :limit 7
+                             :crossref_fields ["crossref"]
+                             :allow_empty_query t)))
         (should (equal (plist-get (car results) :key) "smith2020"))))))
 
 (ert-deftest refbox-test-search-can_restrict_native_search_fields ()
@@ -1938,6 +1987,14 @@
      (refbox-register-notes-source
       'mock (list :name 'bad :items #'ignore :open #'ignore))
      :type 'user-error)
+    (should-error
+     (refbox-register-notes-source
+      'mock (list :category "bad" :items #'ignore :open #'ignore))
+     :type 'user-error)
+    (should (eq (refbox-register-notes-source
+                 'mock
+                 (list :category 'file :items #'ignore :open #'ignore))
+                'mock))
     (let (warnings)
       (cl-letf (((symbol-function 'display-warning)
                  (lambda (type message &rest _args)
@@ -1956,6 +2013,23 @@
                  "https://doi.org/10.1000/refbox"))
   (should (equal (refbox-resource-link-url '(:kind "url" :value "{https://example.test}"))
                  "https://example.test")))
+
+(ert-deftest refbox-test-link_resources_use_single_field_configuration ()
+  "Link indicators and openers should share `refbox-link-fields'."
+  (let ((candidate '(:key "alpha"
+                     :resource_kinds ["eprint"]
+                     :resources ((:kind "eprint" :value "12345")))))
+    (should-not (refbox-reference-has-links-p candidate))
+    (should-not (refbox-reference-links
+                 candidate
+                 (refbox--candidate-resources candidate)))
+    (let ((refbox-link-fields
+           '((eprint . "https://example.test/eprint/%s"))))
+      (should (refbox-reference-has-links-p candidate))
+      (should (equal (refbox-reference-links
+                      candidate
+                      (refbox--candidate-resources candidate))
+                     '("https://example.test/eprint/12345"))))))
 
 (ert-deftest refbox-test-resource_choices_are_grouped_by_type ()
   "Resource completion should expose Citar-style type groups."
@@ -1999,6 +2073,18 @@
                                          (cdr metadata)))))
     (should (equal (funcall annotation-function label)
                    " <note:alpha>"))))
+
+(ert-deftest refbox-test-resource_note_choices_carry_source_category ()
+  "Note choices should retain the note source completion category."
+  (let* ((refbox-notes-source 'mock)
+         (refbox-notes-sources
+          '((mock :category file
+                  :items (lambda (_key _reference) '("/tmp/note.org"))
+                  :open ignore)))
+         (choice (car (refbox--note-choices (list '(:key "alpha"))))))
+    (should (eq (plist-get choice :type) 'note))
+    (should (eq (plist-get choice :category) 'file))
+    (should (equal (plist-get choice :target) "/tmp/note.org"))))
 
 (ert-deftest refbox-test-open-resource_commands_use_configured_functions ()
   "Resource open commands should delegate to configured open functions."
@@ -2660,6 +2746,25 @@
       (should (equal (refbox-copy-reference '("alpha" "beta"))
                      "Alpha Reference\n\nBeta Reference"))
       (should (equal (current-kill 0) "Alpha Reference\n\nBeta Reference"))))
+
+(ert-deftest refbox-test-reference_commands_select_before_custom_formatter ()
+  "Interactive reference formatting should pass selected keys to formatters."
+  (let (formatter-input)
+    (cl-letf (((symbol-function 'refbox-select-refs)
+               (lambda (&rest _args)
+                 '("alpha" "beta"))))
+      (let ((refbox-format-reference-function
+             (lambda (references)
+               (setq formatter-input references)
+               "Alpha Reference")))
+        (with-temp-buffer
+          (call-interactively #'refbox-insert-reference)
+          (should (equal formatter-input '("alpha" "beta")))
+          (should (equal (buffer-string) "Alpha Reference")))
+        (setq formatter-input nil)
+        (should (equal (call-interactively #'refbox-copy-reference)
+                       "Alpha Reference"))
+        (should (equal formatter-input '("alpha" "beta")))))))
 
 (ert-deftest refbox-test-formatting_configuration_errors_are_actionable ()
   "Missing style and locale configuration should fail directly."

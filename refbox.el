@@ -258,8 +258,9 @@ entries.  Template strings may use `${field:width%transform}' or
   "Additional bibliography fields expected by local configuration.
 
 Refbox indexes all parsed fields, so these names do not limit ingestion;
-they document fields referenced by display, resource, or downstream
-configuration."
+they are hydrated with bounded completion candidates for display,
+resource, or downstream configuration that needs them immediately after
+selection."
   :type '(repeat string)
   :group 'refbox)
 
@@ -381,12 +382,6 @@ long-form tags used by commands and indicator definitions."
   :type '(repeat string)
   :group 'refbox)
 
-(defcustom refbox-reference-link-field-names
-  '("url" "doi" "pmid" "pmcid" "eprint")
-  "Field names treated as external link fields for candidate indicators."
-  :type '(repeat string)
-  :group 'refbox)
-
 (defcustom refbox-reference-note-predicate #'refbox-reference-has-notes-p
   "Function called with a candidate to decide whether it has a note."
   :type '(choice (const :tag "Disabled" nil) function)
@@ -454,8 +449,8 @@ long-form tags used by commands and indicator definitions."
   "Default indicator for references cited in the current buffer.")
 
 (defcustom refbox-indicators
-  (list refbox-indicator-files
-        refbox-indicator-links
+  (list refbox-indicator-links
+        refbox-indicator-files
         refbox-indicator-notes
         refbox-indicator-cited)
   "Reference indicators rendered in completion candidates.
@@ -616,6 +611,19 @@ t is used as the default when no extension entry matches."
   :type '(alist :key-type symbol :value-type string)
   :group 'refbox)
 
+(defun refbox--link-field-names ()
+  "Return normalized bibliography field names configured as links."
+  (delete-dups
+   (cl-remove-if
+    #'refbox--blank-string-p
+    (mapcar (lambda (field)
+              (refbox--field-name-normalize
+               (cond
+                ((symbolp (car field)) (symbol-name (car field)))
+                ((stringp (car field)) (car field))
+                (t (format "%s" (car field))))))
+            refbox-link-fields))))
+
 (defcustom refbox-notes-paths nil
   "Directories searched for per-reference note files."
   :type '(repeat directory)
@@ -650,13 +658,15 @@ t is used as the default when no extension entry matches."
      :open refbox-note-source-file-open
      :create refbox-note-source-file-create
      :create-label refbox-note-source-file-create-label
+     :category file
      :transform file-name-nondirectory))
   "Alist of note sources available to refbox.
 
 Each entry is (SOURCE . PLIST).  Recognized plist keys are
 `:items', `:all-items', `:keys', `:hasitems', `:preload',
 `:open', `:create', `:create-label', `:transform', and
-`:annotate'.  `:items' and `:hasitems' functions receive KEY and
+`:annotate'.  `:category', when non-nil, is the completion category
+for note items.  `:items' and `:hasitems' functions receive KEY and
 REFERENCE.  `:all-items' receives no arguments and returns note items
 directly openable by `:open'.  `:keys' receives no arguments and
 returns note keys that can be expanded through `:items'.  `:open',
@@ -1167,11 +1177,10 @@ loaded for CANDIDATE."
 
 (defun refbox-reference-has-links-p (candidate)
   "Return non-nil when CANDIDATE has an indexed link resource."
-  (or (refbox-reference-has-any-resource-kind-p
-       candidate '("url" "doi" "pmid" "pmcid" "eprint"))
-      (unless (refbox--candidate-resource-kinds-supplied-p candidate)
-        (refbox-reference-has-any-field-p
-         candidate refbox-reference-link-field-names))))
+  (let ((link-fields (refbox--link-field-names)))
+    (or (refbox-reference-has-any-resource-kind-p candidate link-fields)
+        (unless (refbox--candidate-resource-kinds-supplied-p candidate)
+          (refbox-reference-has-any-field-p candidate link-fields)))))
 
 (defun refbox-reference-has-notes-p (candidate)
   "Return non-nil when CANDIDATE has an associated note."
@@ -1578,7 +1587,10 @@ direct function transform."
     (append
      (refbox-template-field-names (refbox--template 'main))
      (refbox-template-field-names (refbox--template 'suffix))
-     (refbox--crossref-field-names)))))
+     (refbox-template-field-names (refbox--template 'preview))
+     (refbox-template-field-names (refbox--template 'note))
+     (refbox--crossref-field-names)
+     refbox-additional-fields))))
 
 (defun refbox-template--field-text (token candidate)
   "Return TOKEN text for CANDIDATE before width fitting."
@@ -1801,12 +1813,15 @@ direct function transform."
    candidate
    width))
 
-(defconst refbox-search--tag-resource-kinds
-  '(("has:file" . ("file"))
-    ("has:files" . ("file"))
-    ("has:link" . ("url" "doi" "arxiv" "pmid" "pmcid"))
-    ("has:links" . ("url" "doi" "arxiv" "pmid" "pmcid")))
+(defconst refbox-search--resource-tags
+  '("has:file" "has:files" "has:link" "has:links")
   "Search tags that can be pushed into the daemon resource filter.")
+
+(defun refbox-search--tag-resource-kinds (tag)
+  "Return daemon resource kinds matching search TAG."
+  (pcase tag
+    ((or "has:file" "has:files") '("file"))
+    ((or "has:link" "has:links") (refbox--link-field-names))))
 
 (defconst refbox-search--post-filter-tags
   '("has:note" "has:notes" "is:cited")
@@ -1820,22 +1835,23 @@ direct function transform."
 
 (defun refbox-search--parse-query (query)
   "Return parsed QUERY as a plist with clean text and tags."
-  (let (tokens resource-kinds post-filter-tags)
+  (let (tokens resource-kinds post-filter-tags empty-resource-filter)
     (dolist (token (split-string (or query "") "[[:space:]\n\r\t]+" t))
       (let ((normalized (refbox-search--normalize-tag token)))
         (cond
-         ((alist-get normalized refbox-search--tag-resource-kinds nil nil #'equal)
-          (setq resource-kinds
-                (append (alist-get normalized
-                                   refbox-search--tag-resource-kinds
-                                   nil nil #'equal)
-                        resource-kinds)))
+         ((member normalized refbox-search--resource-tags)
+          (if-let ((tag-resource-kinds
+                    (refbox-search--tag-resource-kinds normalized)))
+              (setq resource-kinds
+                    (append resource-kinds tag-resource-kinds))
+            (setq empty-resource-filter t)))
          ((member normalized refbox-search--post-filter-tags)
           (push normalized post-filter-tags))
          (t
           (push token tokens)))))
     (list :query (string-join (nreverse tokens) " ")
-          :resource-kinds (delete-dups (nreverse resource-kinds))
+          :resource-kinds (delete-dups resource-kinds)
+          :empty-resource-filter empty-resource-filter
           :post-filter-tags (nreverse post-filter-tags))))
 
 (defun refbox-search--candidate-matches-post-tag-p (candidate tag)
@@ -1993,6 +2009,7 @@ pre-shaped standard completion display columns."
   (let* ((parsed (refbox-search--parse-query query))
          (clean-query (plist-get parsed :query))
          (resource-kinds (plist-get parsed :resource-kinds))
+         (empty-resource-filter (plist-get parsed :empty-resource-filter))
          (post-filter-tags (plist-get parsed :post-filter-tags))
          (post-filter-plan (refbox-search--post-filter-plan post-filter-tags))
          (post-filter-tags (plist-get post-filter-plan :tags))
@@ -2017,12 +2034,13 @@ pre-shaped standard completion display columns."
            (cl-remove-if
             #'refbox--blank-string-p
             (mapcar #'refbox--field-name-normalize field-names))))
+         (crossref-fields (refbox--crossref-field-names))
          (search-fields
           (delete-dups
            (cl-remove-if
             #'refbox--blank-string-p
             (mapcar #'refbox--field-name-normalize search-fields))))
-         (response (unless post-empty-key-filter
+         (response (unless (or post-empty-key-filter empty-resource-filter)
                      (when source-paths
                        (refbox--ensure-source-paths-indexed source-paths))
                      (refbox-rpc-request
@@ -2038,6 +2056,8 @@ pre-shaped standard completion display columns."
                        (list :keys (vconcat key-filter)))
                      (when resource-kinds
                        (list :resource_kinds (vconcat resource-kinds)))
+                     (when crossref-fields
+                       (list :crossref_fields (vconcat crossref-fields)))
                      (when search-fields
                        (list :search_fields (vconcat search-fields)))
                      (when field-names
@@ -3016,7 +3036,7 @@ callable."
   "Note source plist properties whose values must be callable.")
 
 (defconst refbox-note-source--known-properties
-  (append refbox-note-source--function-properties '(:name))
+  (append refbox-note-source--function-properties '(:name :category))
   "Recognized note source plist properties.")
 
 (defun refbox-note-source-validate (name config)
@@ -3042,6 +3062,11 @@ callable."
              (unless (stringp value)
                (user-error "refbox note source %s property :name is not a string"
                            name)))
+            ((eq property :category)
+             (unless (symbolp value)
+               (user-error
+                "refbox note source %s property :category is not a symbol"
+                name)))
             ((not (memq property refbox-note-source--known-properties))
              (display-warning
               'refbox
@@ -3500,6 +3525,8 @@ COMMAND controls `refbox-open-always-create-notes'."
               (list :type 'note
                     :reference reference
                     :target note
+                    :category (plist-get (refbox-note-source--plist)
+                                         :category)
                     :label (refbox--resource-choice-label
                             "note" reference
                             (refbox-note-source--display note))))
@@ -3520,6 +3547,7 @@ COMMAND controls `refbox-open-always-create-notes'."
    (lambda (note)
      (list :type 'note
            :target note
+           :category (plist-get (refbox-note-source--plist) :category)
            :label (refbox--resource-choice-label
                    "note"
                    nil
@@ -4654,13 +4682,13 @@ STYLE, when non-nil, overrides `refbox-citeproc-csl-style'."
 ;;;###autoload
 (defun refbox-insert-reference (&optional references)
   "Insert formatted references for REFERENCES."
-  (interactive)
+  (interactive (list (refbox-select-refs)))
   (insert (refbox--format-reference-text references)))
 
 ;;;###autoload
 (defun refbox-copy-reference (&optional references)
   "Copy formatted references for REFERENCES to the kill ring."
-  (interactive)
+  (interactive (list (refbox-select-refs)))
   (let ((text (refbox--format-reference-text references)))
     (kill-new text)
     (when (called-interactively-p 'interactive)

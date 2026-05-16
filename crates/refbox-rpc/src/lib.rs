@@ -185,6 +185,8 @@ pub struct SearchEntriesRequest {
     pub include_configured_sources: Option<bool>,
     pub keys: Option<Vec<String>>,
     pub resource_kinds: Option<Vec<String>>,
+    pub include_crossrefs: Option<bool>,
+    pub crossref_fields: Option<Vec<String>>,
     pub search_fields: Option<Vec<String>>,
     pub field_names: Option<Vec<String>>,
     pub field_value_char_limit: Option<usize>,

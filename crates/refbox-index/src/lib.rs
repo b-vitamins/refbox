@@ -713,7 +713,10 @@ fn field_value_text(document: &ParsedDocument<'_>, field: &ParsedField<'_>) -> S
         )
         .unwrap_or_else(|_| field.value.plain_text());
 
-    if matches!(lookup_name.as_str(), "title" | "shorttitle") {
+    if matches!(
+        lookup_name.as_str(),
+        "title" | "shorttitle" | "author" | "editor"
+    ) {
         strip_unescaped_braces(&text)
     } else {
         text

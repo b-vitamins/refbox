@@ -118,6 +118,20 @@
     (should (eq (car target) 'file))
     (should (equal (cdr target) "/tmp/paper.pdf"))))
 
+(ert-deftest refbox-embark-test-resource_transformer_exposes_note_categories ()
+  "Note resource choices should expose their configured completion category."
+  (let* ((choice '(:type note
+                   :target "/tmp/note.org"
+                   :category file
+                   :label "note alpha note.org"))
+         (candidate (propertize (plist-get choice :label)
+                                'refbox-resource-choice choice))
+         (target (refbox-embark-resource-transformer
+                  'refbox-resource
+                  candidate)))
+    (should (eq (car target) 'file))
+    (should (equal (cdr target) "/tmp/note.org"))))
+
 (ert-deftest refbox-embark-test-resource_transformer_keeps_create_note_actions ()
   "Create-note resource choices should stay on the Refbox resource map."
   (let* ((choice '(:type create-note

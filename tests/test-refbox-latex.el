@@ -245,6 +245,19 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                            (list (expand-file-name "refs/main.bib" root))))))
       (delete-directory root t))))
 
+(ert-deftest refbox-latex-test-local-bibliography_discovery_handles_spaced_commands ()
+  "BibLaTeX resource declarations may contain whitespace and complex options."
+  (let ((root (make-temp-file "refbox-latex-spaced-biblatex-" t)))
+    (unwind-protect
+        (let ((default-directory root))
+          (refbox-latex-test-with-buffer
+              "\\addbibresource [location={local [cache]}] { refs/main.bib }\n\\bibliography { refs/a, refs/b.bib }\n|"
+            (should (equal (refbox-latex-local-bib-files)
+                           (list (expand-file-name "refs/main.bib" root)
+                                 (expand-file-name "refs/a.bib" root)
+                                 (expand-file-name "refs/b.bib" root))))))
+      (delete-directory root t))))
+
 (ert-deftest refbox-latex-test-optional-package-signals-are-optional ()
   "Discovery should read optional helper variables only when already present."
   (refbox-latex-test-with-buffer "|"

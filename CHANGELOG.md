@@ -10,6 +10,7 @@ The format follows Keep a Changelog, and this project follows SemVer.
 - Made the daemon corpus configuration match the Emacs configuration: multiple bibliography roots, explicit bibliography files, discovery extensions, include/exclude globs, and hidden-file policy are now sent through one authoritative sync path.
 - Let explicit bibliography files participate in full sync and targeted autosync even when they live outside discovery roots.
 - Route reference-list formatting through the Emacs citeproc integration instead of a daemon-side placeholder formatter.
+- Let `make test-elisp TESTS=...` run a single ERT selector or a space-separated selector list for scoped parity work.
 
 ### Fixed
 - Preserved duplicate-key entries, including same-file duplicates, by using daemon row ids for completion identity, entry lookup, resources, raw entry text, and source locations.
@@ -27,6 +28,14 @@ The format follows Keep a Changelog, and this project follows SemVer.
 - Bounded Markdown citation detection to containing bracket syntax state instead of scanning backward through unrelated bracketed text.
 - Used exact Markdown citation-key spans for at-point and Embark targets, including brace-delimited Pandoc keys.
 - Parsed LaTeX citation optional arguments with escaped brackets and brace-protected bracket content instead of stopping at the first `]`.
+- Matched Citar's default completion indicator order: links, files, notes, then cited-in-buffer.
+- Applied cross-reference resource inheritance to daemon resource filters and resource-kind summaries, so `has:files` and `has:links` match Citar-style parent resources without broad Emacs post-filtering.
+- Made `refbox-link-fields` the single authority for link indicators, `has:links` daemon filters, and opened link URLs, matching Citar's default DOI/PMID/PMCID/URL behavior.
+- Made interactive reference insertion and copying select references before calling custom formatters, matching the Citar command contract.
+- Parsed LaTeX bibliography declarations with balanced optional and braced groups, so spaced `\bibliography` and complex `\addbibresource` forms still scope local searches.
+- Carried note-source completion categories through resource choices and Embark targets, with file-backed notes exposed as file resources by default.
+- Normalized protective braces out of indexed `author` and `editor` values to match Citar's parsebib-backed field values.
+- Hydrated preview, note, and configured additional fields on bounded completion candidates so selected-reference actions see the same metadata Citar parsed for them.
 - Stopped mutating completion category defaults while loading the package.
 
 ## [0.4.8] - 2026-05-17

@@ -460,13 +460,28 @@ the citation command directly."
     (save-excursion
       (goto-char (point-min))
       (while (re-search-forward
-              "\\\\\\(?:bibliography\\|addbibresource\\)\\(?:\\[[^]\n]*\\]\\)?{\\([^}]+\\)}"
+              "\\\\\\(?:bibliography\\|addbibresource\\)"
               nil t)
-        (let ((raw (match-string-no-properties 1)))
-          (dolist (part (split-string raw "," t "[ \t\n]+"))
-            (push (expand-file-name
-                   (refbox-latex--bib-file (string-trim part)))
-                  files)))))
+        (let ((command-end (point)))
+          (skip-chars-forward " \t\n")
+          (while (eq (char-after) ?\[)
+            (if-let ((group (refbox-latex--scan-optional-group (point))))
+                (progn
+                  (goto-char (cdr group))
+                  (skip-chars-forward " \t\n"))
+              (setq command-end nil)
+              (unless (eobp)
+                (forward-char 1))))
+          (when command-end
+            (when-let ((group (refbox-latex--scan-braced-group (point))))
+              (let ((raw (buffer-substring-no-properties
+                          (1+ (car group))
+                          (1- (cdr group)))))
+                (dolist (part (split-string raw "," t "[ \t\n]+"))
+                  (push (expand-file-name
+                         (refbox-latex--bib-file (string-trim part)))
+                        files)))
+              (goto-char (cdr group)))))))
     (nreverse files)))
 
 (defun refbox-latex--optional-bibliography-files ()

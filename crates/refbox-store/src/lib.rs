@@ -120,6 +120,7 @@ pub struct SearchOptions<'a> {
     pub include_configured_sources: bool,
     pub keys: &'a [String],
     pub resource_kinds: &'a [String],
+    pub crossref_fields: &'a [String],
     pub search_fields: &'a [String],
     pub allow_empty_query: bool,
     pub ranked: bool,
@@ -132,6 +133,7 @@ impl Default for SearchOptions<'_> {
             include_configured_sources: true,
             keys: &[],
             resource_kinds: &[],
+            crossref_fields: &[],
             search_fields: &[],
             allow_empty_query: false,
             ranked: true,
@@ -520,6 +522,7 @@ impl RefboxStore {
             .map(|kind| kind.trim().to_ascii_lowercase())
             .filter(|kind| !kind.is_empty())
             .collect::<Vec<_>>();
+        let crossref_fields = normalized_crossref_fields(options.crossref_fields);
         let keys = options
             .keys
             .iter()
@@ -658,17 +661,51 @@ impl RefboxStore {
                 .collect::<Vec<_>>()
                 .join(", ");
             sql.push_str(
-                " AND EXISTS (
+                " AND (EXISTS (
                     SELECT 1 FROM resources r
                     WHERE r.entry_id = e.id
                     AND r.kind IN (",
             );
             sql.push_str(&placeholders);
-            sql.push_str("))");
+            sql.push(')');
             for kind in &resource_kinds {
                 parameters.push(kind);
                 next_param += 1;
             }
+            sql.push(')');
+            if !crossref_fields.is_empty() {
+                let crossref_placeholders = (0..crossref_fields.len())
+                    .map(|index| format!("?{}", index + next_param))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                sql.push_str(
+                    " OR EXISTS (
+                        SELECT 1
+                        FROM fields cf
+                        JOIN entries parent
+                          ON parent.entry_key = trim(trim(cf.value), '{}\"')
+                        JOIN resources pr ON pr.entry_id = parent.id
+                        WHERE cf.entry_id = e.id
+                          AND cf.lookup_name IN (",
+                );
+                sql.push_str(&crossref_placeholders);
+                sql.push_str(") AND pr.kind IN (");
+                for field in &crossref_fields {
+                    parameters.push(field);
+                    next_param += 1;
+                }
+                let inherited_placeholders = (0..resource_kinds.len())
+                    .map(|index| format!("?{}", index + next_param))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                sql.push_str(&inherited_placeholders);
+                sql.push_str("))");
+                for kind in &resource_kinds {
+                    parameters.push(kind);
+                    next_param += 1;
+                }
+            }
+            sql.push(')');
         }
         if fts_query.is_some() {
             if options.ranked {
@@ -727,7 +764,8 @@ impl RefboxStore {
         } else {
             HashMap::new()
         };
-        let mut resource_kinds_by_entry = self.direct_resource_kinds_for_entries(&entry_ids)?;
+        let mut resource_kinds_by_entry =
+            self.resource_kinds_for_entries(&entry_ids, &crossref_fields)?;
         let crossref_field_set = crossref_fields.iter().cloned().collect::<HashSet<_>>();
 
         if include_resources && !crossref_fields.is_empty() {
@@ -918,9 +956,10 @@ impl RefboxStore {
         Ok(resources_by_entry)
     }
 
-    fn direct_resource_kinds_for_entries(
+    fn resource_kinds_for_entries(
         &self,
         entry_ids: &[i64],
+        crossref_fields: &[String],
     ) -> Result<HashMap<i64, Vec<String>>> {
         if entry_ids.is_empty() {
             return Ok(HashMap::new());
@@ -943,6 +982,44 @@ impl RefboxStore {
         let mut kinds_by_entry: HashMap<i64, Vec<String>> = HashMap::new();
         for (entry_id, kind) in rows {
             kinds_by_entry.entry(entry_id).or_default().push(kind);
+        }
+        if !crossref_fields.is_empty() {
+            let sql = format!(
+                "SELECT child.id, pr.kind
+                 FROM entries child
+                 JOIN fields cf ON cf.entry_id = child.id
+                 JOIN entries parent
+                   ON parent.entry_key = trim(trim(cf.value), '{{}}\"')
+                 JOIN resources pr ON pr.entry_id = parent.id
+                 WHERE child.id IN ({})
+                   AND cf.lookup_name IN ({})
+                 GROUP BY child.id, pr.kind
+                 ORDER BY child.id, pr.kind",
+                placeholders(entry_ids.len()),
+                placeholders_offset(entry_ids.len(), crossref_fields.len()),
+            );
+            let mut parameters: Vec<&dyn rusqlite::ToSql> = entry_ids
+                .iter()
+                .map(|entry_id| entry_id as &dyn rusqlite::ToSql)
+                .collect();
+            parameters.extend(
+                crossref_fields
+                    .iter()
+                    .map(|field| field as &dyn rusqlite::ToSql),
+            );
+            let mut statement = self.connection.prepare(&sql)?;
+            let rows = statement
+                .query_map(params_from_iter(parameters), |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            for (entry_id, kind) in rows {
+                kinds_by_entry.entry(entry_id).or_default().push(kind);
+            }
+            for kinds in kinds_by_entry.values_mut() {
+                kinds.sort();
+                kinds.dedup();
+            }
         }
         Ok(kinds_by_entry)
     }
@@ -1855,6 +1932,13 @@ fn fts_query_field_filter(search_fields: &[String]) -> Option<String> {
 fn placeholders(count: usize) -> String {
     (1..=count)
         .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn placeholders_offset(offset: usize, count: usize) -> String {
+    (1..=count)
+        .map(|index| format!("?{}", offset + index))
         .collect::<Vec<_>>()
         .join(", ")
 }

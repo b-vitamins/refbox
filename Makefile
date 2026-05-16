@@ -6,6 +6,7 @@ ELISP_FILES := refbox-rpc.el refbox.el refbox-org.el refbox-latex.el refbox-mark
 ELISP_TEST_FILES := tests/test-init.el tests/test-refbox.el tests/test-refbox-org.el tests/test-refbox-latex.el tests/test-refbox-markdown.el tests/test-refbox-embark.el
 ELISP_ELC_FILES := $(ELISP_FILES:.el=.elc) $(ELISP_TEST_FILES:.el=.elc)
 ELISP_BATCH_ARGS := -Q --batch -L . -l tests/test-init.el
+TESTS ?= t
 
 .PHONY: fmt
 fmt:
@@ -21,7 +22,8 @@ test-rust:
 
 .PHONY: test-elisp
 test-elisp:
-	$(EMACS) $(ELISP_BATCH_ARGS) -l refbox.el -l tests/test-refbox.el -f ert-run-tests-batch-and-exit
+	REFBOX_TESTS="$(TESTS)" $(EMACS) $(ELISP_BATCH_ARGS) -l refbox.el -l tests/test-refbox.el \
+		--eval '(let* ((tests (getenv "REFBOX_TESTS")) (selector (cond ((or (null tests) (string= tests "") (string= tests "t")) t) ((string-prefix-p "(" tests) (read tests)) ((string-match-p "[[:space:]]" tests) (cons (quote or) (mapcar (function intern) (split-string tests "[[:space:]]+" t)))) (t (intern tests))))) (ert-run-tests-batch-and-exit selector))'
 
 .PHONY: byte-compile
 byte-compile:

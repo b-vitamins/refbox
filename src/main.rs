@@ -310,6 +310,8 @@ impl Daemon {
                     .unwrap_or(source_paths.is_empty());
                 let keys = request.keys.unwrap_or_default();
                 let resource_kinds = request.resource_kinds.unwrap_or_default();
+                let crossref_fields =
+                    request_crossref_fields(request.include_crossrefs, request.crossref_fields);
                 let search_fields = request.search_fields.unwrap_or_default();
                 let field_names = request.field_names;
                 let include_resources = request.include_resources.unwrap_or(true);
@@ -327,6 +329,7 @@ impl Daemon {
                             include_configured_sources,
                             keys: &keys,
                             resource_kinds: &resource_kinds,
+                            crossref_fields: &crossref_fields,
                             search_fields: &search_fields,
                             allow_empty_query: request.allow_empty_query.unwrap_or(false),
                             ranked: request.ranked.unwrap_or(true),
@@ -337,7 +340,7 @@ impl Daemon {
                     .store
                     .hydrate_search_results(
                         search_results,
-                        &default_crossref_fields(),
+                        &crossref_fields,
                         field_names.as_deref(),
                         include_resources,
                         include_field_sources,

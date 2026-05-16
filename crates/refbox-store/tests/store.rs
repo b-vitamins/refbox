@@ -813,6 +813,32 @@ fn resource_queries_inherit_crossref_resources() {
             .any(|resource| resource.owner_key == "parent2020")
     );
 
+    let inherited_file_results = store
+        .search(
+            "child",
+            5,
+            SearchOptions {
+                resource_kinds: &["file".to_string()],
+                crossref_fields: &["crossref".to_string()],
+                ..SearchOptions::default()
+            },
+        )
+        .expect("crossref resource-filtered search should work");
+    assert_eq!(inherited_file_results.len(), 1);
+    assert_eq!(inherited_file_results[0].key, "child2020");
+
+    let direct_file_results = store
+        .search(
+            "child",
+            5,
+            SearchOptions {
+                resource_kinds: &["file".to_string()],
+                ..SearchOptions::default()
+            },
+        )
+        .expect("direct resource-filtered search should work");
+    assert!(direct_file_results.is_empty());
+
     let results = store
         .search("child", 5, SearchOptions::default())
         .expect("child search should work");
@@ -831,6 +857,7 @@ fn resource_queries_inherit_crossref_resources() {
                 && resource.owner_key == "parent2020"
                 && resource.inherited_from_key.as_deref() == Some("parent2020"))
     );
+    assert_eq!(child.resource_kinds, vec!["crossref", "doi", "file", "url"]);
 }
 
 #[test]
