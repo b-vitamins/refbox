@@ -490,6 +490,7 @@ impl RefboxStore {
             return Ok(Vec::new());
         }
 
+        let requested_limit = limit;
         let limit = i64::try_from(limit).map_err(|_| StoreError::LimitOutOfRange(limit))?;
         let fts_query = fts_query_from_user_input(query, options.search_fields);
         let resource_kinds = options
@@ -508,6 +509,42 @@ impl RefboxStore {
             .filter(|path| !path.is_empty())
             .map(ToOwned::to_owned)
             .collect::<Vec<_>>();
+
+        if let Some(fts_query) = &fts_query {
+            if options.ranked && source_paths.is_empty() && resource_kinds.is_empty() {
+                let ranking_window = requested_limit.saturating_mul(16).max(1_000);
+                let ranking_window = i64::try_from(ranking_window)
+                    .map_err(|_| StoreError::LimitOutOfRange(ranking_window))?;
+                let mut statement = self.connection.prepare(
+                    "WITH hits AS (
+                         SELECT rowid, rank AS score
+                         FROM entry_fts
+                         WHERE entry_fts MATCH ?1
+                         ORDER BY rank
+                         LIMIT ?2
+                     )
+                     SELECT e.id, f.path, e.entry_key, e.entry_type, hits.score
+                     FROM hits
+                     JOIN entries e ON e.id = hits.rowid
+                     JOIN files f ON f.id = e.file_id
+                     ORDER BY hits.score, e.entry_key, f.path, e.id
+                     LIMIT ?3",
+                )?;
+                let results = statement
+                    .query_map(params![fts_query, ranking_window, limit], |row| {
+                        Ok(SearchResult {
+                            entry_id: row.get(0)?,
+                            file_path: row.get(1)?,
+                            key: row.get(2)?,
+                            entry_type: row.get(3)?,
+                            score: row.get(4)?,
+                        })
+                    })?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                return Ok(results);
+            }
+        }
+
         let mut parameters: Vec<&dyn rusqlite::ToSql> = Vec::new();
         let mut next_param = 1;
         let mut sql = if fts_query.is_some() {

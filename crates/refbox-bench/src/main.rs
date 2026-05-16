@@ -329,6 +329,7 @@ fn main() -> Result<()> {
                 "ranked": false,
                 "include_resources": false,
                 "include_field_sources": false,
+                "include_completion_display": true,
                 "field_names": completion_fields,
                 "search_fields": completion_search_fields,
                 "field_value_char_limit": COMPLETION_FIELD_VALUE_LIMIT,

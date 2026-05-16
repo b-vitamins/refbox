@@ -186,6 +186,7 @@ pub struct SearchEntriesRequest {
     pub field_names: Option<Vec<String>>,
     pub field_value_char_limit: Option<usize>,
     pub include_field_sources: Option<bool>,
+    pub include_completion_display: Option<bool>,
     pub allow_empty_query: Option<bool>,
     pub ranked: Option<bool>,
     pub include_resources: Option<bool>,
@@ -211,6 +212,14 @@ pub struct EntrySearchItem {
     pub fields: Vec<EntryFieldItem>,
     pub resource_kinds: Vec<String>,
     pub resources: Vec<ResourceItem>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_display: Option<EntryCompletionDisplayItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntryCompletionDisplayItem {
+    pub main: String,
+    pub suffix: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

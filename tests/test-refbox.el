@@ -542,6 +542,20 @@
                  (nth 1 affixation)))
         (should (string-empty-p (nth 2 affixation)))))))
 
+(ert-deftest refbox-test-completion-uses_daemon_shaped_default_display ()
+  "Default completion display should use daemon-shaped rows when present."
+  (let* ((candidate (append
+                     (copy-tree refbox-test-reference-candidate)
+                     (list :completion_display
+                           '(:main "Native Main"
+                             :suffix "Native Suffix"))))
+         (seen (make-hash-table :test 'equal))
+         (selection-map (make-hash-table :test 'equal))
+         (display (refbox--completion-candidate-display
+                   candidate seen selection-map)))
+    (should (string-match-p "Native MainNative Suffix" display))
+    (should-not (string-match-p "Alpha Reference Title" display))))
+
 (ert-deftest refbox-test-completion_preserves_suffix_column_alignment ()
   "Completion display should keep main-field padding before suffix columns."
   (let* ((refbox-templates
@@ -640,15 +654,16 @@
       (let* ((state (refbox--completion-state 7))
              (table (refbox--completion-table state)))
         (funcall table "po" nil t)
-        (should (equal (plist-get (cadar calls) :ranked) :json-false))))))
+        (should (equal (plist-get (cadar calls) :ranked) :json-false))
+        (should (equal (plist-get (cadar calls) :include_completion_display)
+                       t))))))
 
 (ert-deftest refbox-test-completion-delegates_visible_text_to_completion_styles ()
   "The minibuffer table should let completion styles filter display strings."
   (let ((refbox-templates '((main . "%{key} %{title}")))
         (completion-styles '(substring basic)))
     (cl-letf (((symbol-function 'refbox-search-references)
-               (lambda (_query &optional _limit _source-paths _unranked
-                              _field-names _omit-resources _search-fields)
+               (lambda (_query &rest _args)
                  (list refbox-test-reference-candidate
                        (plist-put
                         (copy-tree refbox-test-reference-candidate)
@@ -665,8 +680,7 @@
                             (suffix . "          %{=key=:12}")))
         (completion-styles '(basic)))
     (cl-letf (((symbol-function 'refbox-search-references)
-               (lambda (query &optional _limit _source-paths _unranked
-                              _field-names _omit-resources _search-fields)
+               (lambda (query &rest _args)
                  (should (equal query "Relational Interaction"))
                  (list refbox-test-reference-candidate))))
       (let* ((state (refbox--completion-state 10))
@@ -693,8 +707,7 @@
     (cl-letf (((symbol-function 'refbox--sync-current-bibliography-buffer-if-needed)
                #'ignore)
               ((symbol-function 'refbox-search-references)
-               (lambda (query &optional _limit _source-paths _unranked
-                              _field-names _omit-resources _search-fields)
+               (lambda (query &rest _args)
                  (if (equal query "xu")
                      (list refbox-test-reference-candidate)
                    nil)))

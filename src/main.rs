@@ -8,19 +8,19 @@ use refbox_core::PingInfo;
 use refbox_index::{DiscoveryPolicy, SyncEngine, SyncStatus};
 use refbox_rpc::{
     DiagnosticItem, DiagnosticsResponse, DuplicateGroupItem, DuplicateGroupsResponse, EmptyParams,
-    EntriesByKeysRequest, EntriesResponse, EntryByKeyRequest, EntryFieldItem, EntryItem,
-    EntryRefItem, EntrySearchItem, FormatReferencesRequest, FormatReferencesResponse,
-    FormattedReferenceItem, IndexedFilesResponse, JsonRpcError, JsonRpcErrorObject, JsonRpcRequest,
-    JsonRpcResponse, LibraryFilesByKeysRequest, LibraryFilesResponse, LimitRequest,
-    ListEntriesRequest, METHOD_DIAGNOSTICS, METHOD_DUPLICATE_GROUPS, METHOD_ENTRIES_BY_KEYS,
-    METHOD_ENTRY_BY_KEY, METHOD_FORMAT_REFERENCES, METHOD_INDEXED_FILES,
-    METHOD_LIBRARY_FILES_BY_KEYS, METHOD_LIST_ENTRIES, METHOD_PING, METHOD_RAW_ENTRY,
-    METHOD_RESOLVE_FILES, METHOD_RESOURCES_BY_KEY, METHOD_RESOURCES_BY_KEYS, METHOD_SEARCH_ENTRIES,
-    METHOD_SOURCE_LOCATION, METHOD_STATUS, METHOD_SYNC_FILE, METHOD_SYNC_FULL, RawEntryRequest,
-    RawEntryResponse, ResolveFilesRequest, ResourceItem, ResourcesByKeyRequest,
-    ResourcesByKeysRequest, ResourcesResponse, SearchEntriesRequest, SearchEntriesResponse,
-    SourceLocationRequest, SourceLocationResponse, StatusResponse, SyncFileRequest, SyncResponse,
-    clamp_limit,
+    EntriesByKeysRequest, EntriesResponse, EntryByKeyRequest, EntryCompletionDisplayItem,
+    EntryFieldItem, EntryItem, EntryRefItem, EntrySearchItem, FormatReferencesRequest,
+    FormatReferencesResponse, FormattedReferenceItem, IndexedFilesResponse, JsonRpcError,
+    JsonRpcErrorObject, JsonRpcRequest, JsonRpcResponse, LibraryFilesByKeysRequest,
+    LibraryFilesResponse, LimitRequest, ListEntriesRequest, METHOD_DIAGNOSTICS,
+    METHOD_DUPLICATE_GROUPS, METHOD_ENTRIES_BY_KEYS, METHOD_ENTRY_BY_KEY, METHOD_FORMAT_REFERENCES,
+    METHOD_INDEXED_FILES, METHOD_LIBRARY_FILES_BY_KEYS, METHOD_LIST_ENTRIES, METHOD_PING,
+    METHOD_RAW_ENTRY, METHOD_RESOLVE_FILES, METHOD_RESOURCES_BY_KEY, METHOD_RESOURCES_BY_KEYS,
+    METHOD_SEARCH_ENTRIES, METHOD_SOURCE_LOCATION, METHOD_STATUS, METHOD_SYNC_FILE,
+    METHOD_SYNC_FULL, RawEntryRequest, RawEntryResponse, ResolveFilesRequest, ResourceItem,
+    ResourcesByKeyRequest, ResourcesByKeysRequest, ResourcesResponse, SearchEntriesRequest,
+    SearchEntriesResponse, SourceLocationRequest, SourceLocationResponse, StatusResponse,
+    SyncFileRequest, SyncResponse, clamp_limit,
 };
 use refbox_store::{
     RefboxStore, SearchOptions, SearchResult, StoredEntry, StoredField, StoredSearchEntry,
@@ -115,6 +115,15 @@ impl Daemon {
     }
 
     fn entry_search_item(entry: StoredSearchEntry) -> EntrySearchItem {
+        Self::entry_search_item_with_display(entry, false)
+    }
+
+    fn entry_search_item_with_display(
+        entry: StoredSearchEntry,
+        include_completion_display: bool,
+    ) -> EntrySearchItem {
+        let completion_display =
+            include_completion_display.then(|| completion_display_item(&entry));
         EntrySearchItem {
             key: entry.key,
             source_path: entry.file_path,
@@ -123,6 +132,7 @@ impl Daemon {
             fields: entry.fields.into_iter().map(field_item).collect(),
             resource_kinds: entry.resource_kinds,
             resources: entry.resources.into_iter().map(resource_item).collect(),
+            completion_display,
         }
     }
 
@@ -175,6 +185,8 @@ impl Daemon {
                 let field_names = request.field_names;
                 let include_resources = request.include_resources.unwrap_or(true);
                 let include_field_sources = request.include_field_sources.unwrap_or(true);
+                let include_completion_display =
+                    request.include_completion_display.unwrap_or(false);
                 let field_value_char_limit = request.field_value_char_limit;
                 let search_results = self
                     .store
@@ -202,7 +214,9 @@ impl Daemon {
                     )
                     .map_err(store_error)?
                     .into_iter()
-                    .map(Self::entry_search_item)
+                    .map(|entry| {
+                        Self::entry_search_item_with_display(entry, include_completion_display)
+                    })
                     .collect();
                 self.to_value(SearchEntriesResponse { entries })
             }
@@ -771,6 +785,32 @@ fn format_reference(entry: StoredEntry, fields: &[StoredField]) -> FormattedRefe
     }
 }
 
+fn completion_display_item(entry: &StoredSearchEntry) -> EntryCompletionDisplayItem {
+    let author = first_clean_field(&entry.fields, &["author", "editor"])
+        .map(|value| shorten_names_to_width(&value, 30))
+        .unwrap_or_default();
+    let date = first_clean_field(&entry.fields, &["date", "year", "issued"]).unwrap_or_default();
+    let title = first_clean_field(&entry.fields, &["title"]).unwrap_or_default();
+    let tags = first_clean_field(&entry.fields, &["tags", "keywords"]).unwrap_or_default();
+
+    EntryCompletionDisplayItem {
+        main: format!(
+            "{}     {}     {}",
+            fit_columns(&author, 30),
+            fit_columns(&date, 4),
+            fit_columns(&title, 48)
+        ),
+        suffix: format!(
+            "          {}    {}    {}",
+            fit_columns(&entry.key, 15),
+            fit_columns(&entry.entry_type, 12),
+            tags
+        )
+        .trim_end()
+        .to_owned(),
+    }
+}
+
 fn first_clean_field(fields: &[StoredField], names: &[&str]) -> Option<String> {
     fields
         .iter()
@@ -802,6 +842,43 @@ fn first_year(value: &str) -> Option<String> {
         .find(|window| window.iter().all(|byte| byte.is_ascii_digit()))
         .and_then(|window| std::str::from_utf8(window).ok())
         .map(ToOwned::to_owned)
+}
+
+fn shorten_names_to_width(names: &str, width: usize) -> String {
+    let mut result = String::new();
+    let mut parts = names.split(" and ").peekable();
+    while let Some(raw_name) = parts.next() {
+        if !result.is_empty() && result.chars().count() >= width {
+            break;
+        }
+        let mut short_name = raw_name
+            .split_once(", ")
+            .map_or(raw_name, |(family, _)| family)
+            .trim()
+            .replace(['{', '}'], "");
+        if short_name.split_whitespace().count() > 1 {
+            short_name = short_name.split_whitespace().collect::<Vec<_>>().join(" ");
+        }
+        result.push_str(&short_name);
+        if parts.peek().is_some() {
+            result.push_str(", ");
+        }
+    }
+    truncate_columns(&result, width)
+}
+
+fn fit_columns(value: &str, width: usize) -> String {
+    let truncated = truncate_columns(value, width);
+    let column_count = truncated.chars().count();
+    if column_count < width {
+        format!("{truncated}{}", " ".repeat(width - column_count))
+    } else {
+        truncated
+    }
+}
+
+fn truncate_columns(value: &str, width: usize) -> String {
+    value.chars().take(width).collect()
 }
 
 fn field_item(field: refbox_store::StoredField) -> EntryFieldItem {
@@ -993,6 +1070,34 @@ mod tests {
             lightweight_search["entries"][0]["fields"][0]
                 .get("source")
                 .is_none()
+        );
+        assert!(
+            lightweight_search["entries"][0]
+                .get("completion_display")
+                .is_none()
+        );
+
+        let completion_search = result(daemon.handle_request(request(
+            METHOD_SEARCH_ENTRIES,
+            json!({
+                "query": "alpha",
+                "limit": 500,
+                "include_resources": false,
+                "include_field_sources": false,
+                "include_completion_display": true,
+            }),
+        )));
+        assert!(
+            completion_search["entries"][0]["completion_display"]["main"]
+                .as_str()
+                .expect("completion main display")
+                .contains("Alpha Search")
+        );
+        assert!(
+            completion_search["entries"][0]["completion_display"]["suffix"]
+                .as_str()
+                .expect("completion suffix display")
+                .contains("a2020")
         );
 
         let listed = result(daemon.handle_request(request(

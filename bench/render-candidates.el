@@ -26,16 +26,18 @@
 
 (defun refbox-bench--render-once (candidates)
   "Render CANDIDATES once and return elapsed milliseconds."
-  (let ((start (float-time)))
-    (refbox--with-dynamic-cache (make-hash-table :test 'eq)
-      (let ((seen (make-hash-table :test 'equal))
-            (selection-map (make-hash-table :test 'equal))
-            rendered)
-        (dolist (candidate candidates)
-          (push (refbox--completion-candidate-display
-                 candidate seen selection-map)
-                rendered))
-        (refbox--completion-affixation (nreverse rendered))))
+  (let ((gc-cons-threshold
+         (max gc-cons-threshold refbox--completion-gc-cons-threshold))
+        (start (float-time)))
+      (refbox--with-dynamic-cache (make-hash-table :test 'eq)
+        (let ((seen (make-hash-table :test 'equal))
+              (selection-map (make-hash-table :test 'equal))
+              rendered)
+          (dolist (candidate candidates)
+            (push (refbox--completion-candidate-display
+                   candidate seen selection-map)
+                  rendered))
+          (refbox--completion-affixation (nreverse rendered))))
     (* 1000.0 (- (float-time) start))))
 
 (defun refbox-bench--main ()
@@ -49,6 +51,7 @@
     (unless candidates
       (error "candidate payload is empty"))
     (setq refbox-reference-cited-predicate nil)
+    (refbox-bench--render-once candidates)
     (dotimes (_ iterations)
       (push (refbox-bench--render-once candidates) samples))
     (princ (json-encode `((samples_ms . ,(vconcat (nreverse samples))))))))
