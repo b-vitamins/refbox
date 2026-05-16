@@ -514,7 +514,7 @@
         (let ((params (cadar calls)))
           (should (equal (plist-get params :query) "alpha"))
           (should (equal (plist-get params :limit) 7))
-          (should-not (plist-get params :ranked))
+          (should (eq (plist-get params :ranked) :json-false))
           (should (equal (plist-get params :field_value_char_limit)
                          refbox-completion-field-value-limit))
           (should (eq (plist-get params :include_field_sources) :json-false))
@@ -801,6 +801,30 @@
         (should (equal preloaded '("smith2020" "doe2021")))
         (should (= hasitems 2))))))
 
+(ert-deftest refbox-test-indicators_respect_disabled_note_predicate ()
+  "Disabled note predicates should not query the active note source."
+  (let ((refbox-reference-note-predicate nil)
+        (calls 0)
+        (predicate (refbox-has-notes)))
+    (cl-letf (((symbol-function 'refbox-note-source-has-items-p)
+               (lambda (_reference)
+                 (setq calls (1+ calls))
+                 t)))
+      (should-not (funcall predicate refbox-test-reference-candidate))
+      (should (= calls 0)))))
+
+(ert-deftest refbox-test-indicators_respect_disabled_cited_predicate ()
+  "Disabled cited predicates should not scan the current buffer."
+  (let ((refbox-reference-cited-predicate nil)
+        (calls 0)
+        (predicate (refbox-is-cited)))
+    (cl-letf (((symbol-function 'refbox-current-buffer-citation-keys)
+               (lambda (&optional _buffer)
+                 (setq calls (1+ calls))
+                 '("smith2020"))))
+      (should-not (funcall predicate refbox-test-reference-candidate))
+      (should (= calls 0)))))
+
 (ert-deftest refbox-test-completion-skips_expensive_recursive_library_indicators ()
   "Recursive library source indicators should not scan directories cold."
   (let* ((root (make-temp-file "refbox-recursive-library-" t))
@@ -935,7 +959,7 @@
         (let ((params (cadar calls)))
           (should (equal (plist-get params :query) "smith"))
           (should (equal (plist-get params :limit) 3))
-          (should-not (plist-get params :ranked))
+          (should (eq (plist-get params :ranked) :json-false))
           (should (equal (append (plist-get params :field_names) nil)
                          '("key" "title" "crossref")))
           (should (equal (append (plist-get params :search_fields) nil)

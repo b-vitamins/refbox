@@ -6,6 +6,16 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+### Changed
+- Kept common minibuffer prefixes on the fast unranked FTS path for longer, avoiding broad ranked queries while users are still typing.
+- Added a direct formatter for the standard reference completion templates, cutting generic Elisp template overhead on the hot path.
+- Reduced completion GC pressure while shaping candidate pages.
+
+### Fixed
+- Avoided structural hashing of full candidate plists while caching completion indicators.
+- Skipped cold recursive library-note/file indicator work when no cheap lookup is available.
+- Made disabled note and cited indicator predicates actually suppress their backing lookups.
+
 ## [0.4.4] - 2026-05-16
 
 ### Changed
