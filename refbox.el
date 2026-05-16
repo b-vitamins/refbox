@@ -1459,7 +1459,7 @@ direct function transform."
                 truncate-string-ellipsis
               refbox-ellipsis))))
       (if (< (string-width truncated) width)
-          (string-pad truncated width)
+          (concat truncated (make-string (- width (string-width truncated)) ?\s))
         truncated))))
 
 (defun refbox-template-format (template candidate &optional width)
@@ -1507,13 +1507,16 @@ direct function transform."
   (or (alist-get name refbox-templates)
       ""))
 
-(defun refbox-reference-format-main (candidate &optional width)
+(defun refbox-reference-format-main (candidate &optional width preserve-padding)
   "Return the main display string for CANDIDATE."
-  (string-trim-right
-   (refbox-template-format
-    (refbox--template 'main)
-    candidate
-    (or width refbox-reference-display-width))))
+  (let ((text
+         (refbox-template-format
+          (refbox--template 'main)
+          candidate
+          (or width refbox-reference-display-width))))
+    (if preserve-padding
+        text
+      (string-trim-right text))))
 
 (defun refbox-reference-format-suffix (candidate &optional width)
   "Return the suffix display string for CANDIDATE."
@@ -3967,7 +3970,8 @@ selection can still resolve to the candidate it came from."
            (base (refbox--completion-add-face
                   (refbox-reference-format-main
                    candidate
-                   (refbox--completion-display-width prefix))
+                   (refbox--completion-display-width prefix)
+                   t)
                   'refbox-highlight))
            (suffix (refbox--completion-add-face
                     (refbox-reference-format-suffix candidate)

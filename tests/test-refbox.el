@@ -406,6 +406,19 @@
            "smith2020[[:space:]]+article"
            (refbox-reference-format-suffix refbox-test-reference-candidate))))
 
+(ert-deftest refbox-test-template-formatting_pads_to_display_width ()
+  "Fixed-width template fields should reserve display columns, not characters."
+  (let ((formatted
+         (refbox-template-format
+          "%{title:6}|%{key}"
+          '(:key "alpha"
+            :fields ((:lookup_name "title" :value "界"))))))
+    (should (equal (substring formatted (string-match-p "|" formatted))
+                   "|alpha"))
+    (should (= (string-width (substring formatted 0
+                                         (string-match-p "|" formatted)))
+               6))))
+
 (ert-deftest refbox-test-author_display_removes_protective_bibtex_braces ()
   "Author shortening should not leak BibTeX protection braces into candidates."
   (let ((candidate
@@ -528,6 +541,37 @@
                  "F L"
                  (nth 1 affixation)))
         (should (string-empty-p (nth 2 affixation)))))))
+
+(ert-deftest refbox-test-completion_preserves_suffix_column_alignment ()
+  "Completion display should keep main-field padding before suffix columns."
+  (let* ((refbox-templates
+          '((main . "%{author:12} %{date:4} %{title:24}")
+            (suffix . "  %{=key=:12} %{=type=:10}")))
+         (refbox-indicators nil)
+         (short
+          '(:key "short2020"
+            :entry_type "article"
+            :fields ((:lookup_name "author" :value "Smith")
+                     (:lookup_name "date" :value "2020")
+                     (:lookup_name "title" :value "A"))))
+         (long
+          '(:key "long2021"
+            :entry_type "article"
+            :fields ((:lookup_name "author" :value "Jones")
+                     (:lookup_name "date" :value "2021")
+                     (:lookup_name "title" :value "A much longer title"))))
+         (seen (make-hash-table :test 'equal))
+         (selection-map (make-hash-table :test 'equal))
+         (short-display (refbox--completion-candidate-display
+                         short seen selection-map))
+         (long-display (refbox--completion-candidate-display
+                        long seen selection-map)))
+    (should
+     (=
+      (string-width (substring short-display 0
+                               (string-match-p "short2020" short-display)))
+      (string-width (substring long-display 0
+                               (string-match-p "long2021" long-display)))))))
 
 (ert-deftest refbox-test-capf_annotations_use_author_and_title ()
   "CAPF annotations should mirror the concise author/title display."
