@@ -6,6 +6,12 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-05-16
+
+### Fixed
+- Preserve padded main completion fields before appending key/type suffix columns, keeping reference rows aligned for short and long titles.
+- Pad fixed-width template fields by display columns rather than character count.
+
 ## [0.4.2] - 2026-05-15
 
 ### Fixed
