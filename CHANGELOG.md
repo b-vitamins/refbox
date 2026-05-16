@@ -6,6 +6,13 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-05-16
+
+### Changed
+- Raised the default non-completion search page size to 100.
+- Raised the single-RPC search/list page safety ceiling to 10,000 so explicit larger requests are not silently capped at 100.
+- Clarified that completion limits are UI page-size defaults, separate from backend index scale.
+
 ## [0.4.3] - 2026-05-16
 
 ### Fixed
