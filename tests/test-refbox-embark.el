@@ -84,6 +84,50 @@
                    (list :key "alpha"
                          :source_path "/tmp/refs.bib")))))
 
+(ert-deftest refbox-embark-test-resource_transformer_exposes_file_targets ()
+  "Resource choices should expose real file targets to generic Embark actions."
+  (let* ((choice '(:type file
+                   :target "/tmp/paper.pdf"
+                   :label "file alpha paper.pdf"))
+         (candidate (propertize (plist-get choice :label)
+                                'refbox-resource-choice choice))
+         (target (refbox-embark-resource-transformer
+                  'refbox-resource
+                  candidate)))
+    (should (eq (car target) 'file))
+    (should (equal (cdr target) "/tmp/paper.pdf"))))
+
+(ert-deftest refbox-embark-test-resource_transformer_keeps_create_note_actions ()
+  "Create-note resource choices should stay on the Refbox resource map."
+  (let* ((choice '(:type create-note
+                   :target "alpha"
+                   :label "create alpha"))
+         (candidate (propertize (plist-get choice :label)
+                                'refbox-resource-choice choice))
+         (target (refbox-embark-resource-transformer
+                  'refbox-resource
+                  candidate)))
+    (should (eq (car target) 'refbox-resource))
+    (should (equal (refbox-embark-resource-choice (cdr target))
+                   choice))))
+
+(ert-deftest refbox-embark-test-resource_choice_target_at_point ()
+  "Resource choice targets should be discoverable in completion buffers."
+  (let* ((choice '(:type file
+                   :target "/tmp/paper.pdf"
+                   :label "file alpha paper.pdf"))
+         (display (propertize (plist-get choice :label)
+                              'refbox-resource-choice choice)))
+    (with-temp-buffer
+      (insert display)
+      (goto-char (point-min))
+      (let* ((target (refbox-embark-target-resource-choice))
+             (encoded (nth 1 target)))
+        (should (eq (car target) 'refbox-resource))
+        (should (equal (refbox-embark-resource-choice encoded) choice))
+        (should (= (nth 2 target) (point-min)))
+        (should (= (cdddr target) (point-max)))))))
+
 (ert-deftest refbox-embark-test-setup-registers-finders-and-keymaps ()
   "Setup should register target finders and keymaps only when requested."
   (skip-unless (require 'embark nil t))
@@ -98,6 +142,8 @@
     (refbox-embark-setup)
     (should (memq #'refbox-embark-target-reference-candidate
                   embark-target-finders))
+    (should (memq #'refbox-embark-target-resource-choice
+                  embark-target-finders))
     (should (memq #'refbox-embark-target-key-at-point
                   embark-target-finders))
     (should (memq #'refbox-embark-target-citation-at-point
@@ -106,15 +152,41 @@
                   embark-candidate-collectors))
     (should (eq (cdr (assq 'refbox-reference embark-transformer-alist))
                 'refbox-embark-candidate-transformer))
+    (should (eq (cdr (assq 'refbox-resource embark-transformer-alist))
+                'refbox-embark-resource-transformer))
     (should (eq (lookup-key (cdr (assq 'refbox-reference embark-keymap-alist))
                             (kbd "o"))
                 #'refbox-embark-open))
+    (should (eq (lookup-key (cdr (assq 'refbox-reference embark-keymap-alist))
+                            (kbd "RET"))
+                #'refbox-embark-run-default-action))
+    (should (eq (lookup-key (cdr (assq 'refbox-reference embark-keymap-alist))
+                            (kbd "c"))
+                #'refbox-embark-insert-citation))
+    (should (eq (lookup-key (cdr (assq 'refbox-reference embark-keymap-alist))
+                            (kbd "k"))
+                #'refbox-embark-insert-keys))
+    (should (eq (lookup-key (cdr (assq 'refbox-reference embark-keymap-alist))
+                            (kbd "r"))
+                #'refbox-embark-copy-reference))
+    (should (eq (lookup-key (cdr (assq 'refbox-reference embark-keymap-alist))
+                            (kbd "R"))
+                #'refbox-embark-insert-reference))
+    (should (eq (lookup-key (cdr (assq 'refbox-resource embark-keymap-alist))
+                            (kbd "RET"))
+                #'refbox-embark-open-resource))
     (should (eq (lookup-key (cdr (assq 'refbox-reference embark-keymap-alist))
                             (kbd "g"))
                 #'ignore))
     (should (eq (lookup-key (cdr (assq 'refbox-key embark-keymap-alist))
                             (kbd "i"))
                 #'refbox-embark-insert-edit))
+    (should (eq (lookup-key (cdr (assq 'refbox-key embark-keymap-alist))
+                            (kbd "r"))
+                #'refbox-embark-copy-reference))
+    (should (eq (lookup-key (cdr (assq 'refbox-key embark-keymap-alist))
+                            (kbd "RET"))
+                #'refbox-embark-run-default-action))
     (should (eq (lookup-key (cdr (assq 'refbox-citation embark-keymap-alist))
                             (kbd "i"))
                 #'refbox-embark-insert-edit))
@@ -124,8 +196,14 @@
                 #'refbox-embark-open-entry))
     (should (eq (lookup-key refbox-embark-map (kbd "b"))
                 #'refbox-embark-insert-bibtex))
+    (should (eq (lookup-key refbox-embark-map (kbd "B"))
+                #'refbox-embark-insert-raw-entry))
     (should (eq (lookup-key refbox-embark-map (kbd "C"))
                 #'refbox-embark-copy-references))
+    (should (memq #'refbox-embark-insert-citation
+                  embark-multitarget-actions))
+    (should (memq #'refbox-embark-run-default-action
+                  embark-multitarget-actions))
     (should (memq #'refbox-embark-copy-references
                   embark-multitarget-actions))))
 
@@ -149,6 +227,8 @@
                   embark-multitarget-actions))
     (refbox-embark-mode -1)
     (should-not (memq #'refbox-embark-target-reference-candidate
+                      embark-target-finders))
+    (should-not (memq #'refbox-embark-target-resource-choice
                       embark-target-finders))
     (should-not (memq #'refbox-embark-selected-candidates
                       embark-candidate-collectors))
@@ -202,16 +282,64 @@
               ((symbol-function 'refbox-insert-bibtex)
                (lambda (references)
                  (push (list :insert references) calls)
-                 :inserted)))
+                 :inserted))
+              ((symbol-function 'refbox-insert-citation)
+               (lambda (references)
+                 (push (list :cite references) calls)
+                 :cited))
+              ((symbol-function 'refbox-insert-keys)
+               (lambda (references)
+                 (push (list :keys references) calls)
+                 :keyed))
+              ((symbol-function 'refbox-insert-reference)
+               (lambda (references)
+                 (push (list :formatted references) calls)
+                 :formatted))
+              ((symbol-function 'refbox-run-default-action)
+               (lambda (references)
+                 (push (list :default references) calls)
+                 :defaulted)))
       (should (eq (refbox-embark-open-entry target) :opened))
       (should (eq (refbox-embark-insert-bibtex target) :inserted))
+      (should (eq (refbox-embark-insert-citation target) :cited))
+      (should (eq (refbox-embark-insert-keys target) :keyed))
+      (should (eq (refbox-embark-insert-reference target) :formatted))
+      (should (eq (refbox-embark-run-default-action target) :defaulted))
       (should (equal (nreverse calls)
                      (list
                       (list :open (list :key "alpha"
                                         :source_path "/tmp/refs.bib"))
                       (list :insert
                             (list (list :key "alpha"
+                                        :source_path "/tmp/refs.bib")))
+                      (list :cite
+                            (list (list :key "alpha"
+                                        :source_path "/tmp/refs.bib")))
+                      (list :keys
+                            (list (list :key "alpha"
+                                        :source_path "/tmp/refs.bib")))
+                      (list :formatted
+                            (list (list :key "alpha"
+                                        :source_path "/tmp/refs.bib")))
+                      (list :default
+                            (list (list :key "alpha"
                                         :source_path "/tmp/refs.bib")))))))))
+
+(ert-deftest refbox-embark-test-multitarget-actions_decode_target_lists ()
+  "Embark multi-target actions should decode every stable target."
+  (let ((alpha (refbox-embark--target-string
+                (list :key "alpha" :source_path "/tmp/a.bib")))
+        (beta (refbox-embark--target-string
+               (list :key "beta" :source_path "/tmp/b.bib")))
+        calls)
+    (cl-letf (((symbol-function 'refbox-open)
+               (lambda (references)
+                 (push references calls)
+                 :opened)))
+      (should (eq (refbox-embark-open (list alpha beta)) :opened))
+      (should (equal (car calls)
+                     (list (list :key "alpha" :source_path "/tmp/a.bib")
+                           (list :key "beta" :source_path "/tmp/b.bib")))))))
 
 (ert-deftest refbox-embark-test-multitarget-copy-is-bounded_and_explicit ()
   "The explicit multi-target copy action should enforce its target cap."

@@ -322,6 +322,19 @@ once the input is selective enough to shape useful results."
   :type 'natnum
   :group 'refbox)
 
+(defcustom refbox-search-tag-aliases
+  '((":f" . "has:files")
+    (":p" . "has:files")
+    (":l" . "has:links")
+    (":n" . "has:notes")
+    (":c" . "is:cited"))
+  "Short search tokens expanded to Refbox search tags.
+
+These aliases keep the rich completion prompt terse while preserving the
+long-form tags used by commands and indicator definitions."
+  :type '(alist :key-type string :value-type string)
+  :group 'refbox)
+
 (defcustom refbox-reference-resource-indicator "F"
   "Indicator used when a reference has local resource fields."
   :type 'string
@@ -1733,11 +1746,17 @@ direct function transform."
   '("has:note" "has:notes" "is:cited")
   "Search tags evaluated from Emacs-side candidate predicates.")
 
+(defun refbox-search--normalize-tag (token)
+  "Return canonical search tag for TOKEN."
+  (let ((normalized (downcase token)))
+    (or (alist-get normalized refbox-search-tag-aliases nil nil #'equal)
+        normalized)))
+
 (defun refbox-search--parse-query (query)
   "Return parsed QUERY as a plist with clean text and tags."
   (let (tokens resource-kinds post-filter-tags)
     (dolist (token (split-string (or query "") "[[:space:]\n\r\t]+" t))
-      (let ((normalized (downcase token)))
+      (let ((normalized (refbox-search--normalize-tag token)))
         (cond
          ((alist-get normalized refbox-search--tag-resource-kinds nil nil #'equal)
           (setq resource-kinds

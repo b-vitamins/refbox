@@ -9,6 +9,9 @@ The format follows Keep a Changelog, and this project follows SemVer.
 ## [0.4.8] - 2026-05-17
 
 ### Fixed
+- Added Citar-style short indicator search aliases such as `:p`, `:f`, `:n`, `:l`, and `:c`.
+- Exposed Refbox resource candidates to Embark so file and URL choices use native Embark actions while note/create-note choices keep Refbox actions.
+- Aligned Refbox Embark reference actions with the main reference action map while preserving duplicate-key source identity and multi-target selection.
 - Made CAPF completion return clean citation-key candidates with author/title annotations instead of minibuffer affixation, while hydrating only the fields needed for annotation.
 - Kept duplicate completion rows visually clean by storing source-path identity in an invisible internal marker instead of appending full bibliography paths to the displayed candidate.
 

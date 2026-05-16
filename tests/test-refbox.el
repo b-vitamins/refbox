@@ -973,6 +973,20 @@
                        ["file"]))
         (should (equal (plist-get (car results) :key) "smith2020"))))))
 
+(ert-deftest refbox-test-search-tag_aliases_use_daemon_resource_filters ()
+  "Short indicator aliases should map to their long search tags."
+  (let (calls)
+    (cl-letf (((symbol-function 'refbox-rpc-request)
+               (lambda (method params)
+                 (push (list method params) calls)
+                 (should (equal method refbox-rpc-method-search-entries))
+                 (list :entries (list refbox-test-reference-candidate)))))
+      (let ((results (refbox-search-references ":p alpha" 7)))
+        (should (equal (plist-get (cadar calls) :query) "alpha"))
+        (should (equal (plist-get (cadar calls) :resource_kinds)
+                       ["file"]))
+        (should (equal (plist-get (car results) :key) "smith2020"))))))
+
 (ert-deftest refbox-test-search-empty_query_requests_bounded_page ()
   "Empty searches should ask the daemon for the first bounded page."
   (let (calls)

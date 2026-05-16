@@ -47,6 +47,7 @@
 (declare-function refbox-markdown-key-at-point "refbox-markdown" ())
 (declare-function refbox-markdown-citation-at-point "refbox-markdown" ())
 (declare-function refbox-markdown--completion-bounds "refbox-markdown" ())
+(declare-function refbox--open-resource-choice "refbox" (choice))
 (declare-function embark--metadata "embark" ())
 
 (defvar embark-target-finders)
@@ -68,43 +69,56 @@
 
 (defvar refbox-embark-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "o") #'refbox-embark-open)
-    (define-key map (kbd "f") #'refbox-embark-open-files)
-    (define-key map (kbd "n") #'refbox-embark-open-notes)
-    (define-key map (kbd "l") #'refbox-embark-open-links)
-    (define-key map (kbd "e") #'refbox-embark-open-entry)
-    (define-key map (kbd "s") #'refbox-embark-open-source)
-    (define-key map (kbd "b") #'refbox-embark-insert-bibtex)
-    (define-key map (kbd "r") #'refbox-embark-insert-raw-entry)
-    (define-key map (kbd "c") #'refbox-embark-copy-reference)
-    (define-key map (kbd "C") #'refbox-embark-copy-references)
     (define-key map (kbd "a") #'refbox-embark-add-file)
     (define-key map (kbd "A") #'refbox-embark-attach-file)
+    (define-key map (kbd "b") #'refbox-embark-insert-bibtex)
+    (define-key map (kbd "B") #'refbox-embark-insert-raw-entry)
+    (define-key map (kbd "c") #'refbox-embark-insert-citation)
+    (define-key map (kbd "e") #'refbox-embark-open-entry)
+    (define-key map (kbd "f") #'refbox-embark-open-files)
+    (define-key map (kbd "k") #'refbox-embark-insert-keys)
+    (define-key map (kbd "l") #'refbox-embark-open-links)
+    (define-key map (kbd "n") #'refbox-embark-open-notes)
+    (define-key map (kbd "o") #'refbox-embark-open)
+    (define-key map (kbd "r") #'refbox-embark-copy-reference)
+    (define-key map (kbd "R") #'refbox-embark-insert-reference)
+    (define-key map (kbd "s") #'refbox-embark-open-source)
+    (define-key map (kbd "C") #'refbox-embark-copy-references)
     (define-key map (kbd "z") #'refbox-embark-open-in-zotero)
+    (define-key map (kbd "RET") #'refbox-embark-run-default-action)
     map)
   "Embark actions for refbox reference targets.")
 
 (defvar refbox-embark-citation-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "i") #'refbox-embark-insert-edit)
-    (define-key map (kbd "o") #'refbox-embark-open)
-    (define-key map (kbd "f") #'refbox-embark-open-files)
-    (define-key map (kbd "n") #'refbox-embark-open-notes)
-    (define-key map (kbd "l") #'refbox-embark-open-links)
-    (define-key map (kbd "e") #'refbox-embark-open-entry)
-    (define-key map (kbd "s") #'refbox-embark-open-source)
-    (define-key map (kbd "b") #'refbox-embark-insert-bibtex)
-    (define-key map (kbd "r") #'refbox-embark-insert-raw-entry)
-    (define-key map (kbd "c") #'refbox-embark-copy-reference)
-    (define-key map (kbd "C") #'refbox-embark-copy-references)
     (define-key map (kbd "a") #'refbox-embark-add-file)
     (define-key map (kbd "A") #'refbox-embark-attach-file)
+    (define-key map (kbd "b") #'refbox-embark-insert-bibtex)
+    (define-key map (kbd "B") #'refbox-embark-insert-raw-entry)
+    (define-key map (kbd "e") #'refbox-embark-open-entry)
+    (define-key map (kbd "f") #'refbox-embark-open-files)
+    (define-key map (kbd "l") #'refbox-embark-open-links)
+    (define-key map (kbd "n") #'refbox-embark-open-notes)
+    (define-key map (kbd "o") #'refbox-embark-open)
+    (define-key map (kbd "r") #'refbox-embark-copy-reference)
+    (define-key map (kbd "s") #'refbox-embark-open-source)
+    (define-key map (kbd "C") #'refbox-embark-copy-references)
     (define-key map (kbd "z") #'refbox-embark-open-in-zotero)
+    (define-key map (kbd "RET") #'refbox-embark-run-default-action)
     map)
   "Embark actions for refbox citation targets.")
 
+(defvar refbox-embark-resource-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") #'refbox-embark-open-resource)
+    (define-key map (kbd "o") #'refbox-embark-open-resource)
+    map)
+  "Embark actions for refbox resource targets.")
+
 (defvar refbox-embark--target-finders
   '(refbox-embark-target-reference-candidate
+    refbox-embark-target-resource-choice
     refbox-embark-target-key-at-point
     refbox-embark-target-citation-at-point)
   "Target finders installed by `refbox-embark-mode'.")
@@ -114,17 +128,29 @@
   "Candidate collectors installed by `refbox-embark-mode'.")
 
 (defvar refbox-embark--transformer-alist
-  '((refbox-reference . refbox-embark-candidate-transformer))
+  '((refbox-reference . refbox-embark-candidate-transformer)
+    (refbox-resource . refbox-embark-resource-transformer))
   "Embark target transformers installed by `refbox-embark-mode'.")
 
 (defvar refbox-embark--keymap-alist
   '((refbox-reference . refbox-embark-map)
+    (refbox-resource . refbox-embark-resource-map)
     (refbox-key . refbox-embark-citation-map)
     (refbox-citation . refbox-embark-citation-map))
   "Embark keymap entries installed by `refbox-embark-mode'.")
 
 (defvar refbox-embark--multitarget-actions
-  '(refbox-embark-copy-references)
+  '(refbox-embark-open
+    refbox-embark-open-files
+    refbox-embark-attach-file
+    refbox-embark-open-links
+    refbox-embark-insert-bibtex
+    refbox-embark-insert-citation
+    refbox-embark-insert-reference
+    refbox-embark-insert-keys
+    refbox-embark-run-default-action
+    refbox-embark-open-notes
+    refbox-embark-copy-references)
   "Embark multi-target actions installed by `refbox-embark-mode'.")
 
 (defun refbox-embark--target-string (reference)
@@ -153,25 +179,63 @@
      target)
     target))
 
+(defun refbox-embark--resource-target-string (choice)
+  "Return an Embark target string for resource CHOICE."
+  (let ((target (copy-sequence (plist-get choice :label))))
+    (put-text-property 0 (length target) 'refbox-resource-choice choice target)
+    target))
+
 (defun refbox-embark-reference (target)
   "Return the stable reference plist represented by TARGET."
-  (or (and (stringp target)
-           (get-text-property 0 'refbox-reference target))
-      (and (stringp target)
-           (car (get-text-property 0 'refbox-references target)))
-      (list :key (substring-no-properties target))))
+  (cond
+   ((and (stringp target)
+         (get-text-property 0 'refbox-reference target)))
+   ((and (stringp target)
+         (car (get-text-property 0 'refbox-references target))))
+   ((and (listp target)
+         (plist-member target :key))
+    target)
+   ((stringp target)
+    (list :key (substring-no-properties target)))
+   (t
+    (user-error "No refbox reference at target"))))
 
 (defun refbox-embark-references (target)
   "Return stable reference plists represented by TARGET."
-  (or (and (stringp target)
-           (get-text-property 0 'refbox-references target))
-      (list (refbox-embark-reference target))))
+  (cond
+   ((and (stringp target)
+         (get-text-property 0 'refbox-references target)))
+   ((and (listp target)
+         (plist-member target :key))
+    (list target))
+   ((listp target)
+    (mapcar #'refbox-embark-reference target))
+   (t
+    (list (refbox-embark-reference target)))))
 
 (defun refbox-embark-candidate-transformer (_type target)
   "Transform minibuffer completion TARGET to a stable refbox reference."
   (or (when-let ((candidate (get-text-property 0 'refbox-candidate target)))
         (cons 'refbox-reference (refbox-embark--target-string candidate)))
       (cons 'refbox-reference target)))
+
+(defun refbox-embark-resource-choice (target)
+  "Return the resource choice represented by TARGET."
+  (or (and (stringp target)
+           (get-text-property 0 'refbox-resource-choice target))
+      (user-error "No refbox resource choice at target")))
+
+(defun refbox-embark-resource-transformer (_type target)
+  "Transform minibuffer resource TARGET to the most specific Embark type."
+  (let ((choice (and (stringp target)
+                     (get-text-property 0 'refbox-resource-choice target))))
+    (pcase (plist-get choice :type)
+      ('file (cons 'file (plist-get choice :target)))
+      ('link (cons 'url (plist-get choice :target)))
+      (_ (cons 'refbox-resource
+               (if choice
+                   (refbox-embark--resource-target-string choice)
+                 target))))))
 
 (defun refbox-embark--with-general-map (map)
   "Return MAP composed with `embark-general-map' when available."
@@ -205,6 +269,18 @@
     (pcase-let ((`(,start . ,end)
                  (refbox-embark--property-bounds position 'refbox-candidate)))
       (cons 'refbox-reference (cons target (cons start end))))))
+
+(defun refbox-embark-target-resource-choice ()
+  "Return an Embark target for a refbox resource candidate at point."
+  (when-let* ((position (refbox-embark--property-position
+                        'refbox-resource-choice))
+              (choice (get-text-property position 'refbox-resource-choice)))
+    (pcase-let ((`(,start . ,end)
+                 (refbox-embark--property-bounds
+                  position 'refbox-resource-choice)))
+      (cons 'refbox-resource
+            (cons (refbox-embark--resource-target-string choice)
+                  (cons start end))))))
 
 (defun refbox-embark--citation-key-and-bounds ()
   "Return citation key and bounds at point when a supported mode provides them."
@@ -323,6 +399,21 @@
   (interactive "sReference: ")
   (refbox-insert-raw-entry (refbox-embark-references target)))
 
+(defun refbox-embark-insert-citation (target)
+  "Insert a mode-appropriate citation for TARGET."
+  (interactive "sReference: ")
+  (refbox-insert-citation (refbox-embark-references target)))
+
+(defun refbox-embark-insert-keys (target)
+  "Insert citation keys for TARGET."
+  (interactive "sReference: ")
+  (refbox-insert-keys (refbox-embark-references target)))
+
+(defun refbox-embark-insert-reference (target)
+  "Insert formatted references for TARGET."
+  (interactive "sReference: ")
+  (refbox-insert-reference (refbox-embark-references target)))
+
 (defun refbox-embark-copy-reference (target)
   "Copy a formatted reference for TARGET."
   (interactive "sReference: ")
@@ -357,6 +448,16 @@
   "Open TARGET in Zotero."
   (interactive "sReference: ")
   (refbox-open-in-zotero (refbox-embark-reference target)))
+
+(defun refbox-embark-run-default-action (target)
+  "Run the configured default action for TARGET."
+  (interactive "sReference: ")
+  (refbox-run-default-action (refbox-embark-references target)))
+
+(defun refbox-embark-open-resource (target)
+  "Open resource TARGET."
+  (interactive "sResource: ")
+  (refbox--open-resource-choice (refbox-embark-resource-choice target)))
 
 (defun refbox-embark--enable ()
   "Install refbox target finders and keymaps in Embark."
