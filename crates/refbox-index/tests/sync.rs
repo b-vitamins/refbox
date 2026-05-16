@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use refbox_core::{
     BibliographyFile, DerivedBibliographyStore, IndexStoreCounts, IndexedFileMetadata,
+    IndexedFileOrigin,
 };
 use refbox_index::{DiscoveryPolicy, SyncEngine};
 
@@ -165,6 +166,68 @@ fn targeted_sync_accepts_explicit_files_outside_roots() {
 
     assert_eq!(status.changed_file_count, 1);
     assert_eq!(store.field_value_for_key("x2020", "title"), Some("{Exact}"));
+}
+
+#[test]
+fn explicit_file_sync_indexes_local_files_outside_policy() {
+    let project = TestProject::new("ad-hoc-file-sync");
+    let local = project.write(
+        "document/local.bib",
+        "@article{local2020, title = {Local}}\n",
+    );
+    let engine = SyncEngine::new(DiscoveryPolicy::new(Vec::new(), Vec::new()));
+    let mut store = MemoryStore::default();
+
+    let status = engine
+        .sync_explicit_file(&mut store, &local)
+        .expect("explicit file sync should work");
+    assert_eq!(status.changed_file_count, 1);
+    assert_eq!(
+        store.field_value_for_key("local2020", "title"),
+        Some("{Local}")
+    );
+
+    fs::remove_file(local).expect("local fixture should remove");
+    let status = engine
+        .sync_explicit_file(&mut store, project.path("document/local.bib"))
+        .expect("explicit file removal should work");
+    assert_eq!(status.removed_file_count, 1);
+    assert_eq!(store.field_value_for_key("local2020", "title"), None);
+}
+
+#[test]
+fn managed_sync_rewrites_local_file_origin_even_when_content_is_fresh() {
+    let project = TestProject::new("local-origin-upgrade");
+    let local = project.write(
+        "document/local.bib",
+        "@article{local2020, title = {Local}}\n",
+    );
+    let engine = SyncEngine::new(DiscoveryPolicy::new(Vec::new(), Vec::new()));
+    let mut store = MemoryStore::default();
+
+    engine
+        .sync_explicit_file(&mut store, &local)
+        .expect("explicit file sync should work");
+    assert_eq!(
+        store
+            .metadata
+            .get(local.to_string_lossy().as_ref())
+            .map(|metadata| metadata.origin),
+        Some(IndexedFileOrigin::Local)
+    );
+
+    let engine = SyncEngine::new(DiscoveryPolicy::new(Vec::new(), vec![local.clone()]));
+    let status = engine
+        .sync_file(&mut store, &local)
+        .expect("managed file sync should work");
+    assert_eq!(status.changed_file_count, 1);
+    assert_eq!(
+        store
+            .metadata
+            .get(local.to_string_lossy().as_ref())
+            .map(|metadata| metadata.origin),
+        Some(IndexedFileOrigin::Configured)
+    );
 }
 
 #[test]

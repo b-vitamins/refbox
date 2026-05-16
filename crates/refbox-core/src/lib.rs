@@ -48,12 +48,20 @@ impl BibliographyFile {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexedFileMetadata {
     pub path: String,
+    pub origin: IndexedFileOrigin,
     pub size_bytes: u64,
     pub modified_ns: Option<i64>,
     pub content_hash: String,
     pub parse_status: FileParseStatus,
     pub entry_count: usize,
     pub diagnostic_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexedFileOrigin {
+    Configured,
+    Local,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

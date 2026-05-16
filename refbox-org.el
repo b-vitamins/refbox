@@ -166,14 +166,16 @@ a single key."
                  nil
                  nil
                  nil
-                 source-paths))
+                 source-paths
+                 t))
       (refbox-org--candidate-key
 	       (refbox-read-reference
 	        "Reference: "
 	        nil
 	        nil
 	        nil
-	        source-paths)))))
+	        source-paths
+	        t)))))
 
 ;;;###autoload
 (defun refbox-org-select-key (&optional multiple)
@@ -678,7 +680,7 @@ DIRECTION is -1 for left and 1 for right."
 (defun refbox-org-completion-at-point ()
   "Return CAPF data for Org citation references at point."
   (when-let ((bounds (refbox-org--completion-bounds)))
-    (refbox-capf-at-bounds bounds (refbox-org-local-bib-files))))
+    (refbox-capf-at-bounds bounds (refbox-org-local-bib-files) t)))
 
 ;;;###autoload
 (defun refbox-org-setup-capf ()
@@ -701,6 +703,8 @@ DIRECTION is -1 for left and 1 for right."
 (defun refbox-org--activation-candidates (keys)
   "Return a hash table mapping citation KEYS to indexed candidates."
   (let ((table (make-hash-table :test 'equal))
+        (groups (make-hash-table :test 'equal))
+        (source-paths (refbox-org-local-bib-files))
         (keys (delete-dups (cl-remove-if #'refbox--blank-string-p keys))))
     (when keys
       (condition-case nil
@@ -709,17 +713,26 @@ DIRECTION is -1 for left and 1 for right."
                     ""
                     (min refbox-search-maximum-limit
                          (max 1 (* 8 (length keys))))
-                    nil
+                    source-paths
                     t
                     (refbox-org--activation-field-names)
                     t
                     nil
                     nil
-                    keys))
+                    keys
+                    t))
             (let ((key (refbox--reference-key candidate)))
-              (unless (gethash key table)
-                (puthash key candidate table))))
+              (puthash key
+                       (cons candidate (gethash key groups))
+                       groups)))
         (error nil)))
+    (dolist (key keys)
+      (when-let ((candidate
+                  (refbox--context-candidate-for-key
+                   key
+                   (nreverse (gethash key groups))
+                   source-paths)))
+        (puthash key candidate table)))
     table))
 
 (defun refbox-org--activation-close-keys (key)
@@ -730,11 +743,14 @@ DIRECTION is -1 for left and 1 for right."
                    (refbox-search-references
                     key
                     5
-                    nil
+                    (refbox-org-local-bib-files)
                     nil
                     '("key")
                     t
-                    '("key")))))
+                    '("key")
+                    nil
+                    nil
+                    t))))
         (delete key (delete-dups (delq nil keys))))
     (error nil)))
 

@@ -1,3 +1,4 @@
+use refbox_core::{FileParseStatus, IndexedFileMetadata, IndexedFileOrigin};
 use refbox_index::parse_bibliography_file;
 use refbox_store::{RefboxStore, SCHEMA_VERSION, SearchOptions};
 use rusqlite::Connection;
@@ -530,7 +531,7 @@ SELECT rowid, entry_key, title, names, date, venue, abstract, keywords, identifi
 FROM entry_fts;
 DROP TABLE entry_fts;
 ALTER TABLE entry_fts_old RENAME TO entry_fts;
-DELETE FROM schema_migrations WHERE version >= 5;
+DELETE FROM schema_migrations WHERE version >= 5 AND version < 9;
 PRAGMA user_version = 4;
 "#,
             )
@@ -584,6 +585,7 @@ fn fts_queries_can_be_scoped_to_source_paths() {
             5,
             SearchOptions {
                 source_paths: &["refs/second.bib".to_string()],
+                include_configured_sources: false,
                 ..SearchOptions::default()
             },
         )
@@ -591,6 +593,83 @@ fn fts_queries_can_be_scoped_to_source_paths() {
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].key, "second");
     assert_eq!(results[0].file_path, "refs/second.bib");
+}
+
+#[test]
+fn local_files_are_only_visible_when_requested() {
+    let mut store = RefboxStore::open_in_memory().expect("store should open");
+    let configured = parse_bibliography_file(
+        "refs/global.bib",
+        r#"@article{global,
+  title = {Shared Local Scope Signal}
+}"#,
+    );
+    let local = parse_bibliography_file(
+        "notes/local.bib",
+        r#"@article{local,
+  title = {Shared Local Scope Signal}
+}"#,
+    );
+    let local_metadata = IndexedFileMetadata {
+        path: local.path.clone(),
+        origin: IndexedFileOrigin::Local,
+        size_bytes: 0,
+        modified_ns: None,
+        content_hash: String::new(),
+        parse_status: FileParseStatus::Ok,
+        entry_count: local.entries.len(),
+        diagnostic_count: local.diagnostics.len(),
+    };
+
+    store
+        .insert_file(&configured)
+        .expect("configured file should insert");
+    store
+        .insert_file_with_metadata(&local, &local_metadata)
+        .expect("local file should insert");
+
+    let configured_only = store
+        .search("shared", 5, SearchOptions::default())
+        .expect("default search should work");
+    assert_eq!(
+        configured_only
+            .iter()
+            .map(|result| result.key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["global"]
+    );
+
+    let configured_plus_local = store
+        .search(
+            "shared",
+            5,
+            SearchOptions {
+                source_paths: &["notes/local.bib".to_string()],
+                ..SearchOptions::default()
+            },
+        )
+        .expect("configured plus local search should work");
+    assert_eq!(
+        configured_plus_local
+            .iter()
+            .map(|result| result.key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["global", "local"]
+    );
+
+    let local_only = store
+        .search(
+            "shared",
+            5,
+            SearchOptions {
+                source_paths: &["notes/local.bib".to_string()],
+                include_configured_sources: false,
+                ..SearchOptions::default()
+            },
+        )
+        .expect("local-only search should work");
+    assert_eq!(local_only.len(), 1);
+    assert_eq!(local_only[0].key, "local");
 }
 
 #[test]

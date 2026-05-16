@@ -91,8 +91,8 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
       (should (equal (buffer-string)
                      "Before \\textcite{alpha,beta} after")))))
 
-(ert-deftest refbox-latex-test-insertion_scopes_selection_to_local_bibliography ()
-  "LaTeX insertion should pass discovered bibliography files to selection."
+(ert-deftest refbox-latex-test-insertion_includes_local_bibliography_with_configured_corpus ()
+  "LaTeX insertion should add discovered bibliography files to selection."
   (let* ((root (make-temp-file "refbox-latex-scope-" t))
          (bib (expand-file-name "refs/main.bib" root))
          calls)
@@ -110,7 +110,8 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                          (push args calls)
                          (list (refbox-latex-test-candidate "alpha")))))
               (refbox-latex-insert-citation)
-              (should (equal (nth 4 (car calls)) (list bib))))))
+              (should (equal (nth 4 (car calls)) (list bib)))
+              (should (eq (nth 5 (car calls)) t)))))
       (delete-directory root t))))
 
 (ert-deftest refbox-latex-test-prompts-for-command-and-optional-arguments ()
@@ -147,6 +148,25 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
         (refbox-latex-insert-citation)
         (should-not prompted)
         (should (equal (buffer-string) "\\nocite{alpha}"))))))
+
+(ert-deftest refbox-latex-test-command_specs_place_keys_at_placeholder ()
+  "Citation command specs should place keys at the configured `t' slot."
+  (refbox-latex-test-with-buffer "|"
+    (let ((refbox-latex-cite-commands
+           '((("postcite") . (["Prenote"] t ["Postnote"]))))
+          (refbox-latex-default-cite-command "postcite")
+          (refbox-latex-prompt-for-cite-style nil)
+          (refbox-latex-prompt-for-extra-arguments t)
+          (answers '("see" "p. 9")))
+      (cl-letf (((symbol-function 'read-string)
+                 (lambda (&rest _args)
+                   (pop answers)))
+                ((symbol-function 'refbox-read-references)
+                 (lambda (&rest _args)
+                   (list (refbox-latex-test-candidate "alpha")))))
+        (refbox-latex-insert-citation)
+        (should (equal (buffer-string)
+                       "\\postcite[see]{alpha}[p. 9]"))))))
 
 (ert-deftest refbox-latex-test-adds-to-existing-citation ()
   "Insertion at an existing citation should add selected keys."
@@ -185,6 +205,17 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                                  (expand-file-name "refs/b.bib" root))))))
       (delete-directory root t))))
 
+(ert-deftest refbox-latex-test-local-bibliography_discovery_handles_biblatex_options ()
+  "BibLaTeX resource declarations may include optional arguments."
+  (let ((root (make-temp-file "refbox-latex-biblatex-" t)))
+    (unwind-protect
+        (let ((default-directory root))
+          (refbox-latex-test-with-buffer
+              "\\addbibresource[location=local]{refs/main.bib}\n|"
+            (should (equal (refbox-latex-local-bib-files)
+                           (list (expand-file-name "refs/main.bib" root))))))
+      (delete-directory root t))))
+
 (ert-deftest refbox-latex-test-optional-package-signals-are-optional ()
   "Discovery should read optional helper variables only when already present."
   (refbox-latex-test-with-buffer "|"
@@ -193,6 +224,19 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
       (should (equal (refbox-latex-local-bib-files)
                      (list (expand-file-name "global.bib")
                            (expand-file-name "local.bib")))))))
+
+(ert-deftest refbox-latex-test-local-bibliography_discovery_uses_reftex_file_list ()
+  "LaTeX bibliography discovery should consume RefTeX's project file list."
+  (let ((root (make-temp-file "refbox-latex-reftex-" t)))
+    (unwind-protect
+        (let ((default-directory root))
+          (cl-letf (((symbol-function 'reftex-get-bibfile-list)
+                     (lambda () '("refs/project" "refs/other.bib"))))
+            (refbox-latex-test-with-buffer "|"
+              (should (equal (refbox-latex-local-bib-files)
+                             (list (expand-file-name "refs/project.bib" root)
+                                   (expand-file-name "refs/other.bib" root)))))))
+      (delete-directory root t))))
 
 (ert-deftest refbox-latex-test-lists-current-buffer-keys ()
   "Key listing should deduplicate LaTeX citation keys."
@@ -203,7 +247,8 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
   "LaTeX CAPF should complete citation keys through bounded scoped search."
   (let* ((root (make-temp-file "refbox-latex-capf-" t))
          (bib (expand-file-name "refs/main.bib" root))
-         calls)
+         calls
+         syncs)
     (unwind-protect
         (let ((default-directory root)
               (refbox-capf-limit 9))
@@ -212,12 +257,18 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
           (refbox-latex-test-with-buffer "\\bibliography{refs/main}\n\\cite{al|}"
             (cl-letf (((symbol-function 'refbox-rpc-request)
                        (lambda (method params)
-                         (should (equal method refbox-rpc-method-search-entries))
-                         (push params calls)
-                         (list :entries
-                               (list (refbox-latex-test-search-candidate
-                                      "alpha"
-                                      bib))))))
+                         (pcase method
+                           ((pred (equal refbox-rpc-method-sync-file))
+                            (push params syncs)
+                            '(:changed_file_count 1 :removed_file_count 0
+                              :indexed_entry_count 1))
+                           ((pred (equal refbox-rpc-method-search-entries))
+                            (push params calls)
+                            (list :entries
+                                  (list (refbox-latex-test-search-candidate
+                                         "alpha"
+                                         bib))))
+                           (_ (error "unexpected method: %s" method))))))
               (let* ((capf (refbox-latex-completion-at-point))
                      (start (nth 0 capf))
                      (end (nth 1 capf))
@@ -232,6 +283,9 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                   (should (equal (plist-get params :limit) 9))
                   (should (equal (plist-get params :source_paths)
                                  (vector bib)))
+                  (should (eq (plist-get params :include_configured_sources) t))
+                  (should (equal (plist-get (car syncs) :path) bib))
+                  (should (eq (plist-get (car syncs) :explicit) t))
                   (should (member "title"
                                   (append (plist-get params :field_names)
                                           nil)))

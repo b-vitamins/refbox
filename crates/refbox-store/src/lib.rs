@@ -5,13 +5,13 @@ use std::path::Path;
 
 use refbox_core::{
     BibliographyEntry, BibliographyFile, DerivedBibliographyStore, Diagnostic, DiagnosticSeverity,
-    DiagnosticTarget, FileParseStatus, IndexStoreCounts, IndexedFileMetadata, ResourceKind,
-    SourcePosition, SourceSpan,
+    DiagnosticTarget, FileParseStatus, IndexStoreCounts, IndexedFileMetadata, IndexedFileOrigin,
+    ResourceKind, SourcePosition, SourceSpan,
 };
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use thiserror::Error;
 
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 const ENTRY_FTS_COLUMNS: &[&str] = &[
     "entry_key",
     "title",
@@ -117,6 +117,7 @@ pub struct SearchResult {
 #[derive(Debug, Clone, Copy)]
 pub struct SearchOptions<'a> {
     pub source_paths: &'a [String],
+    pub include_configured_sources: bool,
     pub keys: &'a [String],
     pub resource_kinds: &'a [String],
     pub search_fields: &'a [String],
@@ -128,6 +129,7 @@ impl Default for SearchOptions<'_> {
     fn default() -> Self {
         Self {
             source_paths: &[],
+            include_configured_sources: true,
             keys: &[],
             resource_kinds: &[],
             search_fields: &[],
@@ -303,7 +305,7 @@ impl RefboxStore {
 
     pub fn indexed_file_metadata(&self) -> Result<Vec<IndexedFileMetadata>> {
         let mut statement = self.connection.prepare(
-            "SELECT path, size_bytes, modified_ns, content_hash, parse_status, entry_count, diagnostic_count
+            "SELECT path, origin, size_bytes, modified_ns, content_hash, parse_status, entry_count, diagnostic_count
              FROM files
              ORDER BY path",
         )?;
@@ -376,6 +378,7 @@ impl RefboxStore {
                     e.source_end_byte, e.source_end_line, e.source_end_column
              FROM entries e
              JOIN files f ON f.id = e.file_id
+             WHERE f.origin = 'configured'
              ORDER BY e.entry_key, f.path, e.id
              LIMIT ?1 OFFSET ?2",
         )?;
@@ -542,6 +545,7 @@ impl RefboxStore {
         if let Some(fts_query) = &fts_query {
             if options.ranked
                 && source_paths.is_empty()
+                && options.include_configured_sources
                 && keys.is_empty()
                 && resource_kinds.is_empty()
             {
@@ -550,9 +554,12 @@ impl RefboxStore {
                     .map_err(|_| StoreError::LimitOutOfRange(ranking_window))?;
                 let mut statement = self.connection.prepare(
                     "WITH hits AS (
-                         SELECT rowid, rank AS score
+                         SELECT entry_fts.rowid, rank AS score
                          FROM entry_fts
+                         JOIN entries e ON e.id = entry_fts.rowid
+                         JOIN files f ON f.id = e.file_id
                          WHERE entry_fts MATCH ?1
+                         AND f.origin = 'configured'
                          ORDER BY rank
                          LIMIT ?2
                      )
@@ -601,7 +608,25 @@ impl RefboxStore {
             parameters.push(fts_query);
             next_param += 1;
         }
-        if !source_paths.is_empty() {
+        if options.include_configured_sources {
+            if source_paths.is_empty() {
+                sql.push_str(" AND f.origin = 'configured'");
+            } else {
+                let placeholders = (0..source_paths.len())
+                    .map(|index| format!("?{}", index + next_param))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                sql.push_str(" AND (f.origin = 'configured' OR f.path IN (");
+                sql.push_str(&placeholders);
+                sql.push_str("))");
+                for path in &source_paths {
+                    parameters.push(path);
+                    next_param += 1;
+                }
+            }
+        } else if source_paths.is_empty() {
+            sql.push_str(" AND 0 = 1");
+        } else {
             let placeholders = (0..source_paths.len())
                 .map(|index| format!("?{}", index + next_param))
                 .collect::<Vec<_>>()
@@ -1161,6 +1186,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (6, MIGRATION_006),
     (7, MIGRATION_007),
     (8, MIGRATION_008),
+    (9, MIGRATION_009),
 ];
 
 const MIGRATION_001: &str = r#"
@@ -1450,6 +1476,11 @@ CREATE INDEX IF NOT EXISTS entries_file_key_idx ON entries(file_id, entry_key);
 CREATE INDEX IF NOT EXISTS entries_source_idx ON entries(source_path, source_start_line, source_start_column);
 "#;
 
+const MIGRATION_009: &str = r#"
+ALTER TABLE files ADD COLUMN origin TEXT NOT NULL DEFAULT 'configured';
+CREATE INDEX IF NOT EXISTS files_origin_idx ON files(origin);
+"#;
+
 fn insert_file_rows(
     connection: &Connection,
     file: &BibliographyFile,
@@ -1461,10 +1492,11 @@ fn insert_file_rows(
     execute_cached(
         connection,
         "INSERT INTO files(
-            path, size_bytes, modified_ns, content_hash, parse_status, entry_count, diagnostic_count
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            path, origin, size_bytes, modified_ns, content_hash, parse_status, entry_count, diagnostic_count
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             file.path,
+            origin_name(metadata.origin),
             i64_from_u64(metadata.size_bytes)?,
             metadata.modified_ns,
             metadata.content_hash,
@@ -1908,12 +1940,13 @@ fn stored_diagnostic_from_row(row: &Row<'_>) -> rusqlite::Result<StoredDiagnosti
 fn indexed_file_metadata_from_row(row: &Row<'_>) -> rusqlite::Result<IndexedFileMetadata> {
     Ok(IndexedFileMetadata {
         path: row.get(0)?,
-        size_bytes: row.get::<_, Option<i64>>(1)?.unwrap_or_default() as u64,
-        modified_ns: row.get(2)?,
-        content_hash: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-        parse_status: parse_status_from_name(&row.get::<_, String>(4)?),
-        entry_count: usize_from_i64(row.get(5)?),
-        diagnostic_count: usize_from_i64(row.get(6)?),
+        origin: origin_from_name(&row.get::<_, String>(1)?),
+        size_bytes: row.get::<_, Option<i64>>(2)?.unwrap_or_default() as u64,
+        modified_ns: row.get(3)?,
+        content_hash: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+        parse_status: parse_status_from_name(&row.get::<_, String>(5)?),
+        entry_count: usize_from_i64(row.get(6)?),
+        diagnostic_count: usize_from_i64(row.get(7)?),
     })
 }
 
@@ -2075,6 +2108,20 @@ fn parse_status_from_name(status: &str) -> FileParseStatus {
     }
 }
 
+fn origin_name(origin: IndexedFileOrigin) -> &'static str {
+    match origin {
+        IndexedFileOrigin::Configured => "configured",
+        IndexedFileOrigin::Local => "local",
+    }
+}
+
+fn origin_from_name(origin: &str) -> IndexedFileOrigin {
+    match origin {
+        "local" => IndexedFileOrigin::Local,
+        _ => IndexedFileOrigin::Configured,
+    }
+}
+
 fn resource_kind_name(kind: ResourceKind) -> &'static str {
     match kind {
         ResourceKind::File => "file",
@@ -2124,6 +2171,7 @@ fn field_values(entry: &BibliographyEntry, names: &[&str]) -> String {
 fn metadata_from_file(file: &BibliographyFile) -> IndexedFileMetadata {
     IndexedFileMetadata {
         path: file.path.clone(),
+        origin: IndexedFileOrigin::Configured,
         size_bytes: 0,
         modified_ns: None,
         content_hash: String::new(),

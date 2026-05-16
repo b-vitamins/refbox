@@ -56,8 +56,8 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
     (should (equal (buffer-string)
                    "Alpha [cite/text:@alpha; @beta]omega"))))
 
-(ert-deftest refbox-org-test-insertion_scopes_selection_to_local_bibliography ()
-  "Org insertion should pass local bibliography files to reference selection."
+(ert-deftest refbox-org-test-insertion_includes_local_bibliography_with_configured_corpus ()
+  "Org insertion should add local bibliography files to configured reference selection."
   (let* ((root (make-temp-file "refbox-org-scope-" t))
          (bib (expand-file-name "refs/main.bib" root))
          calls)
@@ -72,7 +72,8 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                          (push args calls)
                          (list (refbox-org-test-candidate "alpha")))))
               (refbox-org-insert-citation)
-              (should (equal (nth 4 (car calls)) (list bib))))))
+              (should (equal (nth 4 (car calls)) (list bib)))
+              (should (eq (nth 5 (car calls)) t)))))
       (delete-directory root t))))
 
 (ert-deftest refbox-org-test-replaces-existing-reference ()
@@ -287,6 +288,44 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
           (should (equal (mapcar #'car (nreverse calls))
                          '("" "missing"))))))))
 
+(ert-deftest refbox-org-test-basic_activation_prefers_local_duplicate_keys ()
+  "Activation previews should prefer current-buffer local bibliography entries."
+  (let* ((root (make-temp-file "refbox-org-activate-local-" t))
+         (local (expand-file-name "refs/local.bib" root))
+         (global (expand-file-name "refs/global.bib" root)))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory local) t)
+          (write-region "" nil local)
+          (write-region "" nil global)
+          (let ((default-directory root)
+                (refbox-templates '((preview . "%{title}"))))
+            (refbox-org-test-with-buffer "#+bibliography: refs/local.bib\n\n[cite:|@dup]"
+              (cl-letf
+                  (((symbol-function 'refbox-search-references)
+                    (lambda (query _limit source-paths &rest args)
+                      (should (equal query ""))
+                      (should (equal source-paths (list local)))
+                      (should (equal (nth 5 args) '("dup")))
+                      (should (eq (nth 6 args) t))
+                      (list
+                       (list :key "dup"
+                             :source_path global
+                             :fields '((:lookup_name "title"
+                                        :value "Global Title")))
+                       (list :key "dup"
+                             :source_path local
+                             :fields '((:lookup_name "title"
+                                        :value "Local Title")))))))
+                (refbox-org-cite-basic-activate
+                 (refbox-org-citation-at-point))
+                (goto-char (point-min))
+                (search-forward "@dup")
+                (should (string-match-p
+                         "Local Title"
+                         (get-text-property (1- (point)) 'help-echo)))))))
+      (delete-directory root t))))
+
 (ert-deftest refbox-org-test-local-bibliography-discovery ()
   "Local Org bibliography declarations should resolve from fixture buffers."
   (let ((root (make-temp-file "refbox-org-bib-" t)))
@@ -311,7 +350,8 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
   "Org CAPF should complete citation keys through bounded scoped search."
   (let* ((root (make-temp-file "refbox-org-capf-" t))
          (bib (expand-file-name "refs/main.bib" root))
-         calls)
+         calls
+         syncs)
     (unwind-protect
         (let ((default-directory root)
               (refbox-capf-limit 7))
@@ -320,12 +360,18 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
           (refbox-org-test-with-buffer "#+bibliography: refs/main.bib\n\n[cite:@al|]"
             (cl-letf (((symbol-function 'refbox-rpc-request)
                        (lambda (method params)
-                         (should (equal method refbox-rpc-method-search-entries))
-                         (push params calls)
-                         (list :entries
-                               (list (refbox-org-test-search-candidate
-                                      "alpha"
-                                      bib))))))
+                         (pcase method
+                           ((pred (equal refbox-rpc-method-sync-file))
+                            (push params syncs)
+                            '(:changed_file_count 1 :removed_file_count 0
+                              :indexed_entry_count 1))
+                           ((pred (equal refbox-rpc-method-search-entries))
+                            (push params calls)
+                            (list :entries
+                                  (list (refbox-org-test-search-candidate
+                                         "alpha"
+                                         bib))))
+                           (_ (error "unexpected method: %s" method))))))
               (let* ((capf (refbox-org-completion-at-point))
                      (start (nth 0 capf))
                      (end (nth 1 capf))
@@ -345,6 +391,9 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                   (should (equal (plist-get params :limit) 7))
                   (should (equal (plist-get params :source_paths)
                                  (vector bib)))
+                  (should (eq (plist-get params :include_configured_sources) t))
+                  (should (equal (plist-get (car syncs) :path) bib))
+                  (should (eq (plist-get (car syncs) :explicit) t))
                   (should (member "title"
                                   (append (plist-get params :field_names)
                                           nil)))

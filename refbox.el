@@ -741,6 +741,9 @@ candidate and exits the selector.")
 (defvar refbox--autosync-suppress-after-save nil
   "Non-nil while an explicit sync path owns the current save.")
 
+(defvar refbox--source-path-freshness (make-hash-table :test 'equal)
+  "Freshness cache for local bibliography source files.")
+
 (defvar refbox-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "a") #'refbox-add-file-to-library)
@@ -1143,7 +1146,7 @@ loaded for CANDIDATE."
   "Return REFERENCE as an indexed candidate plist."
   (if (and (listp reference) (plist-member reference :key))
       reference
-    (refbox-entry-by-key reference)))
+    (car (refbox--resolved-reference-list (list reference)))))
 
 (defun refbox-reference-has-files-p (candidate)
   "Return non-nil when CANDIDATE has an associated file resource."
@@ -1202,6 +1205,32 @@ reference key string."
   (if (minibufferp)
       (window-buffer (minibuffer-selected-window))
     (current-buffer)))
+
+(defun refbox--current-local-bibliography-source-paths ()
+  "Return local bibliography files for the active citation context."
+  (let ((buffer (refbox--citation-buffer)))
+    (when (buffer-live-p buffer)
+      (delete-dups
+       (cl-remove-if
+        #'refbox--blank-string-p
+        (mapcar
+         #'expand-file-name
+         (ignore-errors
+           (refbox-local-bibliography-files buffer))))))))
+
+(defun refbox--contextual-source-args (source-paths include-configured-sources)
+  "Return source arguments with current-buffer local bibliographies applied.
+
+When callers do not provide SOURCE-PATHS or INCLUDE-CONFIGURED-SOURCES,
+use the Citar-style current-buffer bibliography context: local files for
+the buffer plus the configured corpus."
+  (if (or source-paths include-configured-sources)
+      (list source-paths include-configured-sources)
+    (let ((local-source-paths
+           (refbox--current-local-bibliography-source-paths)))
+      (if local-source-paths
+          (list local-source-paths t)
+        (list nil nil)))))
 
 (defun refbox--current-citation-key-table ()
   "Return a cached table of citation keys in the current context buffer."
@@ -1899,13 +1928,34 @@ direct function transform."
           :tags (nreverse remaining-tags)
           :empty-key-filter empty-key-filter)))
 
+(defun refbox--source-path-freshness (file)
+  "Return a compact freshness value for bibliography FILE."
+  (let ((file (expand-file-name file)))
+    (if-let ((attributes (file-attributes file)))
+        (list :present
+              (file-attribute-size attributes)
+              (file-attribute-modification-time attributes))
+      'missing)))
+
+(defun refbox--ensure-source-paths-indexed (source-paths)
+  "Synchronize local bibliography SOURCE-PATHS when their freshness changed."
+  (dolist (file (delete-dups
+                 (cl-remove-if
+                  #'refbox--blank-string-p
+                  (mapcar #'expand-file-name source-paths))))
+    (let ((freshness (refbox--source-path-freshness file)))
+      (unless (equal (gethash file refbox--source-path-freshness) freshness)
+        (refbox--sync-file file 'quiet 'explicit)
+        (puthash file freshness refbox--source-path-freshness)))))
+
 (defun refbox-search-references
     (query &optional limit source-paths unranked field-names omit-resources search-fields
-           include-completion-display key-filter)
+           include-completion-display key-filter include-configured-sources)
   "Search indexed references for QUERY using bounded LIMIT.
 
-When SOURCE-PATHS is non-nil, restrict results to those
-bibliography source files.
+When SOURCE-PATHS is non-nil, restrict results to those bibliography
+source files unless INCLUDE-CONFIGURED-SOURCES is non-nil.  In that
+case, include the configured bibliography corpus plus SOURCE-PATHS.
 
 When UNRANKED is non-nil, request a fast deterministic index-order
 search intended for type-ahead completion.
@@ -1954,6 +2004,8 @@ pre-shaped standard completion display columns."
             #'refbox--blank-string-p
             (mapcar #'refbox--field-name-normalize search-fields))))
          (response (unless post-empty-key-filter
+                     (when source-paths
+                       (refbox--ensure-source-paths-indexed source-paths))
                      (refbox-rpc-request
                     refbox-rpc-method-search-entries
                     (append
@@ -1961,6 +2013,8 @@ pre-shaped standard completion display columns."
                            :limit rpc-limit)
                      (when source-paths
                        (list :source_paths (vconcat source-paths)))
+                     (when include-configured-sources
+                       (list :include_configured_sources t))
                      (when key-filter
                        (list :keys (vconcat key-filter)))
                      (when resource-kinds
@@ -2031,7 +2085,7 @@ and source path."
 
 (defun refbox-get-entry (reference)
   "Return REFERENCE as a bibliography entry alist."
-  (refbox-reference-entry-alist (refbox-entry-by-key reference)))
+  (refbox-reference-entry-alist (refbox--reference-candidate reference)))
 
 (defun refbox-get-entries (limit)
   "Return a hash table of indexed bibliography entries.
@@ -2094,8 +2148,8 @@ nil."
          (plist-member reference-or-references :key))
     (list reference-or-references))
    ((listp reference-or-references)
-    (mapcar #'refbox--reference-candidate
-            (delete-dups (copy-sequence reference-or-references))))
+    (refbox--resolved-reference-list
+     (delete-dups (copy-sequence reference-or-references))))
    (t
     (list (refbox--reference-candidate reference-or-references)))))
 
@@ -2153,10 +2207,11 @@ whose cdr is passed as additional arguments."
                    (eq (char-before (1- (car bounds))) ?@)))
       bounds)))
 
-(defun refbox-capf--state (&optional limit source-paths)
+(defun refbox-capf--state (&optional limit source-paths include-configured-sources)
   "Return CAPF completion state using LIMIT and SOURCE-PATHS."
   (list :limit (refbox-rpc--search-limit limit)
         :source-paths source-paths
+        :include-configured-sources include-configured-sources
         :input nil
         :candidates nil
         :cache (make-hash-table :test 'eq)))
@@ -2196,8 +2251,11 @@ whose cdr is passed as additional arguments."
                           t
                           refbox-capf--field-names
                           t
-                          refbox-completion-search-fields))))))))
-  (plist-get state :candidates))
+                          refbox-completion-search-fields
+                          nil
+                          nil
+                          (plist-get state :include-configured-sources))))))))
+  (plist-get state :candidates)))
 
 (defun refbox-capf--metadata ()
   "Return metadata for citation key completion."
@@ -2259,13 +2317,16 @@ whose cdr is passed as additional arguments."
               (refbox-capf--candidate-annotation candidate)
             "")))))
 
-(defun refbox-capf-at-bounds (bounds &optional source-paths)
+(defun refbox-capf-at-bounds (bounds &optional source-paths include-configured-sources)
   "Return CAPF data for BOUNDS using optional SOURCE-PATHS."
   (when bounds
     (list (car bounds)
           (cdr bounds)
           (refbox-capf--completion-table
-           (refbox-capf--state refbox-capf-limit source-paths))
+           (refbox-capf--state
+            refbox-capf-limit
+            source-paths
+            include-configured-sources))
           :exclusive 'no)))
 
 ;;;###autoload
@@ -2296,7 +2357,8 @@ whose cdr is passed as additional arguments."
 
 (defun refbox-reference-resources (candidate)
   "Return indexed resources for CANDIDATE via the daemon."
-  (let ((key (refbox--reference-key candidate)))
+  (let* ((candidate (refbox--contextual-reference candidate))
+         (key (refbox--reference-key candidate)))
     (unless key
       (user-error "Reference candidate has no key"))
     (refbox--listify
@@ -3169,6 +3231,25 @@ single choice is accepted without prompting."
          t))
        table)))))
 
+(defun refbox--read-resource-choice-or-nil
+    (prompt choices command &optional empty-message)
+  "Read one resource choice from CHOICES, or return nil.
+
+EMPTY-MESSAGE, when non-nil, is displayed when CHOICES is empty."
+  (if choices
+      (refbox--read-resource-choice prompt choices command)
+    (when empty-message
+      (message "%s" empty-message))
+    nil))
+
+(defun refbox--reference-message-subject (references)
+  "Return a compact human-facing label for REFERENCES."
+  (let ((keys (refbox--references-keys references)))
+    (cond
+     ((null keys) "selected references")
+     ((null (cdr keys)) (car keys))
+     (t (string-join keys ", ")))))
+
 (defun refbox--resource-choice-group (choice)
   "Return the completion group label for resource CHOICE."
   (pcase (plist-get choice :type)
@@ -3421,63 +3502,83 @@ COMMAND controls `refbox-open-always-create-notes'."
 (defun refbox-open-files (&optional references)
   "Open a file resource for REFERENCES."
   (interactive)
-  (refbox--open-resource-choice
-   (refbox--read-resource-choice
-    "File: "
-    (refbox--file-choices (refbox--reference-list references))
-    'refbox-open-files)))
+  (let* ((references (refbox--contextual-reference-list references))
+         (choices (refbox--file-choices references)))
+    (when-let ((choice
+                (refbox--read-resource-choice-or-nil
+                 "File: "
+                 choices
+                 'refbox-open-files
+                 (format "No associated files for %s"
+                         (refbox--reference-message-subject references)))))
+      (refbox--open-resource-choice choice))))
 
 ;;;###autoload
 (defun refbox-attach-files (&optional references)
   "Attach a file resource for REFERENCES to an outgoing MIME message."
   (interactive)
-  (let* ((choice (refbox--read-resource-choice
-                  "Attach file: "
-                  (refbox--file-choices (refbox--reference-list references))
-                  'refbox-attach-files))
-         (file (plist-get choice :target)))
-    (unless (fboundp 'mml-attach-file)
-      (require 'mml nil t))
-    (unless (fboundp 'mml-attach-file)
-      (user-error "MML attachment support is not available"))
-    (mml-attach-file file)
-    file))
+  (let* ((references (refbox--contextual-reference-list references))
+         (choices (refbox--file-choices references))
+         (choice
+          (refbox--read-resource-choice-or-nil
+           "Attach file: "
+           choices
+           'refbox-attach-files
+           (format "No associated files for %s"
+                   (refbox--reference-message-subject references)))))
+    (when choice
+      (let ((file (plist-get choice :target)))
+        (unless (fboundp 'mml-attach-file)
+          (require 'mml nil t))
+        (unless (fboundp 'mml-attach-file)
+          (user-error "MML attachment support is not available"))
+        (mml-attach-file file)
+        file))))
 
 ;;;###autoload
 (defun refbox-open-links (&optional references)
   "Open a link resource for REFERENCES."
   (interactive)
-  (refbox--open-resource-choice
-   (refbox--read-resource-choice
-    "Link: "
-    (refbox--link-choices (refbox--reference-list references))
-    'refbox-open-links)))
+  (let* ((references (refbox--contextual-reference-list references))
+         (choices (refbox--link-choices references)))
+    (when-let ((choice
+                (refbox--read-resource-choice-or-nil
+                 "Link: "
+                 choices
+                 'refbox-open-links
+                 (format "No link found for %s"
+                         (refbox--reference-message-subject references)))))
+      (refbox--open-resource-choice choice))))
 
 ;;;###autoload
 (defun refbox-open-notes (&optional references)
   "Open or create a note for REFERENCES."
   (interactive)
-  (refbox--open-resource-choice
-   (refbox--read-resource-choice
-    "Note: "
-    (refbox--note-choices
-     (refbox--reference-list references)
-     t
-     'refbox-open-notes)
-    'refbox-open-notes)))
+  (let* ((references (refbox--contextual-reference-list references))
+         (choices
+          (refbox--note-choices
+           references
+           t
+           'refbox-open-notes)))
+    (when-let ((choice
+                (refbox--read-resource-choice-or-nil
+                 "Note: "
+                 choices
+                 'refbox-open-notes)))
+      (refbox--open-resource-choice choice))))
 
 ;;;###autoload
 (defun refbox-open-note (&optional note)
   "Open NOTE, or select a note from all notes in the active source."
   (interactive)
-  (refbox-note-source-open
-   (or note
-       (plist-get
-        (refbox--read-resource-choice
-         "Note: "
-         (refbox--all-note-choices)
-         'refbox-open-note)
-        :target))))
+  (if note
+      (refbox-note-source-open note)
+    (when-let ((choice
+                (refbox--read-resource-choice-or-nil
+                 "Note: "
+                 (refbox--all-note-choices)
+                 'refbox-open-note)))
+      (refbox-note-source-open (plist-get choice :target)))))
 
 ;;;###autoload
 (defun refbox-create-note (&optional key entry)
@@ -3491,7 +3592,10 @@ non-nil, is a bibliography entry alist used as candidate metadata."
     ((and (listp key) (plist-member key :key)) key)
     ((stringp key)
      (or (and entry (refbox--entry-candidate key entry))
-         (refbox-entry-by-key key)))
+         (let ((contextual (refbox--contextual-reference key)))
+           (if (stringp contextual)
+               (refbox-entry-by-key contextual)
+             contextual))))
     (t
      (refbox-read-reference)))))
 
@@ -3499,7 +3603,7 @@ non-nil, is a bibliography entry alist used as candidate metadata."
 (defun refbox-open (&optional references)
   "Open a file, link, or note associated with REFERENCES."
   (interactive)
-  (let* ((references (refbox--reference-list references))
+  (let* ((references (refbox--contextual-reference-list references))
          (choices
           (append
            (when (memq :files refbox-open-resources)
@@ -3563,6 +3667,7 @@ non-nil, is a bibliography entry alist used as candidate metadata."
 
 (defun refbox-source-location (reference)
   "Return indexed source location for REFERENCE."
+  (setq reference (refbox--contextual-reference reference))
   (refbox-rpc-request
    refbox-rpc-method-source-location
    (refbox--reference-rpc-params reference)))
@@ -3616,6 +3721,7 @@ non-nil, is a bibliography entry alist used as candidate metadata."
 
 (defun refbox-raw-entry (reference)
   "Return raw bibliography entry text for REFERENCE."
+  (setq reference (refbox--contextual-reference reference))
   (let ((response (refbox-rpc-request
                    refbox-rpc-method-raw-entry
                    (refbox--reference-rpc-params reference))))
@@ -3632,11 +3738,115 @@ non-nil, is a bibliography entry alist used as candidate metadata."
    ((listp references) references)
    (t (list references))))
 
+(defun refbox--candidate-source-path-rank (candidate source-paths)
+  "Return CANDIDATE's rank in SOURCE-PATHS, or nil."
+  (when-let ((source-path (refbox--reference-source-path candidate)))
+    (cl-position (expand-file-name source-path)
+                 source-paths
+                 :test #'equal)))
+
+(defun refbox--context-candidate-for-key (key candidates source-paths)
+  "Return the Citar-style candidate for KEY from CANDIDATES.
+
+Candidates from current-buffer SOURCE-PATHS take priority over configured
+corpus candidates, matching Citar's local-bibliography precedence."
+  (let (selected selected-rank fallback)
+    (dolist (candidate candidates)
+      (when (equal (refbox--reference-key candidate) key)
+        (unless fallback
+          (setq fallback candidate))
+        (when-let ((rank (refbox--candidate-source-path-rank
+                          candidate
+                          source-paths)))
+          (when (or (null selected-rank)
+                    (< rank selected-rank))
+            (setq selected candidate
+                  selected-rank rank)))))
+    (or selected fallback)))
+
+(defun refbox--context-reference-map (keys)
+  "Return a hash table resolving KEYS in the current bibliography context."
+  (let ((source-paths (refbox--current-local-bibliography-source-paths)))
+    (when source-paths
+      (let ((groups (make-hash-table :test 'equal))
+            (resolved (make-hash-table :test 'equal))
+            (keys (delete-dups
+                   (cl-remove-if #'refbox--blank-string-p
+                                 (copy-sequence keys)))))
+        (when keys
+          (dolist (candidate
+                   (refbox-search-references
+                    ""
+                    refbox-search-maximum-limit
+                    source-paths
+                    nil nil nil nil nil
+                    keys
+                    t))
+            (let ((key (refbox--reference-key candidate)))
+              (puthash key
+                       (cons candidate (gethash key groups))
+                       groups)))
+          (dolist (key keys)
+            (when-let ((candidate
+                        (refbox--context-candidate-for-key
+                         key
+                         (nreverse (gethash key groups))
+                         source-paths)))
+              (puthash key candidate resolved))))
+        resolved))))
+
+(defun refbox--resolved-reference-list (references)
+  "Return REFERENCES as hydrated candidates.
+
+Key strings are resolved against the current-buffer bibliography context
+when local bibliography files are present, and otherwise through the
+daemon's exact key lookup.  This is for commands that need entry metadata
+or source identity; `refbox-run-default-action' intentionally keeps its
+public key-list contract."
+  (let* ((references (refbox--reference-list references))
+         (keys (cl-loop for reference in references
+                        when (stringp reference)
+                        collect reference))
+         (context-map (and keys (refbox--context-reference-map keys))))
+    (mapcar
+     (lambda (reference)
+       (cond
+        ((and (listp reference) (plist-member reference :key))
+         reference)
+        ((stringp reference)
+         (or (and context-map (gethash reference context-map))
+             (refbox-entry-by-key reference)))
+        (t reference)))
+     references)))
+
+(defun refbox--contextual-reference-list (references)
+  "Return REFERENCES with current-buffer local key strings resolved.
+
+Unlike `refbox--resolved-reference-list', this keeps ordinary key strings
+as strings when no local bibliography context is active, preserving direct
+key-shaped daemon requests for raw/source/resource commands."
+  (let* ((references (refbox--reference-list references))
+         (keys (cl-loop for reference in references
+                        when (stringp reference)
+                        collect reference))
+         (context-map (and keys (refbox--context-reference-map keys))))
+    (mapcar
+     (lambda (reference)
+       (if (stringp reference)
+           (or (and context-map (gethash reference context-map))
+               reference)
+         reference))
+     references)))
+
+(defun refbox--contextual-reference (reference)
+  "Return REFERENCE resolved only through current-buffer local context."
+  (car (refbox--contextual-reference-list (list reference))))
+
 ;;;###autoload
 (defun refbox-insert-raw-entry (&optional references)
   "Insert raw bibliography entries for REFERENCES."
   (interactive)
-  (let ((references (refbox--reference-list references)))
+  (let ((references (refbox--contextual-reference-list references)))
     (unless references
       (user-error "No references selected"))
     (insert
@@ -3701,7 +3911,7 @@ non-nil, is a bibliography entry alist used as candidate metadata."
 Fields listed in `refbox-bibtex-no-export-fields' are removed before
 insertion."
   (interactive)
-  (let ((references (refbox--reference-list references)))
+  (let ((references (refbox--contextual-reference-list references)))
     (unless references
       (user-error "No references selected"))
     (insert
@@ -4135,7 +4345,7 @@ passed to the adapter command."
 
 STYLE, when non-nil, overrides `refbox-citeproc-csl-style'."
   (refbox-citeproc--require)
-  (let ((references (refbox--reference-list references)))
+  (let ((references (refbox--resolved-reference-list references)))
     (unless references
       (user-error "No references selected"))
     (when (or current-prefix-arg
@@ -4182,7 +4392,7 @@ STYLE, when non-nil, overrides `refbox-citeproc-csl-style'."
 (defun refbox-format-references (references)
   "Return template-formatted reference strings for REFERENCES."
   (mapcar #'refbox-reference-format-preview
-          (refbox--reference-list references)))
+          (refbox--resolved-reference-list references)))
 
 (defun refbox-format-reference (references)
   "Return formatted reference text for REFERENCES."
@@ -4360,10 +4570,11 @@ asks before replacing an existing file."
                                 reference)))
     (funcall refbox-add-file-function reference source-plist)))
 
-(defun refbox--completion-state (&optional limit source-paths)
+(defun refbox--completion-state (&optional limit source-paths include-configured-sources)
   "Return fresh completion state using LIMIT and SOURCE-PATHS."
   (list :limit (refbox-rpc--search-limit (or limit refbox-completion-limit))
         :source-paths source-paths
+        :include-configured-sources include-configured-sources
         :input nil
         :candidates nil
         :map (make-hash-table :test 'equal)
@@ -4537,7 +4748,9 @@ selection can still resolve to the candidate it came from."
                            (refbox--completion-field-names)
                            t
                            refbox-completion-search-fields
-                           (refbox--native-completion-display-active-p))))))))))
+                           (refbox--native-completion-display-active-p)
+                           nil
+                           (plist-get state :include-configured-sources))))))))))
   (plist-get state :candidates))
 
 (defun refbox--completion-filter (candidates predicate)
@@ -4687,14 +4900,31 @@ selection can still resolve to the candidate it came from."
      ((and allow-empty (string-empty-p selection-key)) nil)
      ((gethash selection-key (plist-get state :map)))
      ((get-text-property 0 'refbox-candidate selection))
-     ((refbox--read-reference-key-fallback selection-key predicate))
+     ((refbox--read-reference-key-fallback
+       selection-key
+       predicate
+       (plist-get state :source-paths)
+       (plist-get state :include-configured-sources)))
      (t (user-error "Unknown refbox reference selection: %s" selection)))))
 
-(defun refbox--read-reference-key-fallback (key predicate)
+(defun refbox--read-reference-key-fallback
+    (key predicate &optional source-paths include-configured-sources)
   "Return indexed reference for exact KEY when it satisfies PREDICATE."
   (unless (refbox--blank-string-p key)
     (condition-case nil
-        (let ((candidate (refbox-entry-by-key key)))
+        (let ((candidate
+               (if source-paths
+                   (refbox--context-candidate-for-key
+                    key
+                    (refbox-search-references
+                     ""
+                     refbox-search-maximum-limit
+                     source-paths
+                     nil nil nil nil nil
+                     (list key)
+                     include-configured-sources)
+                    (mapcar #'expand-file-name source-paths))
+                 (refbox-entry-by-key key))))
           (when (and candidate
                      (or (not predicate)
                          (funcall predicate candidate)))
@@ -4702,17 +4932,24 @@ selection can still resolve to the candidate it came from."
       (error nil))))
 
 (defun refbox--read-reference
-    (prompt preset limit allow-empty &optional predicate source-paths)
+    (prompt preset limit allow-empty &optional predicate source-paths include-configured-sources)
   "Read one reference.
 
-PROMPT, PRESET, LIMIT, ALLOW-EMPTY, PREDICATE, and SOURCE-PATHS
-control completion and validation."
-  (refbox--read-reference-from-state
-   prompt
-   preset
-   allow-empty
-   predicate
-   (refbox--completion-state limit source-paths)))
+PROMPT, PRESET, LIMIT, ALLOW-EMPTY, PREDICATE, SOURCE-PATHS, and
+INCLUDE-CONFIGURED-SOURCES control completion and validation."
+  (pcase-let ((`(,source-paths ,include-configured-sources)
+               (refbox--contextual-source-args
+                source-paths
+                include-configured-sources)))
+    (refbox--read-reference-from-state
+     prompt
+     preset
+     allow-empty
+     predicate
+     (refbox--completion-state
+      limit
+      source-paths
+      include-configured-sources))))
 
 ;;;###autoload
 (defun refbox-insert-preset ()
@@ -4781,21 +5018,28 @@ When QUIET is non-nil, do not report successful sync counts."
          (changed (plist-get response :changed_file_count))
          (removed (plist-get response :removed_file_count))
          (entries (plist-get response :indexed_entry_count)))
+    (clrhash refbox--source-path-freshness)
     (unless quiet
       (message "refbox sync: %s changed, %s removed, %s indexed entries"
                changed removed entries))
     response))
 
-(defun refbox--sync-file (file &optional quiet)
+(defun refbox--sync-file (file &optional quiet explicit)
   "Synchronize bibliography FILE.
 
-When QUIET is non-nil, do not report successful sync counts."
+When QUIET is non-nil, do not report successful sync counts.  When
+EXPLICIT is non-nil, index FILE as an explicit local bibliography
+source even when it is outside configured discovery roots."
   (let* ((path (expand-file-name file))
          (response (refbox-rpc-request refbox-rpc-method-sync-file
-                                       (list :path path)))
+                                       (append
+                                        (list :path path)
+                                        (when explicit
+                                          (list :explicit t)))))
          (changed (plist-get response :changed_file_count))
          (removed (plist-get response :removed_file_count))
          (entries (plist-get response :indexed_entry_count)))
+    (remhash path refbox--source-path-freshness)
     (unless quiet
       (message "refbox file sync: %s changed, %s removed, %s indexed entries"
                changed removed entries))
@@ -4888,7 +5132,8 @@ tracked files are renamed or deleted through Emacs."
       (refbox--autosync-setup-buffer buffer))))
 
 ;;;###autoload
-(cl-defun refbox-select-references (&key (multiple t) filter preset limit source-paths)
+(cl-defun refbox-select-references
+    (&key (multiple t) filter preset limit source-paths include-configured-sources)
   "Select references from the indexed bibliography.
 
 When MULTIPLE is non-nil, return a list of candidates.  Otherwise
@@ -4897,8 +5142,10 @@ each candidate and should return non-nil for selectable references."
   (interactive)
   (let ((selected
          (if (and multiple refbox-select-multiple)
-             (refbox-read-references "References: " preset limit filter source-paths)
-           (refbox-read-reference "Reference: " preset limit filter source-paths))))
+             (refbox-read-references
+              "References: " preset limit filter source-paths include-configured-sources)
+           (refbox-read-reference
+            "Reference: " preset limit filter source-paths include-configured-sources))))
     (when (called-interactively-p 'interactive)
       (let ((count (cond
                     ((null selected) 0)
@@ -4911,7 +5158,8 @@ each candidate and should return non-nil for selectable references."
     selected))
 
 ;;;###autoload
-(cl-defun refbox-select-reference (&key filter preset limit source-paths)
+(cl-defun refbox-select-reference
+    (&key filter preset limit source-paths include-configured-sources)
   "Select and return one reference from the indexed bibliography."
   (interactive)
   (refbox-select-references
@@ -4919,10 +5167,12 @@ each candidate and should return non-nil for selectable references."
    :filter filter
    :preset preset
    :limit limit
-   :source-paths source-paths))
+   :source-paths source-paths
+   :include-configured-sources include-configured-sources))
 
 ;;;###autoload
-(cl-defun refbox-select-refs (&key (multiple t) filter preset limit source-paths)
+(cl-defun refbox-select-refs
+    (&key (multiple t) filter preset limit source-paths include-configured-sources)
   "Select reference keys from the indexed bibliography.
 
 FILTER, when non-nil, is called with each candidate key."
@@ -4935,20 +5185,24 @@ FILTER, when non-nil, is called with each candidate key."
                         (funcall filter (refbox--reference-key candidate))))
             :preset preset
             :limit limit
-            :source-paths source-paths))))
+            :source-paths source-paths
+            :include-configured-sources include-configured-sources))))
 
 ;;;###autoload
-(cl-defun refbox-select-ref (&key filter preset limit source-paths)
+(cl-defun refbox-select-ref
+    (&key filter preset limit source-paths include-configured-sources)
   "Select and return one reference key from the indexed bibliography."
   (car (refbox-select-refs
         :multiple nil
         :filter filter
         :preset preset
         :limit limit
-        :source-paths source-paths)))
+        :source-paths source-paths
+        :include-configured-sources include-configured-sources)))
 
 ;;;###autoload
-(defun refbox-read-reference (&optional prompt preset limit predicate source-paths)
+(defun refbox-read-reference
+    (&optional prompt preset limit predicate source-paths include-configured-sources)
   "Read and return a single indexed reference candidate.
 
 PRESET is inserted as the initial minibuffer search text.  LIMIT
@@ -4963,13 +5217,15 @@ bibliography source files."
                     limit
                     nil
                     predicate
-                    source-paths)))
+                    source-paths
+                    include-configured-sources)))
     (when (called-interactively-p 'interactive)
       (message "refbox: %s" (refbox-reference-field candidate "key")))
     candidate))
 
 ;;;###autoload
-(defun refbox-read-references (&optional prompt preset limit predicate source-paths)
+(defun refbox-read-references
+    (&optional prompt preset limit predicate source-paths include-configured-sources)
   "Read and return multiple indexed reference candidates.
 
 `TAB' toggles the current candidate and keeps selecting.  `RET'
@@ -4978,47 +5234,54 @@ also finishes the read.  PREDICATE, when non-nil, is called with each
 candidate and should return non-nil for selectable references.
 SOURCE-PATHS restricts searches to those bibliography source files."
   (interactive)
-  (let* ((prompt (or prompt "Reference: "))
-         (state (refbox--completion-state limit source-paths))
-         (selected (make-hash-table :test 'equal))
-         (selected-order nil)
-         (next-preset preset)
-         done
-         candidate)
-    (while (not done)
-      (let ((refbox--multiple-exit-requested nil))
-        (setq candidate
-              (minibuffer-with-setup-hook #'refbox--setup-multiple-keymap
-                (refbox--read-reference-from-state
-                 prompt
-                 next-preset
-                 t
-                 predicate
-                 state
-                 (refbox--multiple-completion-table state selected))))
-        (if candidate
-            (let ((identity (refbox--reference-identity candidate)))
-              (if (gethash identity selected)
-                  (progn
-                    (remhash identity selected)
-                    (setq selected-order (delete identity selected-order)))
-                (puthash identity candidate selected)
-                (push identity selected-order))
-              (setq next-preset nil)
-              (when (or refbox--multiple-exit-requested
-                        (eq last-command #'refbox--multiple-exit))
-                (setq done t)))
-          (setq done t))))
-    (setq selected
-          (delq nil
-                (mapcar (lambda (identity)
-                          (gethash identity selected))
-                        (nreverse selected-order))))
-    (when (called-interactively-p 'interactive)
-      (message "refbox: selected %d reference%s"
-               (length selected)
-               (if (= (length selected) 1) "" "s")))
-    selected))
+  (pcase-let ((`(,source-paths ,include-configured-sources)
+               (refbox--contextual-source-args
+                source-paths
+                include-configured-sources)))
+    (let* ((prompt (or prompt "Reference: "))
+           (state (refbox--completion-state
+                   limit
+                   source-paths
+                   include-configured-sources))
+           (selected (make-hash-table :test 'equal))
+           (selected-order nil)
+           (next-preset preset)
+           done
+           candidate)
+      (while (not done)
+        (let ((refbox--multiple-exit-requested nil))
+          (setq candidate
+                (minibuffer-with-setup-hook #'refbox--setup-multiple-keymap
+                  (refbox--read-reference-from-state
+                   prompt
+                   next-preset
+                   t
+                   predicate
+                   state
+                   (refbox--multiple-completion-table state selected))))
+          (if candidate
+              (let ((identity (refbox--reference-identity candidate)))
+                (if (gethash identity selected)
+                    (progn
+                      (remhash identity selected)
+                      (setq selected-order (delete identity selected-order)))
+                  (puthash identity candidate selected)
+                  (push identity selected-order))
+                (setq next-preset nil)
+                (when (or refbox--multiple-exit-requested
+                          (eq last-command #'refbox--multiple-exit))
+                  (setq done t)))
+            (setq done t))))
+      (setq selected
+            (delq nil
+                  (mapcar (lambda (identity)
+                            (gethash identity selected))
+                          (nreverse selected-order))))
+      (when (called-interactively-p 'interactive)
+        (message "refbox: selected %d reference%s"
+                 (length selected)
+                 (if (= (length selected) 1) "" "s")))
+      selected)))
 
 ;;;###autoload
 (defun refbox-ping ()

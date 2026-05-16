@@ -152,6 +152,7 @@ pub struct StatusResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncFileRequest {
     pub path: String,
+    pub explicit: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -181,6 +182,7 @@ pub struct SearchEntriesRequest {
     pub query: String,
     pub limit: Option<usize>,
     pub source_paths: Option<Vec<String>>,
+    pub include_configured_sources: Option<bool>,
     pub keys: Option<Vec<String>>,
     pub resource_kinds: Option<Vec<String>>,
     pub search_fields: Option<Vec<String>>,

@@ -239,7 +239,7 @@ arguments and `t' marks the citation-key argument."
 (defun refbox-latex-completion-at-point ()
   "Return CAPF data for LaTeX citation keys at point."
   (when-let ((bounds (refbox-latex--completion-bounds)))
-    (refbox-capf-at-bounds bounds (refbox-latex-local-bib-files))))
+    (refbox-capf-at-bounds bounds (refbox-latex-local-bib-files) t)))
 
 ;;;###autoload
 (defun refbox-latex-setup-capf ()
@@ -296,6 +296,39 @@ COMMAND, when non-nil, is returned directly.  INVERT-PROMPT reverses
           (string-join keys refbox-latex-key-separator)
           "}"))
 
+(defun refbox-latex--key-argument (keys)
+  "Return KEYS formatted as a LaTeX mandatory citation argument."
+  (concat "{" (string-join keys refbox-latex-key-separator) "}"))
+
+(defun refbox-latex--format-citation-from-spec
+    (command keys &optional optional-args)
+  "Return citation COMMAND for KEYS following its configured argument spec.
+
+Vector specs consume OPTIONAL-ARGS and emit bracketed optional arguments.
+A `t' spec marks where the citation-key argument belongs.  When no `t'
+is configured, append the key argument after configured optional args."
+  (let ((specs (cdr (refbox-latex--command-entry command)))
+        (optional-args (copy-sequence optional-args))
+        key-inserted)
+    (concat
+     "\\"
+     command
+     (mapconcat
+      (lambda (spec)
+        (cond
+         ((vectorp spec)
+          (if-let ((value (pop optional-args)))
+              (format "[%s]" value)
+            ""))
+         ((eq spec t)
+          (setq key-inserted t)
+          (refbox-latex--key-argument keys))
+         (t "")))
+      specs
+      "")
+     (unless key-inserted
+       (refbox-latex--key-argument keys)))))
+
 (defun refbox-latex--selected-keys ()
   "Read selected reference keys for a LaTeX citation."
   (mapcar (lambda (candidate)
@@ -306,7 +339,8 @@ COMMAND, when non-nil, is returned directly.  INVERT-PROMPT reverses
            nil
            nil
            nil
-           (refbox-latex-local-bib-files))))
+           (refbox-latex-local-bib-files)
+           t)))
 
 (defun refbox-latex--new-keys (keys existing)
   "Return KEYS that are not already present in EXISTING."
@@ -363,7 +397,7 @@ the citation command directly."
         (refbox-latex--insert-keys-into-citation citation keys)
       (let* ((command (refbox-latex--read-command invert-prompt command))
              (optional-args (refbox-latex--read-optional-arguments command)))
-        (insert (refbox-latex-format-citation
+        (insert (refbox-latex--format-citation-from-spec
                  command keys optional-args))))
     (refbox-latex--move-after-citation)))
 
@@ -385,7 +419,7 @@ the citation command directly."
     (save-excursion
       (goto-char (point-min))
       (while (re-search-forward
-              "\\\\\\(?:bibliography\\|addbibresource\\){\\([^}]+\\)}"
+              "\\\\\\(?:bibliography\\|addbibresource\\)\\(?:\\[[^]\n]*\\]\\)?{\\([^}]+\\)}"
               nil t)
         (let ((raw (match-string-no-properties 1)))
           (dolist (part (split-string raw "," t "[ \t\n]+"))
@@ -397,6 +431,12 @@ the citation command directly."
 (defun refbox-latex--optional-bibliography-files ()
   "Return bibliography files from optional LaTeX helper variables."
   (let (files)
+    (when (fboundp 'reftex-get-bibfile-list)
+      (dolist (file (ignore-errors (reftex-get-bibfile-list)))
+        (setq files
+              (append files
+                      (list (expand-file-name
+                             (refbox-latex--bib-file file)))))))
     (when (boundp 'reftex-default-bibliography)
       (dolist (file (symbol-value 'reftex-default-bibliography))
         (setq files (append files (list (expand-file-name file))))))

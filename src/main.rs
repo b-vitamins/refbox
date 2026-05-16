@@ -281,11 +281,18 @@ impl Daemon {
             }
             METHOD_SYNC_FILE => {
                 let request: SyncFileRequest = parse_params(params)?;
-                let path = self.resolve_request_path(&request.path)?;
-                let status = self
-                    .sync
-                    .sync_file(&mut self.store, path)
-                    .map_err(sync_error)?;
+                let explicit = request.explicit.unwrap_or(false);
+                let path = self.resolve_request_path(&request.path, explicit)?;
+                let managed = self.policy.is_managed_file(&path).map_err(sync_error)?;
+                let status = if explicit && !managed {
+                    self.sync
+                        .sync_explicit_file(&mut self.store, path)
+                        .map_err(sync_error)?
+                } else {
+                    self.sync
+                        .sync_file(&mut self.store, path)
+                        .map_err(sync_error)?
+                };
                 self.to_value(sync_response(status))
             }
             METHOD_INDEXED_FILES => {
@@ -298,6 +305,9 @@ impl Daemon {
                 let request: SearchEntriesRequest = parse_params(params)?;
                 let limit = clamp_limit(request.limit);
                 let source_paths = request.source_paths.unwrap_or_default();
+                let include_configured_sources = request
+                    .include_configured_sources
+                    .unwrap_or(source_paths.is_empty());
                 let keys = request.keys.unwrap_or_default();
                 let resource_kinds = request.resource_kinds.unwrap_or_default();
                 let search_fields = request.search_fields.unwrap_or_default();
@@ -314,6 +324,7 @@ impl Daemon {
                         limit,
                         SearchOptions {
                             source_paths: &source_paths,
+                            include_configured_sources,
                             keys: &keys,
                             resource_kinds: &resource_kinds,
                             search_fields: &search_fields,
@@ -513,7 +524,11 @@ impl Daemon {
         }
     }
 
-    fn resolve_request_path(&self, path: &str) -> std::result::Result<PathBuf, JsonRpcError> {
+    fn resolve_request_path(
+        &self,
+        path: &str,
+        explicit: bool,
+    ) -> std::result::Result<PathBuf, JsonRpcError> {
         let path = PathBuf::from(path);
         if path
             .components()
@@ -530,7 +545,7 @@ impl Daemon {
             root.join(path)
         };
 
-        if !self.policy.contains_path(&path) {
+        if !explicit && !self.policy.contains_path(&path) {
             return Err(invalid_path(path.display().to_string()));
         }
 
@@ -1199,6 +1214,69 @@ mod tests {
         assert_eq!(
             unknown.error.expect("expected error").data.expect("data")["kind"],
             "unknown_key"
+        );
+    }
+
+    #[test]
+    fn daemon_treats_local_bibliographies_as_scoped_additions() {
+        let project = TestProject::new("daemon-local-bibliography");
+        project.write(
+            "refs/global.bib",
+            "@article{global2020, title = {Shared Scope Signal}}\n",
+        );
+        let local = project.write(
+            "doc/local.bib",
+            "@article{local2020, title = {Shared Scope Signal}}\n",
+        );
+        let local = local.to_string_lossy().to_string();
+        let policy = DiscoveryPolicy::new(vec![project.path("refs")], Vec::new());
+        let mut daemon =
+            Daemon::new(policy, project.path("index.sqlite")).expect("daemon should start");
+
+        result(daemon.handle_request(request(METHOD_SYNC_FULL, json!({}))));
+        result(daemon.handle_request(request(
+            METHOD_SYNC_FILE,
+            json!({ "path": local.clone(), "explicit": true }),
+        )));
+
+        let default_search = result(daemon.handle_request(request(
+            METHOD_SEARCH_ENTRIES,
+            json!({ "query": "shared", "limit": 10 }),
+        )));
+        assert_eq!(
+            default_search["entries"].as_array().expect("entries").len(),
+            1
+        );
+        assert_eq!(default_search["entries"][0]["key"], "global2020");
+
+        let local_only = result(daemon.handle_request(request(
+            METHOD_SEARCH_ENTRIES,
+            json!({
+                "query": "shared",
+                "limit": 10,
+                "source_paths": [local.clone()],
+            }),
+        )));
+        assert_eq!(local_only["entries"].as_array().expect("entries").len(), 1);
+        assert_eq!(local_only["entries"][0]["key"], "local2020");
+
+        let configured_plus_local = result(daemon.handle_request(request(
+            METHOD_SEARCH_ENTRIES,
+            json!({
+                "query": "shared",
+                "limit": 10,
+                "source_paths": [local.clone()],
+                "include_configured_sources": true,
+            }),
+        )));
+        assert_eq!(
+            configured_plus_local["entries"]
+                .as_array()
+                .expect("entries")
+                .iter()
+                .map(|entry| entry["key"].as_str().expect("key"))
+                .collect::<Vec<_>>(),
+            vec!["global2020", "local2020"]
         );
     }
 

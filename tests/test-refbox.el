@@ -420,6 +420,104 @@
                   :value "10.1000/refbox")))
   "Representative indexed reference candidate used by Elisp tests.")
 
+(ert-deftest refbox-test-key_resolution_prefers_current_local_bibliography ()
+  "Key-only metadata commands should use the current buffer's local bibliography."
+  (let* ((root (make-temp-file "refbox-local-resolution-" t))
+         (local (expand-file-name "local.bib" root))
+         (global (expand-file-name "global.bib" root))
+         (local-candidate
+          `(:id 10
+            :key "dup2020"
+            :source_path ,local
+            :fields ((:raw_name "title"
+                      :lookup_name "title"
+                      :value "Local Title"))))
+         (global-candidate
+          `(:id 20
+            :key "dup2020"
+            :source_path ,global
+            :fields ((:raw_name "title"
+                      :lookup_name "title"
+                      :value "Global Title"))))
+         (refbox-major-mode-functions
+          '(((refbox-test-mode) .
+             ((local-bib-files . refbox-test-local-bib-files)))))
+         (refbox-templates '((preview . "%{title}"))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'refbox-test-local-bib-files)
+                   (lambda (&optional _buffer) (list local)))
+                  ((symbol-function 'refbox-entry-by-key)
+                   (lambda (_key)
+                     (error "context resolver should avoid fallback lookup")))
+                  ((symbol-function 'refbox-search-references)
+                   (lambda (query _limit source-paths &rest args)
+                     (should (equal query ""))
+                     (should (equal source-paths (list local)))
+                     (should (equal (nth 5 args) '("dup2020")))
+                     (should (eq (nth 6 args) t))
+                     (list global-candidate local-candidate))))
+          (with-temp-buffer
+            (refbox-test-mode)
+            (should (equal (refbox-format-reference '("dup2020"))
+                           "Local Title"))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-read_reference_defaults_to_current_local_bibliography ()
+  "Generic selection should include local bibliographies by default."
+  (let* ((root (make-temp-file "refbox-local-read-" t))
+         (local (expand-file-name "local.bib" root))
+         (candidate `(:key "local2020" :source_path ,local))
+         (refbox-major-mode-functions
+          '(((refbox-test-mode) .
+             ((local-bib-files . refbox-test-local-bib-files))))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'refbox-test-local-bib-files)
+                   (lambda (&optional _buffer) (list local)))
+                  ((symbol-function 'completing-read)
+                   (lambda (&rest _args) "local2020"))
+                  ((symbol-function 'refbox-search-references)
+                   (lambda (query _limit source-paths &rest args)
+                     (should (equal query ""))
+                     (should (equal source-paths (list local)))
+                     (should (equal (nth 5 args) '("local2020")))
+                     (should (eq (nth 6 args) t))
+                     (list candidate))))
+          (with-temp-buffer
+            (refbox-test-mode)
+            (should (equal (refbox-read-reference) candidate))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-source_lookup_resolves_current_local_bibliography ()
+  "Key-only source commands should resolve local-buffer bibliography keys."
+  (let* ((root (make-temp-file "refbox-local-source-" t))
+         (local (expand-file-name "local.bib" root))
+         (candidate `(:id 5 :key "local2020" :source_path ,local))
+         (location `(:source_path ,local
+                     :source (:start (:line 7 :column 3))))
+         (refbox-major-mode-functions
+          '(((refbox-test-mode) .
+             ((local-bib-files . refbox-test-local-bib-files))))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'refbox-test-local-bib-files)
+                   (lambda (&optional _buffer) (list local)))
+                  ((symbol-function 'refbox-search-references)
+                   (lambda (query _limit source-paths &rest args)
+                     (should (equal query ""))
+                     (should (equal source-paths (list local)))
+                     (should (equal (nth 5 args) '("local2020")))
+                     (should (eq (nth 6 args) t))
+                     (list candidate)))
+                  ((symbol-function 'refbox-rpc-request)
+                   (lambda (method params)
+                     (should (equal method refbox-rpc-method-source-location))
+                     (should (equal (plist-get params :id) 5))
+                     (should (equal (plist-get params :source_path) local))
+                     location)))
+          (with-temp-buffer
+            (refbox-test-mode)
+            (should (equal (refbox-source-location "local2020") location))))
+      (delete-directory root t))))
+
 (ert-deftest refbox-test-template-formatting-supports_field_features ()
   "Reference templates should support width, star width, fallback, and transforms."
   (should
@@ -1071,6 +1169,43 @@
         (should (equal (append (plist-get (cadar calls) :search_fields) nil)
                        '("title" "entry_key")))
         (should (equal (plist-get (car results) :key) "smith2020"))))))
+
+(ert-deftest refbox-test-search-source_paths_sync_local_bibliographies_once ()
+  "Scoped searches should index local source files without repeated hot-path syncs."
+  (let* ((root (make-temp-file "refbox-local-source-" t))
+         (source (expand-file-name "local.bib" root))
+         (refbox--source-path-freshness (make-hash-table :test 'equal))
+         calls)
+    (unwind-protect
+        (progn
+          (with-temp-file source
+            (insert "@article{alpha, title = {Alpha}}\n"))
+          (cl-letf (((symbol-function 'refbox-rpc-request)
+                     (lambda (method params)
+                       (push (list method params) calls)
+                       (cond
+                        ((equal method refbox-rpc-method-sync-file)
+                         '(:changed_file_count 1 :removed_file_count 0
+                           :indexed_entry_count 1))
+                        ((equal method refbox-rpc-method-search-entries)
+                         (list :entries (list refbox-test-reference-candidate)))
+                        (t
+                         (error "unexpected method: %s" method))))))
+            (refbox-search-references "alpha" 5 (list source))
+            (refbox-search-references "alpha" 5 (list source))
+            (let ((ordered (nreverse calls)))
+              (should (equal (caar ordered) refbox-rpc-method-sync-file))
+              (should (equal (plist-get (cadar ordered) :path) source))
+              (should (eq (plist-get (cadar ordered) :explicit) t))
+              (should (= (cl-count refbox-rpc-method-sync-file ordered
+                                   :key #'car
+                                   :test #'equal)
+                         1))
+              (should (= (cl-count refbox-rpc-method-search-entries ordered
+                                   :key #'car
+                                   :test #'equal)
+                         2)))))
+      (delete-directory root t))))
 
 (ert-deftest refbox-test-search_tags_support_emacs_side_predicates ()
   "Search tags backed by local predicates should filter returned candidates."
@@ -1875,6 +2010,24 @@
                (lambda (_candidate) nil)))
       (should-error (refbox-open candidate) :type 'user-error))))
 
+(ert-deftest refbox-test-specific_resource_commands_tolerate_missing_items ()
+  "Specific resource commands should match Citar's empty-resource behavior."
+  (let ((candidate '(:key "empty2020" :fields nil :resources nil))
+        (refbox-notes-paths nil)
+        messages)
+    (cl-letf (((symbol-function 'refbox-reference-resources)
+               (lambda (_candidate) nil))
+              ((symbol-function 'message)
+               (lambda (format-string &rest args)
+                 (push (apply #'format format-string args) messages))))
+      (should-not (refbox-open-files candidate))
+      (should-not (refbox-attach-files candidate))
+      (should-not (refbox-open-links candidate))
+      (should-not (refbox-open-notes candidate))
+      (should-not (refbox-open-note))
+      (should (member "No associated files for empty2020" messages))
+      (should (member "No link found for empty2020" messages)))))
+
 (ert-deftest refbox-test-file_openers_support_extension_overrides_and_attachments ()
   "File resources should support extension-specific openers and MIME attach."
   (let* ((root (make-temp-file "refbox-file-openers-" t))
@@ -2453,7 +2606,7 @@
                       :source-paths '("refs.bib"))
                      (list refbox-test-reference-candidate)))
       (should (equal multiple-args
-                     (list "References: " "has:file" 7 #'ignore '("refs.bib"))))
+                     (list "References: " "has:file" 7 #'ignore '("refs.bib") nil)))
       (should (eq (refbox-select-reference
                    :filter #'ignore
                    :preset "has:notes"
@@ -2461,7 +2614,7 @@
                    :source-paths '("local.bib"))
                   refbox-test-reference-candidate))
       (should (equal single-args
-                     (list "Reference: " "has:notes" 3 #'ignore '("local.bib"))))
+                     (list "Reference: " "has:notes" 3 #'ignore '("local.bib") nil)))
       (setq multiple-args nil
             single-args nil)
       (let ((refbox-select-multiple nil))
@@ -2473,7 +2626,7 @@
                     refbox-test-reference-candidate)))
       (should-not multiple-args)
       (should (equal single-args
-                     (list "Reference: " "has:links" 4 #'ignore nil))))))
+                     (list "Reference: " "has:links" 4 #'ignore nil nil))))))
 
 (ert-deftest refbox-test-select-refs_returns_keys_and_filters_by_key ()
   "Key-oriented selection should expose key strings for extension code."

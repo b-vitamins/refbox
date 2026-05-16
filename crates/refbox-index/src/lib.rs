@@ -16,8 +16,8 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use refbox_core::{
     BibliographyEntry, BibliographyField, BibliographyFile, DateParts, DerivedBibliographyStore,
     Diagnostic, DiagnosticSeverity, EntryDate, EntryId, FileParseStatus, IndexStoreCounts,
-    IndexedFileMetadata, NameList, PersonName, RawEntry, ResourceField, SourcePosition, SourceSpan,
-    normalize_lookup_name,
+    IndexedFileMetadata, IndexedFileOrigin, NameList, PersonName, RawEntry, ResourceField,
+    SourcePosition, SourceSpan, normalize_lookup_name,
 };
 use sha2::{Digest, Sha256};
 
@@ -323,6 +323,36 @@ impl SyncEngine {
         Ok(status)
     }
 
+    pub fn sync_explicit_file<S>(
+        &self,
+        store: &mut S,
+        path: impl AsRef<Path>,
+    ) -> std::result::Result<SyncStatus, SyncError<S::Error>>
+    where
+        S: DerivedBibliographyStore,
+    {
+        let path = path.as_ref();
+        if !path.exists() {
+            return self.remove_file(store, path);
+        }
+
+        let path = path_string(path)?;
+        let snapshot = read_file_snapshot(&path)?;
+        let mut status = SyncStatus {
+            discovered_file_count: 1,
+            latest_modified_ns: snapshot.modified_ns,
+            ..SyncStatus::default()
+        };
+        let parsed = parse_bibliography_file(path.clone(), snapshot.text.as_str());
+        let metadata = snapshot.into_metadata_with_origin(&parsed, IndexedFileOrigin::Local);
+        store
+            .upsert_file(&parsed, &metadata)
+            .map_err(SyncError::Store)?;
+        status.changed_file_count = 1;
+        apply_counts(store.index_counts().map_err(SyncError::Store)?, &mut status);
+        Ok(status)
+    }
+
     pub fn remove_file<S>(
         &self,
         store: &mut S,
@@ -391,8 +421,17 @@ struct FileSnapshot {
 
 impl FileSnapshot {
     fn into_metadata(self, file: &BibliographyFile) -> IndexedFileMetadata {
+        self.into_metadata_with_origin(file, IndexedFileOrigin::Configured)
+    }
+
+    fn into_metadata_with_origin(
+        self,
+        file: &BibliographyFile,
+        origin: IndexedFileOrigin,
+    ) -> IndexedFileMetadata {
         IndexedFileMetadata {
             path: self.path,
+            origin,
             size_bytes: self.size_bytes,
             modified_ns: self.modified_ns,
             content_hash: self.content_hash,
@@ -467,7 +506,8 @@ fn sha256_hex(bytes: &[u8]) -> String {
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 fn same_freshness(metadata: &IndexedFileMetadata, snapshot: &FileSnapshot) -> bool {
-    metadata.size_bytes == snapshot.size_bytes
+    metadata.origin == IndexedFileOrigin::Configured
+        && metadata.size_bytes == snapshot.size_bytes
         && metadata.modified_ns == snapshot.modified_ns
         && metadata.content_hash == snapshot.content_hash
 }

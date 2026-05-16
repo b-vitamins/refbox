@@ -13,9 +13,13 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ### Fixed
 - Preserved duplicate-key entries, including same-file duplicates, by using daemon row ids for completion identity, entry lookup, resources, raw entry text, and source locations.
+- Indexed Org and LaTeX local bibliography files through explicit incremental sync before scoped searches, with freshness caching so local CAPF and insertion work for files outside configured roots.
+- Treated Org and LaTeX local bibliography files as scoped additions to the configured corpus, matching Citar selection behavior without leaking ad-hoc local files into unrelated searches.
 - Batched Org activation hydration by exact citation keys instead of issuing per-key entry lookups during citation activation.
 - Used bounded daemon key filters for `is:cited` and enumerable `has:notes` searches instead of pulling broad result pages into Emacs for post-filtering.
 - Removed implicit whole-bibliography materialization from entry/resource/note helper paths; global note listing now requires note-source enumeration instead of scanning every reference.
+- Recognized BibLaTeX `\addbibresource[...]{...}` declarations when scoping LaTeX completion and insertion to local bibliography files.
+- Used RefTeX's bibliography file list when available so LaTeX project bibliography discovery matches Citar-backed setups.
 - Stopped mutating completion category defaults while loading the package.
 
 ## [0.4.8] - 2026-05-17
