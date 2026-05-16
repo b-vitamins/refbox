@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -46,6 +47,7 @@ pub fn parse_bibliography_file(path: impl Into<String>, input: &str) -> Bibliogr
 #[derive(Debug, Clone)]
 pub struct DiscoveryPolicy {
     pub roots: Vec<PathBuf>,
+    pub files: Vec<PathBuf>,
     pub extensions: BTreeSet<String>,
     pub include_globs: Vec<String>,
     pub exclude_globs: Vec<String>,
@@ -55,9 +57,10 @@ pub struct DiscoveryPolicy {
 
 impl DiscoveryPolicy {
     #[must_use]
-    pub fn new(roots: Vec<PathBuf>) -> Self {
+    pub fn new(roots: Vec<PathBuf>, files: Vec<PathBuf>) -> Self {
         Self {
             roots,
+            files,
             ..Self::default()
         }
     }
@@ -70,10 +73,20 @@ impl DiscoveryPolicy {
         let include_globs = build_glob_set::<E>(&self.include_globs)?;
         let exclude_globs = build_glob_set::<E>(&self.exclude_globs)?;
 
+        if self.files.iter().any(|file| file == path) {
+            return Ok(true);
+        }
+
         Ok(self.roots.iter().any(|root| {
             path.starts_with(root)
                 && self.is_eligible_file(root, path, &include_globs, &exclude_globs)
         }))
+    }
+
+    #[must_use]
+    pub fn contains_path(&self, path: &Path) -> bool {
+        self.files.iter().any(|file| file == path)
+            || self.roots.iter().any(|root| path.starts_with(root))
     }
 
     fn discover_files_inner<E>(&self) -> std::result::Result<Vec<PathBuf>, SyncError<E>> {
@@ -83,6 +96,15 @@ impl DiscoveryPolicy {
 
         for root in &self.roots {
             self.walk_path(root, root, &include_globs, &exclude_globs, &mut files)?;
+        }
+
+        for file in &self.files {
+            match fs::metadata(file) {
+                Ok(metadata) if metadata.is_file() => files.push(file.to_path_buf()),
+                Ok(_) => {}
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => return Err(SyncError::Io(error)),
+            }
         }
 
         files.sort();
@@ -171,6 +193,7 @@ impl Default for DiscoveryPolicy {
     fn default() -> Self {
         Self {
             roots: Vec::new(),
+            files: Vec::new(),
             extensions: ["bib", "bibtex"].into_iter().map(str::to_string).collect(),
             include_globs: Vec::new(),
             exclude_globs: Vec::new(),

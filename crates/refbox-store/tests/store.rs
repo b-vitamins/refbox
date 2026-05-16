@@ -312,6 +312,48 @@ fn duplicate_keys_from_different_files_are_preserved() {
 }
 
 #[test]
+fn duplicate_keys_from_same_file_are_preserved() {
+    let mut store = RefboxStore::open_in_memory().expect("store should open");
+    let file = parse_bibliography_file(
+        "refs/dups.bib",
+        r#"@article{dup2020,
+  title = {First Copy}
+}
+
+@book{dup2020,
+  title = {Second Copy}
+}"#,
+    );
+
+    store
+        .insert_file(&file)
+        .expect("same-file duplicate keys should insert");
+
+    let entries = store
+        .entries_by_key("dup2020")
+        .expect("duplicate entries should query");
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].file_path, "refs/dups.bib");
+    assert_eq!(entries[1].file_path, "refs/dups.bib");
+    assert_ne!(entries[0].id, entries[1].id);
+    assert_eq!(
+        store
+            .entry_by_id(entries[1].id)
+            .expect("entry id lookup should query")
+            .expect("entry id should exist")
+            .entry_type,
+        "book"
+    );
+
+    let duplicate_groups = store
+        .duplicate_groups()
+        .expect("duplicate groups should query");
+    assert_eq!(duplicate_groups.len(), 1);
+    assert_eq!(duplicate_groups[0].key, "dup2020");
+    assert_eq!(duplicate_groups[0].entries.len(), 2);
+}
+
+#[test]
 fn fts_queries_are_bounded_and_deterministic_for_ties() {
     let mut store = RefboxStore::open_in_memory().expect("store should open");
     let file = parse_bibliography_file(
@@ -549,6 +591,36 @@ fn fts_queries_can_be_scoped_to_source_paths() {
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].key, "second");
     assert_eq!(results[0].file_path, "refs/second.bib");
+}
+
+#[test]
+fn searches_can_be_filtered_to_exact_keys() {
+    let mut store = RefboxStore::open_in_memory().expect("store should open");
+    let file = parse_bibliography_file(
+        "refs/search-keys.bib",
+        r#"@article{first,
+  title = {Shared Key Filter Signal}
+}
+@article{second,
+  title = {Shared Key Filter Signal}
+}"#,
+    );
+
+    store.insert_file(&file).expect("file should insert");
+
+    let results = store
+        .search(
+            "",
+            5,
+            SearchOptions {
+                keys: &["second".to_string()],
+                allow_empty_query: true,
+                ..SearchOptions::default()
+            },
+        )
+        .expect("key-filtered search should work");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].key, "second");
 }
 
 #[test]

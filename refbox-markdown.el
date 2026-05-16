@@ -4,7 +4,7 @@
 
 ;; Author: Ayan Das <bvits@riseup.net>
 ;; Maintainer: Ayan Das <bvits@riseup.net>
-;; Version: 0.4.2
+;; Version: 0.4.8
 ;; Package-Requires: ((emacs "29.1") (jsonrpc "1.0.27"))
 ;; Keywords: bib, markdown, convenience
 
@@ -70,7 +70,7 @@
           "\\(?:"
           "{\\(?1:.*?\\)}"
           "\\|"
-          "\\(?1:[[:alnum:]_][[:alnum:]]*\\(?:[:.#$%&+?<>~/-][[:alnum:]]+\\)*\\)"
+          "\\(?1:[[:alnum:]_][[:alnum:]_]*\\(?:[:.#$%&+?<>~/-][[:alnum:]_]+\\)*\\)"
           "\\)")
   "Regular expression for a Pandoc citation key.
 

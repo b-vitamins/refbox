@@ -36,8 +36,30 @@
           (should (equal (refbox-rpc--command)
                          (list program
                                "serve"
-                               "--root" (file-truename root)
-                               "--db" db))))
+                               "--db" db
+                               "--root" root
+                               "--extension" "bib"
+                               "--extension" "bibtex"))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-rpc-command-allows-explicit_file_only_corpus ()
+  "Explicit bibliography files should not depend on root discovery options."
+  (let* ((root (make-temp-file "refbox-root-" t))
+         (program (or (executable-find "true")
+                      (executable-find "sh")))
+         (db (expand-file-name "refbox.sqlite" root))
+         (file (expand-file-name "refs.bib" root)))
+    (unwind-protect
+        (let ((refbox-server-program program)
+              (refbox-bibliography-roots nil)
+              (refbox-bibliography (list file))
+              (refbox-bibliography-extensions nil)
+              (refbox-database-file db))
+          (should (equal (refbox-rpc--command)
+                         (list program
+                               "serve"
+                               "--db" db
+                               "--file" file))))
       (delete-directory root t))))
 
 (ert-deftest refbox-test-configuration-errors-are-direct ()
@@ -50,10 +72,11 @@
         (progn
           (let ((refbox-server-program program)
                 (refbox-bibliography-roots nil)
+                (refbox-bibliography nil)
                 (refbox-database-file db))
             (should
              (string-match-p
-              "refbox-bibliography-roots"
+              "refbox-bibliography-roots.*refbox-bibliography"
               (error-message-string
                (should-error (refbox-rpc--configuration)
                              :type 'user-error)))))
@@ -144,6 +167,41 @@
          (refbox-autosync-sync-on-enable nil)
          (refbox-bibliography-roots (list root))
          (refbox-bibliography-extensions '("bib"))
+         calls)
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory file) t)
+          (with-temp-file file
+            (insert "@article{alpha, title = {Alpha}}\n"))
+          (cl-letf (((symbol-function 'refbox-rpc-request)
+                     (lambda (method &optional params)
+                       (push (list method params) calls)
+                       '(:changed_file_count 1 :removed_file_count 0
+                         :indexed_entry_count 1))))
+            (refbox-autosync-mode -1)
+            (refbox-autosync-mode 1)
+            (let ((buffer (find-file-noselect file)))
+              (unwind-protect
+                  (with-current-buffer buffer
+                    (should (memq #'refbox--autosync-after-save-h
+                                  after-save-hook))
+                    (goto-char (point-max))
+                    (insert "@article{beta, title = {Beta}}\n")
+                    (save-buffer))
+                (kill-buffer buffer)))))
+      (refbox-autosync-mode -1)
+      (delete-directory root t))
+    (should (equal (nreverse calls)
+                   (list (list refbox-rpc-method-sync-file
+                               (list :path file)))))))
+
+(ert-deftest refbox-test-autosync-mode-syncs-explicit-bibliography-file ()
+  "Explicit bibliography files should be syncable outside discovery roots."
+  (let* ((root (make-temp-file "refbox-root-" t))
+         (file (expand-file-name "manual/source.txt" root))
+         (refbox-autosync-sync-on-enable nil)
+         (refbox-bibliography-roots nil)
+         (refbox-bibliography (list file))
          calls)
     (unwind-protect
         (progn
@@ -1074,6 +1132,23 @@
         (should (equal (plist-get (car entries) :key) "smith2020"))
         (should (equal (cadar calls) (list :limit 25 :offset 50)))))))
 
+(ert-deftest refbox-test-get_entries_requires_explicit_limit ()
+  "Entry hash materialization should stay bounded."
+  (should-error (refbox-get-entries nil) :type 'user-error)
+  (let (calls)
+    (cl-letf (((symbol-function 'refbox-list-references)
+               (lambda (limit offset)
+                 (push (list limit offset) calls)
+                 (if (zerop offset)
+                     (list refbox-test-reference-candidate)
+                   nil))))
+      (let ((entries (refbox-get-entries 1)))
+        (should (equal (gethash "smith2020" entries)
+                       (refbox-reference-entry-alist
+                        refbox-test-reference-candidate)))
+        (should (equal (nreverse calls)
+                       '((1 0))))))))
+
 (ert-deftest refbox-test-entry-field-accessors-return_entry_alists ()
   "Entry lookup helpers should expose field values for extension code."
   (let (calls)
@@ -1287,22 +1362,20 @@
                     :items ,(lambda (key _reference)
                               (list (format "note:%s" key)))
                     :open ,#'ignore))))
-            (cl-letf (((symbol-function 'refbox-list-references)
-                       (lambda (_limit offset)
-                         (if (or (null offset) (zerop offset))
-                             (list candidate)
-                           nil)))
-                      ((symbol-function 'refbox-entry-by-key)
+            (cl-letf (((symbol-function 'refbox-entry-by-key)
                        (lambda (key)
                          (should (equal key "alpha"))
                          candidate)))
-              (let ((files (refbox-get-files))
+              (let ((files (refbox-get-files "alpha"))
                     (links (refbox-get-links "alpha"))
                     (notes (refbox-get-notes '("alpha" "alpha"))))
                 (should (equal (gethash "alpha" files) (list paper)))
                 (should (equal (gethash "alpha" links)
                                '("https://doi.org/10.1000/alpha")))
                 (should (equal (gethash "alpha" notes) '("note:alpha")))
+                (should-error (refbox-get-files) :type 'user-error)
+                (should-error (refbox-get-links) :type 'user-error)
+                (should-error (refbox-get-notes) :type 'user-error)
                 (should-not (refbox-get-files nil))
                 (should-not (refbox-get-links nil))
                 (should-not (refbox-get-notes nil))))))
@@ -1471,21 +1544,37 @@
         (refbox-open-note))
       (should (equal opened '("note:orphan" "note:smith2020"))))))
 
-(ert-deftest refbox-test-note_source_all_items_falls_back_to_items ()
-  "Note sources should not need a separate all-items implementation."
-  (let ((notes (make-hash-table :test 'equal)))
-    (puthash "alpha" '("note:alpha") notes)
-    (puthash "beta" '("note:beta") notes)
-    (let ((refbox-notes-source 'mock)
-          (refbox-notes-sources
-           `((mock
-              :items ,#'ignore
-              :open ,#'ignore))))
-      (cl-letf (((symbol-function 'refbox-get-notes)
-                 (lambda (&rest _args) notes)))
-        (should (equal (sort (refbox-note-source-all-items)
-                             #'string-lessp)
-                       '("note:alpha" "note:beta")))))))
+(ert-deftest refbox-test-note_source_all_items_uses_enumerated_note_keys ()
+  "Note source global listing should not enumerate the bibliography."
+  (let ((refbox-notes-source 'mock)
+        (refbox-notes-sources
+         `((mock
+            :keys ,(lambda () '("alpha" "beta"))
+            :items ,(lambda (key _reference)
+                      (list (format "note:%s" key)))
+            :open ,#'ignore))))
+    (should (equal (sort (refbox-note-source-all-items)
+                         #'string-lessp)
+                   '("note:alpha" "note:beta")))))
+
+(ert-deftest refbox-test-note_source_all_items_accepts_empty_key_enumeration ()
+  "Enumerable note sources may report no notes."
+  (let ((refbox-notes-source 'mock)
+        (refbox-notes-sources
+         `((mock
+            :keys ,(lambda () nil)
+            :items ,#'ignore
+            :open ,#'ignore))))
+    (should-not (refbox-note-source-all-items))))
+
+(ert-deftest refbox-test-note_source_all_items_requires_enumeration ()
+  "Global note listing should fail when the note source cannot enumerate notes."
+  (let ((refbox-notes-source 'mock)
+        (refbox-notes-sources
+         `((mock
+            :items ,#'ignore
+            :open ,#'ignore))))
+    (should-error (refbox-note-source-all-items) :type 'user-error)))
 
 (ert-deftest refbox-test-open_notes_accepts_single_note_by_default ()
   "Opening notes should not prompt when only one note is available."
@@ -2183,37 +2272,70 @@
     (should (equal (refbox-format-reference (list candidate))
                    "Smith (2020) Alpha Reference"))))
 
-(ert-deftest refbox-test-citeproc-format-reference-uses-daemon-and-csl_configuration ()
-  "CSL reference formatting should call the daemon with selected style and locale."
+(ert-deftest refbox-test-citeproc-format-reference-uses-citeproc-and-selected-csl_configuration ()
+  "CSL reference formatting should use citeproc on selected reference payloads."
   (let* ((root (make-temp-file "refbox-format-" t))
          (style (expand-file-name "style.csl" root))
          (locale (expand-file-name "locales-en-US.xml" root))
-         calls)
+         (candidate '(:id 42
+                      :key "alpha"
+                      :source_path "refs/main.bib"
+                      :entry_type "article"
+                      :fields ((:raw_name "title"
+                                :lookup_name "title"
+                                :value "Alpha Reference"))))
+         created
+         uncited
+         csl-entry)
     (unwind-protect
         (progn
           (with-temp-file style)
           (with-temp-file locale)
           (let ((refbox-citeproc-csl-style style)
                 (refbox-citeproc-csl-locale locale))
-            (cl-letf (((symbol-function 'refbox-rpc-request)
-                       (lambda (method params)
-                         (push (list method params) calls)
-                         (list :references
-                               (list (list :key "alpha"
-                                           :text "Formatted Alpha")
-                                     (list :key "beta"
-                                           :text "Formatted Beta"))))))
-	              (should (equal (refbox-citeproc--format-references
-                                   '("alpha" "beta"))
-	                             '("Formatted Alpha" "Formatted Beta")))
-	              (should (equal (refbox-citeproc-format-reference
-                                   '("alpha" "beta"))
-	                             "Formatted Alpha\n\nFormatted Beta"))))
-          (should (equal (caar calls) refbox-rpc-method-format-references))
-          (should (equal (cadar calls)
-                         (list :keys ["alpha" "beta"]
-                               :style_path style
-                               :locale_path locale))))
+            (cl-letf (((symbol-function 'refbox-citeproc--require)
+                       #'ignore)
+                      ((symbol-function 'refbox-rpc-request)
+                       (lambda (&rest _)
+                         (error "citeproc formatting must not call the daemon")))
+                      ((symbol-function 'citeproc-blt-entry-to-csl)
+                       (lambda (entry)
+                         (setq csl-entry entry)
+                         '((title . "Alpha Reference"))))
+                      ((symbol-function 'citeproc-locale-getter-from-dir)
+                       (lambda (dir)
+                         (list :locale-dir dir)))
+                      ((symbol-function 'citeproc-create)
+                       (lambda (style-path itemgetter locale-getter locale-id)
+                         (setq created
+                               (list :style style-path
+                                     :items (funcall itemgetter '("alpha\00042"))
+                                     :locale-getter locale-getter
+                                     :locale-id locale-id))
+                         'processor))
+                      ((symbol-function 'citeproc-add-uncited)
+                       (lambda (keys processor)
+                         (setq uncited (list keys processor))))
+                      ((symbol-function 'citeproc-render-bib)
+                       (lambda (_processor _format)
+                         '(("Formatted Alpha")))))
+              (should (equal (refbox-citeproc--format-references
+                              (list candidate))
+                             '("Formatted Alpha")))
+              (should (equal (refbox-citeproc-format-reference
+                              (list candidate))
+                             "Formatted Alpha"))))
+          (should (equal (plist-get created :style) style))
+          (should (equal (plist-get created :locale-getter)
+                         (list :locale-dir (file-name-as-directory root))))
+          (should (equal (plist-get created :locale-id) "en-US"))
+          (should (equal (plist-get created :items)
+                         '(("alpha\00042" (title . "Alpha Reference")))))
+          (should (equal uncited '(("alpha\00042") processor)))
+          (should (equal (cdr (assoc "key" csl-entry)) "alpha"))
+          (should (equal (cdr (assoc "entry_id" csl-entry)) "42"))
+          (should (equal (cdr (assoc "source_path" csl-entry)) "refs/main.bib"))
+          (should (equal (cdr (assoc "title" csl-entry)) "Alpha Reference")))
       (delete-directory root t))))
 
 (ert-deftest refbox-test-insert-and-copy-formatted_references ()
@@ -2395,7 +2517,14 @@
          (refbox-database-file db)
          (refbox--connection 'old-connection)
          (refbox--connection-configuration
-          (list :program program :root root :db "/tmp/old.sqlite"))
+          (list :program program
+                :db "/tmp/old.sqlite"
+                :roots (list root)
+                :files nil
+                :extensions '("bib" "bibtex")
+                :include-globs nil
+                :exclude-globs nil
+                :include-hidden nil))
          restarted)
     (unwind-protect
         (cl-letf (((symbol-function 'jsonrpc-running-p)

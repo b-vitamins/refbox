@@ -44,15 +44,18 @@ Minimal daemon configuration:
 ```elisp
 (setq refbox-server-program "refbox")
 (setq refbox-bibliography-roots '("~/bibliography"))
+;; Optional explicit files outside the discovery roots.
+;; (setq refbox-bibliography '("~/work/project/references.bib"))
 (setq refbox-database-file
       (expand-file-name "refbox.sqlite" user-emacs-directory))
 
 (refbox-autosync-mode 1)
 ```
 
-The current daemon indexes the first directory in `refbox-bibliography-roots`.
-The SQLite database is derived state. If it is deleted while the daemon is not
-running, `M-x refbox-sync` can rebuild it from the bibliography root.
+The daemon indexes every directory in `refbox-bibliography-roots` plus every
+file in `refbox-bibliography`.  The SQLite database is derived state. If it is
+deleted while the daemon is not running, `M-x refbox-sync` can rebuild it from
+the configured bibliography corpus.
 `refbox-autosync-mode` performs that sync when it is enabled, then keeps files
 edited through Emacs current with targeted file updates.
 
@@ -78,8 +81,9 @@ Run:
 M-x refbox-sync
 ```
 
-This starts the daemon if needed, discovers bibliography files under the root,
-parses changed files, and updates the derived index. Check index state with:
+This starts the daemon if needed, discovers bibliography files under configured
+roots, includes explicit bibliography files, parses changed files, and updates
+the derived index. Check index state with:
 
 ```text
 M-x refbox-status

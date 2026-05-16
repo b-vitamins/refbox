@@ -21,7 +21,7 @@ fn full_sync_indexes_eligible_files_and_prunes_missing_files() {
     );
     project.write("refs/not-bib.txt", "@article{text, title = {Text}}\n");
 
-    let engine = SyncEngine::new(DiscoveryPolicy::new(vec![project.root.clone()]));
+    let engine = SyncEngine::new(DiscoveryPolicy::new(vec![project.root.clone()], Vec::new()));
     let mut store = MemoryStore::default();
 
     let status = engine.sync_full(&mut store).expect("full sync should work");
@@ -57,7 +57,7 @@ fn single_file_sync_updates_only_that_file() {
     let a_path = project.write("refs/a.bib", "@article{a2020, title = {Alpha}}\n");
     project.write("refs/b.bib", "@article{b2020, title = {Beta}}\n");
 
-    let engine = SyncEngine::new(DiscoveryPolicy::new(vec![project.root.clone()]));
+    let engine = SyncEngine::new(DiscoveryPolicy::new(vec![project.root.clone()], Vec::new()));
     let mut store = MemoryStore::default();
     engine.sync_full(&mut store).expect("full sync should work");
 
@@ -81,7 +81,7 @@ fn file_removal_drops_only_that_file() {
     let a_path = project.write("refs/a.bib", "@article{a2020, title = {Alpha}}\n");
     project.write("refs/b.bib", "@article{b2020, title = {Beta}}\n");
 
-    let engine = SyncEngine::new(DiscoveryPolicy::new(vec![project.root.clone()]));
+    let engine = SyncEngine::new(DiscoveryPolicy::new(vec![project.root.clone()], Vec::new()));
     let mut store = MemoryStore::default();
     engine.sync_full(&mut store).expect("full sync should work");
 
@@ -101,7 +101,7 @@ fn single_file_sync_respects_discovery_policy() {
     let visible_path = project.write("refs/a.bib", "@article{a2020, title = {Alpha}}\n");
     let hidden_path = project.write(".hidden/hidden.bib", "@article{hidden, title = {Hidden}}\n");
 
-    let engine = SyncEngine::new(DiscoveryPolicy::new(vec![project.root.clone()]));
+    let engine = SyncEngine::new(DiscoveryPolicy::new(vec![project.root.clone()], Vec::new()));
     let mut store = MemoryStore::default();
 
     engine
@@ -116,6 +116,58 @@ fn single_file_sync_respects_discovery_policy() {
 }
 
 #[test]
+fn explicit_bibliography_files_are_authoritative_corpus_members() {
+    let project = TestProject::new("explicit-files");
+    let discovered = project.write("refs/a.bib", "@article{a2020, title = {Alpha}}\n");
+    let explicit = project.write(
+        "outside/not-a-bib-extension.txt",
+        "@book{b2020, title = {Beta}}\n",
+    );
+
+    let policy = DiscoveryPolicy::new(vec![project.path("refs")], vec![explicit.clone()]);
+    let engine = SyncEngine::new(policy);
+    let mut store = MemoryStore::default();
+
+    let status = engine.sync_full(&mut store).expect("full sync should work");
+    assert_eq!(status.discovered_file_count, 2);
+    assert!(store.path_ending("refs/a.bib").is_some());
+    assert!(
+        store
+            .path_ending("outside/not-a-bib-extension.txt")
+            .is_some()
+    );
+    assert_eq!(store.field_value_for_key("a2020", "title"), Some("{Alpha}"));
+    assert_eq!(store.field_value_for_key("b2020", "title"), Some("{Beta}"));
+
+    fs::remove_file(explicit).expect("explicit fixture should remove");
+    let status = engine
+        .sync_full(&mut store)
+        .expect("second full sync should work");
+    assert_eq!(status.removed_file_count, 1);
+    assert_eq!(store.path_ending("outside/not-a-bib-extension.txt"), None);
+    assert!(
+        store
+            .files
+            .contains_key(discovered.to_str().expect("path should be UTF-8"))
+    );
+}
+
+#[test]
+fn targeted_sync_accepts_explicit_files_outside_roots() {
+    let project = TestProject::new("explicit-file-sync");
+    let explicit = project.write("manual/source.bib", "@article{x2020, title = {Exact}}\n");
+    let engine = SyncEngine::new(DiscoveryPolicy::new(Vec::new(), vec![explicit.clone()]));
+    let mut store = MemoryStore::default();
+
+    let status = engine
+        .sync_file(&mut store, &explicit)
+        .expect("explicit file sync should work");
+
+    assert_eq!(status.changed_file_count, 1);
+    assert_eq!(store.field_value_for_key("x2020", "title"), Some("{Exact}"));
+}
+
+#[test]
 fn discovery_policy_applies_include_and_exclude_globs() {
     let project = TestProject::new("discovery-policy");
     project.write("refs/keep.bib", "@article{keep, title = {Keep}}\n");
@@ -125,7 +177,7 @@ fn discovery_policy_applies_include_and_exclude_globs() {
         "@article{outside, title = {Outside}}\n",
     );
 
-    let mut policy = DiscoveryPolicy::new(vec![project.root.clone()]);
+    let mut policy = DiscoveryPolicy::new(vec![project.root.clone()], Vec::new());
     policy.include_globs.push("refs/*.bib".to_string());
     policy.exclude_globs.push("refs/skip.bib".to_string());
 
@@ -141,7 +193,7 @@ fn sync_status_reports_counts_and_freshness_metadata() {
         "@article{broken,\n  title = {Missing close\n\n@,\n",
     );
 
-    let engine = SyncEngine::new(DiscoveryPolicy::new(vec![project.root.clone()]));
+    let engine = SyncEngine::new(DiscoveryPolicy::new(vec![project.root.clone()], Vec::new()));
     let mut store = MemoryStore::default();
     let status = engine.sync_full(&mut store).expect("sync should work");
 

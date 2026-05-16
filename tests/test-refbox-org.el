@@ -257,15 +257,14 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
     (let ((refbox-templates
            '((preview . "%{author}: %{title}")))
           alpha-position
-          missing-position)
-      (cl-letf (((symbol-function 'refbox-entry-by-key)
-                 (lambda (key)
-                   (if (equal key "alpha")
-                       (refbox-org-test-search-candidate key nil)
-                     (user-error "No such key: %s" key))))
-                ((symbol-function 'refbox-search-references)
-                 (lambda (&rest _args)
-                   (list (refbox-org-test-search-candidate "alpine" nil)))))
+          missing-position
+          calls)
+      (cl-letf (((symbol-function 'refbox-search-references)
+                 (lambda (query &rest args)
+                   (push (cons query args) calls)
+                   (if (string-empty-p query)
+                       (list (refbox-org-test-search-candidate "alpha" nil))
+                     (list (refbox-org-test-search-candidate "alpine" nil))))))
         (let ((citation (refbox-org-citation-at-point)))
           (refbox-org-cite-basic-activate citation)
           (goto-char (point-min))
@@ -284,7 +283,9 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                          (get-text-property missing-position 'face))))
           (should (string-match-p
                    "alpine"
-                   (get-text-property missing-position 'help-echo))))))))
+                   (get-text-property missing-position 'help-echo)))
+          (should (equal (mapcar #'car (nreverse calls))
+                         '("" "missing"))))))))
 
 (ert-deftest refbox-org-test-local-bibliography-discovery ()
   "Local Org bibliography declarations should resolve from fixture buffers."

@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PingInfo {
     pub version: String,
-    pub root: String,
+    pub roots: Vec<String>,
+    pub files: Vec<String>,
     pub db: String,
 }
 

@@ -4,7 +4,7 @@
 
 ;; Author: Ayan Das <bvits@riseup.net>
 ;; Maintainer: Ayan Das <bvits@riseup.net>
-;; Version: 0.4.2
+;; Version: 0.4.8
 ;; Package-Requires: ((emacs "29.1") (org "9.8") (jsonrpc "1.0.27"))
 ;; Keywords: bib, tex, org, convenience
 
@@ -689,11 +689,38 @@ DIRECTION is -1 for left and 1 for right."
             nil
             t))
 
-(defun refbox-org--activation-candidate (key)
-  "Return the indexed reference candidate for activation KEY."
-  (condition-case nil
-      (refbox-entry-by-key key)
-    (error nil)))
+(defun refbox-org--activation-field-names ()
+  "Return bibliography fields needed for Org activation previews."
+  (delete-dups
+   (cl-remove-if
+    #'refbox--blank-string-p
+    (append
+     (refbox-template-field-names (refbox--template 'preview))
+     (refbox--crossref-field-names)))))
+
+(defun refbox-org--activation-candidates (keys)
+  "Return a hash table mapping citation KEYS to indexed candidates."
+  (let ((table (make-hash-table :test 'equal))
+        (keys (delete-dups (cl-remove-if #'refbox--blank-string-p keys))))
+    (when keys
+      (condition-case nil
+          (dolist (candidate
+                   (refbox-search-references
+                    ""
+                    (min refbox-search-maximum-limit
+                         (max 1 (* 8 (length keys))))
+                    nil
+                    t
+                    (refbox-org--activation-field-names)
+                    t
+                    nil
+                    nil
+                    keys))
+            (let ((key (refbox--reference-key candidate)))
+              (unless (gethash key table)
+                (puthash key candidate table))))
+        (error nil)))
+    table))
 
 (defun refbox-org--activation-close-keys (key)
   "Return bounded Refbox-backed suggestions for unknown KEY."
@@ -718,14 +745,20 @@ DIRECTION is -1 for left and 1 for right."
 
 (defun refbox-org-cite-basic-activate (citation)
   "Activate Org CITATION using Refbox-indexed citation metadata."
-  (pcase-let ((`(,begin . ,end) (org-cite-boundaries citation)))
+  (pcase-let* ((`(,begin . ,end) (org-cite-boundaries citation))
+               (references (org-cite-get-references citation))
+               (candidates
+                (refbox-org--activation-candidates
+                 (mapcar (lambda (reference)
+                           (org-element-property :key reference))
+                         references))))
     (put-text-property begin end 'font-lock-multiline t)
     (add-face-text-property begin end 'org-cite)
-    (dolist (reference (org-cite-get-references citation))
+    (dolist (reference references)
       (pcase-let* ((`(,key-begin . ,key-end)
                     (org-cite-key-boundaries reference))
                    (key (org-element-property :key reference))
-                   (candidate (refbox-org--activation-candidate key)))
+                   (candidate (gethash key candidates)))
         (when (boundp 'org-cite-basic-mouse-over-key-face)
           (put-text-property
            key-begin

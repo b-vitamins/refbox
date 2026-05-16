@@ -6,6 +6,18 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+### Changed
+- Made the daemon corpus configuration match the Emacs configuration: multiple bibliography roots, explicit bibliography files, discovery extensions, include/exclude globs, and hidden-file policy are now sent through one authoritative sync path.
+- Let explicit bibliography files participate in full sync and targeted autosync even when they live outside discovery roots.
+- Route reference-list formatting through the Emacs citeproc integration instead of a daemon-side placeholder formatter.
+
+### Fixed
+- Preserved duplicate-key entries, including same-file duplicates, by using daemon row ids for completion identity, entry lookup, resources, raw entry text, and source locations.
+- Batched Org activation hydration by exact citation keys instead of issuing per-key entry lookups during citation activation.
+- Used bounded daemon key filters for `is:cited` and enumerable `has:notes` searches instead of pulling broad result pages into Emacs for post-filtering.
+- Removed implicit whole-bibliography materialization from entry/resource/note helper paths; global note listing now requires note-source enumeration instead of scanning every reference.
+- Stopped mutating completion category defaults while loading the package.
+
 ## [0.4.8] - 2026-05-17
 
 ### Fixed

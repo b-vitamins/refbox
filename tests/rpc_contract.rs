@@ -5,9 +5,9 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use refbox_rpc::{
-    METHOD_DIAGNOSTICS, METHOD_DUPLICATE_GROUPS, METHOD_ENTRY_BY_KEY, METHOD_FORMAT_REFERENCES,
-    METHOD_LIST_ENTRIES, METHOD_RAW_ENTRY, METHOD_RESOURCES_BY_KEY, METHOD_SEARCH_ENTRIES,
-    METHOD_SOURCE_LOCATION, METHOD_STATUS, METHOD_SYNC_FILE, METHOD_SYNC_FULL,
+    METHOD_DIAGNOSTICS, METHOD_DUPLICATE_GROUPS, METHOD_ENTRY_BY_KEY, METHOD_LIST_ENTRIES,
+    METHOD_RAW_ENTRY, METHOD_RESOURCES_BY_KEY, METHOD_SEARCH_ENTRIES, METHOD_SOURCE_LOCATION,
+    METHOD_STATUS, METHOD_SYNC_FILE, METHOD_SYNC_FULL,
 };
 use serde_json::{Value, json};
 
@@ -25,9 +25,6 @@ fn stdio_rpc_contract_covers_success_and_error_shapes() {
         include_str!("fixtures/duplicates-b.bib"),
     );
     project.write("malformed.bib", include_str!("fixtures/malformed.bib"));
-    let style = project.write("styles/test.csl", "<style></style>");
-    let locale = project.write("locales/locales-en-US.xml", "<locale></locale>");
-
     let mut rpc = RpcProcess::spawn(project.root.clone(), project.path("index.sqlite"));
 
     let sync = rpc.result(1, METHOD_SYNC_FULL, json!({}));
@@ -36,7 +33,7 @@ fn stdio_rpc_contract_covers_success_and_error_shapes() {
     assert!(sync["diagnostic_count"].as_u64().expect("diagnostics") >= 1);
 
     let status = rpc.result(2, METHOD_STATUS, json!({}));
-    assert_eq!(status["schema_version"], 7);
+    assert_eq!(status["schema_version"], 8);
     assert_eq!(status["counts"]["file_count"], 5);
     assert!(status["counts"]["entry_count"].as_u64().expect("entries") >= 5);
 
@@ -51,6 +48,9 @@ fn stdio_rpc_contract_covers_success_and_error_shapes() {
     );
     let entries = scoped_search["entries"].as_array().expect("entries array");
     assert_eq!(entries.len(), 1);
+    let alpha_id = entries[0]["id"]
+        .as_i64()
+        .expect("entry id should be numeric");
     assert_eq!(entries[0]["key"], "alpha2020");
     assert_eq!(entries[0]["source_path"], project.path_string("valid.bib"));
     assert!(entries[0]["fields"].as_array().expect("fields").len() >= 2);
@@ -105,29 +105,16 @@ fn stdio_rpc_contract_covers_success_and_error_shapes() {
     assert_eq!(source["source_path"], project.path_string("valid.bib"));
     assert_eq!(source["source"]["start"]["line"], 1);
 
-    let raw = rpc.result(9, METHOD_RAW_ENTRY, json!({ "key": "alpha2020" }));
+    let raw = rpc.result(
+        9,
+        METHOD_RAW_ENTRY,
+        json!({ "id": alpha_id, "key": "alpha2020" }),
+    );
     assert!(
         raw["raw"]
             .as_str()
             .expect("raw entry")
             .contains("@article{alpha2020")
-    );
-
-    let formatted = rpc.result(
-        10,
-        METHOD_FORMAT_REFERENCES,
-        json!({
-            "keys": ["alpha2020", "beta2021"],
-            "style_path": style,
-            "locale_path": locale,
-        }),
-    );
-    assert_eq!(
-        formatted["references"]
-            .as_array()
-            .expect("formatted references")
-            .len(),
-        2
     );
 
     assert_error_kind(
@@ -141,14 +128,6 @@ fn stdio_rpc_contract_covers_success_and_error_shapes() {
     assert_error_kind(
         rpc.request(13, METHOD_SYNC_FILE, json!({ "path": "../outside.bib" })),
         "invalid_path",
-    );
-    assert_error_kind(
-        rpc.request(
-            14,
-            METHOD_FORMAT_REFERENCES,
-            json!({ "keys": ["alpha2020"], "style_path": project.path("missing.csl") }),
-        ),
-        "missing_style_file",
     );
 }
 

@@ -2,25 +2,24 @@ use std::collections::{BTreeSet, HashSet};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use anyhow::{Context, Result, bail};
+use clap::{ArgAction, Parser, Subcommand};
 use refbox_core::PingInfo;
 use refbox_index::{DiscoveryPolicy, SyncEngine, SyncStatus};
 use refbox_rpc::{
     DiagnosticItem, DiagnosticsResponse, DuplicateGroupItem, DuplicateGroupsResponse, EmptyParams,
     EntriesByKeysRequest, EntriesResponse, EntryByKeyRequest, EntryCompletionDisplayItem,
-    EntryFieldItem, EntryItem, EntryRefItem, EntrySearchItem, FormatReferencesRequest,
-    FormatReferencesResponse, FormattedReferenceItem, IndexedFilesResponse, JsonRpcError,
+    EntryFieldItem, EntryItem, EntryRefItem, EntrySearchItem, IndexedFilesResponse, JsonRpcError,
     JsonRpcErrorObject, JsonRpcRequest, JsonRpcResponse, LibraryFilesByKeysRequest,
     LibraryFilesResponse, LimitRequest, ListEntriesRequest, METHOD_DIAGNOSTICS,
-    METHOD_DUPLICATE_GROUPS, METHOD_ENTRIES_BY_KEYS, METHOD_ENTRY_BY_KEY, METHOD_FORMAT_REFERENCES,
-    METHOD_INDEXED_FILES, METHOD_LIBRARY_FILES_BY_KEYS, METHOD_LIST_ENTRIES, METHOD_PING,
-    METHOD_RAW_ENTRY, METHOD_RESOLVE_FILES, METHOD_RESOURCES_BY_KEY, METHOD_RESOURCES_BY_KEYS,
-    METHOD_SEARCH_ENTRIES, METHOD_SOURCE_LOCATION, METHOD_STATUS, METHOD_SYNC_FILE,
-    METHOD_SYNC_FULL, RawEntryRequest, RawEntryResponse, ResolveFilesRequest, ResourceItem,
-    ResourcesByKeyRequest, ResourcesByKeysRequest, ResourcesResponse, SearchEntriesRequest,
-    SearchEntriesResponse, SourceLocationRequest, SourceLocationResponse, StatusResponse,
-    SyncFileRequest, SyncResponse, clamp_limit,
+    METHOD_DUPLICATE_GROUPS, METHOD_ENTRIES_BY_KEYS, METHOD_ENTRY_BY_KEY, METHOD_INDEXED_FILES,
+    METHOD_LIBRARY_FILES_BY_KEYS, METHOD_LIST_ENTRIES, METHOD_PING, METHOD_RAW_ENTRY,
+    METHOD_RESOLVE_FILES, METHOD_RESOURCES_BY_KEY, METHOD_RESOURCES_BY_KEYS, METHOD_SEARCH_ENTRIES,
+    METHOD_SOURCE_LOCATION, METHOD_STATUS, METHOD_SYNC_FILE, METHOD_SYNC_FULL, RawEntryRequest,
+    RawEntryResponse, ResolveFilesRequest, ResourceItem, ResourcesByKeyRequest,
+    ResourcesByKeysRequest, ResourcesResponse, SearchEntriesRequest, SearchEntriesResponse,
+    SourceLocationRequest, SourceLocationResponse, StatusResponse, SyncFileRequest, SyncResponse,
+    clamp_limit,
 };
 use refbox_store::{
     RefboxStore, SearchOptions, SearchResult, StoredEntry, StoredField, StoredSearchEntry,
@@ -38,24 +37,71 @@ struct Cli {
 enum Command {
     /// Run the JSON-RPC daemon over stdio.
     Serve {
-        /// Root directory containing bibliography files.
-        #[arg(long)]
-        root: PathBuf,
         /// SQLite database path for the derived index.
         #[arg(long)]
         db: PathBuf,
+        /// Root directory containing bibliography files.
+        #[arg(long, action = ArgAction::Append)]
+        root: Vec<PathBuf>,
+        /// Explicit bibliography file to include in the indexed corpus.
+        #[arg(long = "file", action = ArgAction::Append)]
+        files: Vec<PathBuf>,
+        /// File extension considered during root discovery.
+        #[arg(long = "extension", action = ArgAction::Append)]
+        extensions: Vec<String>,
+        /// Glob pattern included during root discovery.
+        #[arg(long = "include-glob", action = ArgAction::Append)]
+        include_globs: Vec<String>,
+        /// Glob pattern excluded during root discovery.
+        #[arg(long = "exclude-glob", action = ArgAction::Append)]
+        exclude_globs: Vec<String>,
+        /// Include hidden files and directories during root discovery.
+        #[arg(long, default_value_t = false)]
+        include_hidden: bool,
     },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Serve { root, db } => serve(root, db),
+        Command::Serve {
+            db,
+            root,
+            files,
+            extensions,
+            include_globs,
+            exclude_globs,
+            include_hidden,
+        } => serve(
+            db,
+            root,
+            files,
+            extensions,
+            include_globs,
+            exclude_globs,
+            include_hidden,
+        ),
     }
 }
 
-fn serve(root: PathBuf, db: PathBuf) -> Result<()> {
-    let mut daemon = Daemon::new(root, db)?;
+fn serve(
+    db: PathBuf,
+    roots: Vec<PathBuf>,
+    files: Vec<PathBuf>,
+    extensions: Vec<String>,
+    include_globs: Vec<String>,
+    exclude_globs: Vec<String>,
+    include_hidden: bool,
+) -> Result<()> {
+    let policy = daemon_policy(
+        roots,
+        files,
+        extensions,
+        include_globs,
+        exclude_globs,
+        include_hidden,
+    )?;
+    let mut daemon = Daemon::new(policy, db)?;
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut reader = BufReader::new(stdin.lock());
@@ -81,23 +127,92 @@ fn serve(root: PathBuf, db: PathBuf) -> Result<()> {
     Ok(())
 }
 
+fn daemon_policy(
+    roots: Vec<PathBuf>,
+    files: Vec<PathBuf>,
+    extensions: Vec<String>,
+    include_globs: Vec<String>,
+    exclude_globs: Vec<String>,
+    include_hidden: bool,
+) -> Result<DiscoveryPolicy> {
+    if roots.is_empty() && files.is_empty() {
+        bail!("at least one --root or --file must be configured");
+    }
+
+    let roots = roots
+        .into_iter()
+        .map(normalize_root_path)
+        .collect::<Result<Vec<_>>>()?;
+    let files = files
+        .into_iter()
+        .map(normalize_explicit_file_path)
+        .collect::<Result<Vec<_>>>()?;
+    let mut policy = DiscoveryPolicy::new(roots, files);
+
+    if !extensions.is_empty() {
+        policy.extensions = extensions
+            .into_iter()
+            .filter_map(|extension| {
+                let extension = extension
+                    .trim()
+                    .trim_start_matches('.')
+                    .to_ascii_lowercase();
+                (!extension.is_empty()).then_some(extension)
+            })
+            .collect();
+        if policy.extensions.is_empty() {
+            bail!("at least one non-empty --extension must be configured for root discovery");
+        }
+    }
+
+    policy.include_globs = include_globs;
+    policy.exclude_globs = exclude_globs;
+    policy.include_hidden = include_hidden;
+    Ok(policy)
+}
+
+fn normalize_root_path(path: PathBuf) -> Result<PathBuf> {
+    let path = absolute_path(path)?;
+    let metadata = std::fs::metadata(&path)
+        .with_context(|| format!("bibliography root does not exist: {}", path.display()))?;
+    if !metadata.is_dir() {
+        bail!("bibliography root is not a directory: {}", path.display());
+    }
+    Ok(path)
+}
+
+fn normalize_explicit_file_path(path: PathBuf) -> Result<PathBuf> {
+    let path = absolute_path(path)?;
+    if std::fs::metadata(&path).is_ok_and(|metadata| metadata.is_dir()) {
+        bail!("bibliography file is a directory: {}", path.display());
+    }
+    Ok(path)
+}
+
+fn absolute_path(path: PathBuf) -> Result<PathBuf> {
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Ok(std::env::current_dir()
+            .context("failed to read current directory")?
+            .join(path))
+    }
+}
+
 struct Daemon {
-    root: PathBuf,
+    policy: DiscoveryPolicy,
     db: PathBuf,
     store: RefboxStore,
     sync: SyncEngine,
 }
 
 impl Daemon {
-    fn new(root: PathBuf, db: PathBuf) -> Result<Self> {
-        let root = root
-            .canonicalize()
-            .with_context(|| format!("invalid root: {}", root.display()))?;
+    fn new(policy: DiscoveryPolicy, db: PathBuf) -> Result<Self> {
         let store = RefboxStore::open(&db)
             .with_context(|| format!("failed to open store: {}", db.display()))?;
-        let sync = SyncEngine::new(DiscoveryPolicy::new(vec![root.clone()]));
+        let sync = SyncEngine::new(policy.clone());
         Ok(Self {
-            root,
+            policy,
             db,
             store,
             sync,
@@ -125,6 +240,7 @@ impl Daemon {
         let completion_display =
             include_completion_display.then(|| completion_display_item(&entry));
         EntrySearchItem {
+            id: entry.entry_id,
             key: entry.key,
             source_path: entry.file_path,
             entry_type: entry.entry_type,
@@ -144,13 +260,15 @@ impl Daemon {
         match method {
             METHOD_PING => self.to_value(PingInfo {
                 version: env!("CARGO_PKG_VERSION").to_owned(),
-                root: self.root.display().to_string(),
+                roots: path_strings_lossy(&self.policy.roots),
+                files: path_strings_lossy(&self.policy.files),
                 db: self.db.display().to_string(),
             }),
             METHOD_STATUS => {
                 let _: EmptyParams = parse_params(params)?;
                 self.to_value(StatusResponse {
-                    root: self.root.display().to_string(),
+                    roots: path_strings_lossy(&self.policy.roots),
+                    files: path_strings_lossy(&self.policy.files),
                     db: self.db.display().to_string(),
                     schema_version: self.store.schema_version().map_err(store_error)?,
                     counts: self.store.index_counts().map_err(store_error)?,
@@ -180,6 +298,7 @@ impl Daemon {
                 let request: SearchEntriesRequest = parse_params(params)?;
                 let limit = clamp_limit(request.limit);
                 let source_paths = request.source_paths.unwrap_or_default();
+                let keys = request.keys.unwrap_or_default();
                 let resource_kinds = request.resource_kinds.unwrap_or_default();
                 let search_fields = request.search_fields.unwrap_or_default();
                 let field_names = request.field_names;
@@ -195,6 +314,7 @@ impl Daemon {
                         limit,
                         SearchOptions {
                             source_paths: &source_paths,
+                            keys: &keys,
                             resource_kinds: &resource_kinds,
                             search_fields: &search_fields,
                             allow_empty_query: request.allow_empty_query.unwrap_or(false),
@@ -255,7 +375,8 @@ impl Daemon {
             }
             METHOD_ENTRY_BY_KEY => {
                 let request: EntryByKeyRequest = parse_params(params)?;
-                let entry = self.resolve_entry(&request.key, request.source_path.as_deref())?;
+                let entry =
+                    self.resolve_entry(request.id, &request.key, request.source_path.as_deref())?;
                 self.to_value(entry_item(entry))
             }
             METHOD_ENTRIES_BY_KEYS => {
@@ -276,7 +397,8 @@ impl Daemon {
             }
             METHOD_RESOURCES_BY_KEY => {
                 let request: ResourcesByKeyRequest = parse_params(params)?;
-                let entry = self.resolve_entry(&request.key, request.source_path.as_deref())?;
+                let entry =
+                    self.resolve_entry(request.id, &request.key, request.source_path.as_deref())?;
                 let crossref_fields =
                     request_crossref_fields(request.include_crossrefs, request.crossref_fields);
                 let resources = self
@@ -316,7 +438,8 @@ impl Daemon {
             }
             METHOD_RAW_ENTRY => {
                 let request: RawEntryRequest = parse_params(params)?;
-                let entry = self.resolve_entry(&request.key, request.source_path.as_deref())?;
+                let entry =
+                    self.resolve_entry(request.id, &request.key, request.source_path.as_deref())?;
                 let raw = self
                     .store
                     .raw_entry(entry.id)
@@ -330,7 +453,8 @@ impl Daemon {
             }
             METHOD_SOURCE_LOCATION => {
                 let request: SourceLocationRequest = parse_params(params)?;
-                let entry = self.resolve_entry(&request.key, request.source_path.as_deref())?;
+                let entry =
+                    self.resolve_entry(request.id, &request.key, request.source_path.as_deref())?;
                 if !std::path::Path::new(&entry.file_path).is_file() {
                     return Err(stale_source_file(entry.file_path));
                 }
@@ -339,26 +463,6 @@ impl Daemon {
                     source_path: entry.file_path,
                     source: entry.source,
                 })
-            }
-            METHOD_FORMAT_REFERENCES => {
-                let request: FormatReferencesRequest = parse_params(params)?;
-                validate_required_file(
-                    request.style_path.as_deref(),
-                    missing_style_configuration,
-                    missing_style_file,
-                )?;
-                validate_required_file(
-                    request.locale_path.as_deref(),
-                    missing_locale_configuration,
-                    missing_locale_file,
-                )?;
-                let mut references = Vec::new();
-                for key in request.keys {
-                    let entry = self.resolve_entry(&key, None)?;
-                    let fields = self.store.fields_for_entry(entry.id).map_err(store_error)?;
-                    references.push(format_reference(entry, &fields));
-                }
-                self.to_value(FormatReferencesResponse { references })
             }
             METHOD_DIAGNOSTICS => {
                 let request: LimitRequest = parse_params(params)?;
@@ -420,10 +524,13 @@ impl Daemon {
         let path = if path.is_absolute() {
             path
         } else {
-            self.root.join(path)
+            let Some(root) = self.policy.roots.first() else {
+                return Err(invalid_path(path.display().to_string()));
+            };
+            root.join(path)
         };
 
-        if !path.starts_with(&self.root) {
+        if !self.policy.contains_path(&path) {
             return Err(invalid_path(path.display().to_string()));
         }
 
@@ -432,9 +539,22 @@ impl Daemon {
 
     fn resolve_entry(
         &self,
+        id: Option<i64>,
         key: &str,
         source_path: Option<&str>,
     ) -> std::result::Result<StoredEntry, JsonRpcError> {
+        if let Some(id) = id {
+            let entry = self
+                .store
+                .entry_by_id(id)
+                .map_err(store_error)?
+                .ok_or_else(|| unknown_key(key.to_string()))?;
+            if entry.key != key || source_path.is_some_and(|path| entry.file_path != path) {
+                return Err(unknown_key(key.to_string()));
+            }
+            return Ok(entry);
+        }
+
         let mut entries = self.store.entries_by_key(key).map_err(store_error)?;
         if let Some(source_path) = source_path {
             entries.retain(|entry| entry.file_path == source_path);
@@ -734,6 +854,13 @@ fn sync_response(status: SyncStatus) -> SyncResponse {
     }
 }
 
+fn path_strings_lossy(paths: &[PathBuf]) -> Vec<String> {
+    paths
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect()
+}
+
 fn entry_item(entry: StoredEntry) -> EntryItem {
     EntryItem {
         id: entry.id,
@@ -741,47 +868,6 @@ fn entry_item(entry: StoredEntry) -> EntryItem {
         source_path: entry.file_path,
         entry_type: entry.entry_type,
         source: entry.source,
-    }
-}
-
-fn format_reference(entry: StoredEntry, fields: &[StoredField]) -> FormattedReferenceItem {
-    let author = first_clean_field(fields, &["author", "editor"]);
-    let year = first_clean_field(fields, &["date", "year"]).and_then(|value| first_year(&value));
-    let title = first_clean_field(fields, &["title", "shorttitle"]);
-    let venue = first_clean_field(
-        fields,
-        &[
-            "journaltitle",
-            "journal",
-            "booktitle",
-            "container-title",
-            "venue",
-            "publisher",
-        ],
-    );
-
-    let mut parts = Vec::new();
-    match (author, year) {
-        (Some(author), Some(year)) => parts.push(format!("{author} ({year}).")),
-        (Some(author), None) => parts.push(format!("{author}.")),
-        (None, Some(year)) => parts.push(format!("({year}).")),
-        (None, None) => {}
-    }
-    if let Some(title) = title {
-        parts.push(format!("{title}."));
-    }
-    if let Some(venue) = venue {
-        parts.push(format!("{venue}."));
-    }
-
-    FormattedReferenceItem {
-        key: entry.key.clone(),
-        source_path: entry.file_path,
-        text: if parts.is_empty() {
-            entry.key
-        } else {
-            parts.join(" ")
-        },
     }
 }
 
@@ -833,15 +919,6 @@ fn clean_bibliography_value(value: &str) -> Option<String> {
     }
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if text.is_empty() { None } else { Some(text) }
-}
-
-fn first_year(value: &str) -> Option<String> {
-    value
-        .as_bytes()
-        .windows(4)
-        .find(|window| window.iter().all(|byte| byte.is_ascii_digit()))
-        .and_then(|window| std::str::from_utf8(window).ok())
-        .map(ToOwned::to_owned)
 }
 
 fn shorten_names_to_width(names: &str, width: usize) -> String {
@@ -934,29 +1011,11 @@ fn sync_error(error: refbox_index::SyncError<refbox_store::StoreError>) -> JsonR
     JsonRpcError::new(JsonRpcErrorObject::internal_error(error.to_string()))
 }
 
-fn validate_required_file(
-    path: Option<&str>,
-    missing_error: fn() -> JsonRpcError,
-    unreadable_error: fn(String) -> JsonRpcError,
-) -> std::result::Result<(), JsonRpcError> {
-    match path {
-        Some(path) if is_readable_file(path) => Ok(()),
-        Some(path) => Err(unreadable_error(path.to_string())),
-        None => Err(missing_error()),
-    }
-}
-
-fn is_readable_file(path: &str) -> bool {
-    let path = std::path::Path::new(path);
-    std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file())
-        && std::fs::File::open(path).is_ok()
-}
-
 fn invalid_path(path: String) -> JsonRpcError {
     JsonRpcError::new(JsonRpcErrorObject::domain(
         -32001,
         "invalid_path",
-        format!("path is outside the configured root: {path}"),
+        format!("path is outside the configured bibliography corpus: {path}"),
     ))
 }
 
@@ -972,7 +1031,7 @@ fn ambiguous_key(key: String) -> JsonRpcError {
     JsonRpcError::new(JsonRpcErrorObject::domain(
         -32003,
         "ambiguous_key",
-        format!("entry key matches multiple source files: {key}"),
+        format!("entry key matches multiple indexed entries: {key}"),
     ))
 }
 
@@ -981,38 +1040,6 @@ fn stale_source_file(path: String) -> JsonRpcError {
         -32004,
         "stale_source_file",
         format!("indexed source file is not readable: {path}"),
-    ))
-}
-
-fn missing_style_file(path: String) -> JsonRpcError {
-    JsonRpcError::new(JsonRpcErrorObject::domain(
-        -32005,
-        "missing_style_file",
-        format!("CSL style file is not readable: {path}"),
-    ))
-}
-
-fn missing_style_configuration() -> JsonRpcError {
-    JsonRpcError::new(JsonRpcErrorObject::domain(
-        -32005,
-        "missing_style_file",
-        "`style_path` is required for reference formatting".to_string(),
-    ))
-}
-
-fn missing_locale_file(path: String) -> JsonRpcError {
-    JsonRpcError::new(JsonRpcErrorObject::domain(
-        -32006,
-        "missing_locale_file",
-        format!("CSL locale file is not readable: {path}"),
-    ))
-}
-
-fn missing_locale_configuration() -> JsonRpcError {
-    JsonRpcError::new(JsonRpcErrorObject::domain(
-        -32006,
-        "missing_locale_file",
-        "`locale_path` is required for reference formatting".to_string(),
     ))
 }
 
@@ -1030,7 +1057,7 @@ mod tests {
             "refs/a.bib",
             "@article{a2020, title = {Alpha Search}, doi = {10.1000/alpha}}\n",
         );
-        let mut daemon = Daemon::new(project.root.clone(), project.path("index.sqlite"))
+        let mut daemon = Daemon::new(project.policy(), project.path("index.sqlite"))
             .expect("daemon should start");
 
         let sync = result(daemon.handle_request(request(METHOD_SYNC_FULL, json!({}))));
@@ -1132,22 +1159,6 @@ mod tests {
         );
         assert_eq!(source["source"]["start"]["line"], 1);
 
-        let style = project.write(
-            "styles/test.csl",
-            "<style><info><title>Test</title></info></style>",
-        );
-        let locale = project.write("locales/locales-en-US.xml", "<locale></locale>");
-        let formatted = result(daemon.handle_request(request(
-            METHOD_FORMAT_REFERENCES,
-            json!({
-                "keys": ["a2020"],
-                "style_path": style.to_string_lossy(),
-                "locale_path": locale.to_string_lossy(),
-            }),
-        )));
-        assert_eq!(formatted["references"][0]["key"], "a2020");
-        assert_eq!(formatted["references"][0]["text"], "Alpha Search.");
-
         let status = result(daemon.handle_request(request(METHOD_STATUS, json!({}))));
         assert_eq!(status["counts"]["entry_count"], 1);
     }
@@ -1157,7 +1168,7 @@ mod tests {
         let project = TestProject::new("daemon-errors");
         let first = project.write("refs/a.bib", "@article{dup2020, title = {First}}\n");
         project.write("refs/b.bib", "@book{dup2020, title = {Second}}\n");
-        let mut daemon = Daemon::new(project.root.clone(), project.path("index.sqlite"))
+        let mut daemon = Daemon::new(project.policy(), project.path("index.sqlite"))
             .expect("daemon should start");
         result(daemon.handle_request(request(METHOD_SYNC_FULL, json!({}))));
 
@@ -1184,33 +1195,6 @@ mod tests {
             "stale_source_file"
         );
 
-        let missing_style = daemon.handle_request(request(
-            METHOD_FORMAT_REFERENCES,
-            json!({ "keys": ["dup2020"], "style_path": project.path("missing.csl") }),
-        ));
-        assert_eq!(
-            missing_style
-                .error
-                .expect("expected error")
-                .data
-                .expect("data")["kind"],
-            "missing_style_file"
-        );
-
-        let readable_style = project.write("styles/valid.csl", "<style></style>");
-        let missing_locale = daemon.handle_request(request(
-            METHOD_FORMAT_REFERENCES,
-            json!({ "keys": ["dup2020"], "style_path": readable_style }),
-        ));
-        assert_eq!(
-            missing_locale
-                .error
-                .expect("expected error")
-                .data
-                .expect("data")["kind"],
-            "missing_locale_file"
-        );
-
         let unknown = daemon.handle_request(request(METHOD_RAW_ENTRY, json!({ "key": "none" })));
         assert_eq!(
             unknown.error.expect("expected error").data.expect("data")["kind"],
@@ -1228,7 +1212,7 @@ mod tests {
         let keyed = project.write("library/smith2020.pdf", "");
         let keyed_extra = project.write("library/nested/smith2020-extra.pdf", "");
         project.write("library/nested/smith2020-extra.html", "");
-        let mut daemon = Daemon::new(project.root.clone(), project.path("index.sqlite"))
+        let mut daemon = Daemon::new(project.policy(), project.path("index.sqlite"))
             .expect("daemon should start");
 
         let resolved = result(daemon.handle_request(request(
@@ -1277,7 +1261,7 @@ mod tests {
     #[test]
     fn daemon_rejects_invalid_file_paths() {
         let project = TestProject::new("daemon-invalid-path");
-        let mut daemon = Daemon::new(project.root.clone(), project.path("index.sqlite"))
+        let mut daemon = Daemon::new(project.policy(), project.path("index.sqlite"))
             .expect("daemon should start");
         let response = daemon.handle_request(request(
             METHOD_SYNC_FILE,
@@ -1324,6 +1308,10 @@ mod tests {
 
         fn path(&self, path: &str) -> PathBuf {
             self.root.join(path)
+        }
+
+        fn policy(&self) -> DiscoveryPolicy {
+            DiscoveryPolicy::new(vec![self.root.clone()], Vec::new())
         }
 
         fn write(&self, path: &str, contents: &str) -> PathBuf {

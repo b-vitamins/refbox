@@ -40,8 +40,18 @@
 (require 'refbox-rpc)
 
 (defvar completion-category-defaults)
+(defvar citeproc--date-vars)
+(defvar citeproc--name-vars)
 (defvar org-cite-csl--fallback-locales-dir)
 (defvar truncate-string-ellipsis)
+
+(declare-function citeproc-add-uncited "citeproc")
+(declare-function citeproc-blt-entry-to-csl "citeproc-biblatex")
+(declare-function citeproc-bt--to-csl-date "citeproc-biblatex")
+(declare-function citeproc-bt--to-csl-names "citeproc-biblatex")
+(declare-function citeproc-create "citeproc")
+(declare-function citeproc-locale-getter-from-dir "citeproc")
+(declare-function citeproc-render-bib "citeproc")
 
 (defface refbox
   '((t :inherit font-lock-doc-face))
@@ -457,8 +467,6 @@ accepting a reference key or candidate."
   (cons `(refbox-reference (styles ,@refbox-completion-category-styles))
         (cl-remove 'refbox-reference completion-category-defaults :key #'car)))
 
-(refbox--install-completion-category-defaults)
-
 (defcustom refbox-crossref-field-names '("crossref")
   "Field names whose values name parent references.
 
@@ -635,12 +643,14 @@ t is used as the default when no extension entry matches."
   "Alist of note sources available to refbox.
 
 Each entry is (SOURCE . PLIST).  Recognized plist keys are
-`:items', `:all-items', `:hasitems', `:open', `:create',
-`:create-label', `:transform', and `:annotate'.  `:items' and
-`:hasitems' functions receive KEY and REFERENCE.  `:all-items'
-receives no arguments and returns note items directly openable by
-`:open'.  `:open', `:transform', and `:annotate' receive a note
-item.  `:create' and `:create-label' receive KEY and REFERENCE.
+`:items', `:all-items', `:keys', `:hasitems', `:preload',
+`:open', `:create', `:create-label', `:transform', and
+`:annotate'.  `:items' and `:hasitems' functions receive KEY and
+REFERENCE.  `:all-items' receives no arguments and returns note items
+directly openable by `:open'.  `:keys' receives no arguments and
+returns note keys that can be expanded through `:items'.  `:open',
+`:transform', and `:annotate' receive a note item.  `:create' and
+`:create-label' receive KEY and REFERENCE.
 `:items' and `:open' are required when registering a note source with
 `refbox-register-notes-source'."
   :type 'alist
@@ -972,6 +982,9 @@ computed property such as indicators, or an indexed bibliography field."
       nil)
      ((member field '("key" "citekey" "id" "=key="))
       (refbox--candidate-value candidate :key))
+     ((member field '("entry_id" "entry-id"))
+      (when-let ((id (refbox--candidate-value candidate :id :entry_id :entry-id)))
+        (format "%s" id)))
      ((member field '("source_path" "source-path" "source" "path"))
       (refbox--candidate-value candidate :source_path :source-path))
      ((member field '("entry_type" "entry-type" "type" "=type="))
@@ -1011,6 +1024,8 @@ computed property such as indicators, or an indexed bibliography field."
                      (cons "citekey" (refbox-reference-field candidate "key"))
                      (cons "=key=" (refbox-reference-field candidate "key"))
                      (cons "id" (refbox-reference-field candidate "key"))
+                     (cons "entry_id" (refbox-reference-field candidate "entry_id"))
+                     (cons "entry-id" (refbox-reference-field candidate "entry_id"))
                      (cons "entry_type" (refbox-reference-field candidate "entry_type"))
                      (cons "entry-type" (refbox-reference-field candidate "entry_type"))
                      (cons "type" (refbox-reference-field candidate "entry_type"))
@@ -1046,6 +1061,8 @@ computed property such as indicators, or an indexed bibliography field."
   "Return an indexed-candidate-shaped plist for KEY and ENTRY alist."
   (let ((entry (refbox--entry-alist entry)))
     (list :key key
+          :id (refbox--normalize-entry-id
+               (cdr (assoc-string "entry_id" entry t)))
           :entry_type (or (cdr (assoc-string "=type=" entry t))
                           (cdr (assoc-string "entry_type" entry t))
                           (cdr (assoc-string "entry-type" entry t))
@@ -1055,6 +1072,7 @@ computed property such as indicators, or an indexed bibliography field."
                    unless (member
                            (downcase (format "%s" name))
                            '("key" "citekey" "id" "=key="
+                             "entry_id" "entry-id"
                              "type" "=type=" "entry_type" "entry-type"
                              "source_path" "source-path"))
                    collect (list :raw_name (format "%s" name)
@@ -1795,9 +1813,95 @@ direct function transform."
         (cl-subseq matches 0 limit)
       matches)))
 
+(defun refbox--string-list-intersection (left right)
+  "Return strings present in both LEFT and RIGHT."
+  (let ((right-table (make-hash-table :test 'equal))
+        matches)
+    (dolist (value right)
+      (puthash value t right-table))
+    (dolist (value left)
+      (when (gethash value right-table)
+        (push value matches)))
+    (delete-dups (nreverse matches))))
+
+(defun refbox--hash-table-string-keys (table)
+  "Return string keys from hash TABLE."
+  (let (keys)
+    (maphash (lambda (key _value)
+               (when (stringp key)
+                 (push key keys)))
+             table)
+    (nreverse keys)))
+
+(defun refbox--current-citation-keys ()
+  "Return citation keys in the current citation context."
+  (refbox--hash-table-string-keys (refbox--current-citation-key-table)))
+
+(defun refbox-note-source-file-keys ()
+  "Return possible citation keys represented by file-backed notes."
+  (delete-dups
+   (cl-loop
+    for file in (refbox-note-source-file-all-items)
+    for base = (file-name-base file)
+    append (delq
+            nil
+            (list base
+                  (when (and refbox-file-additional-files-separator
+                             (not (string-empty-p
+                                   refbox-file-additional-files-separator)))
+                    (car (split-string
+                          base
+                          (regexp-quote refbox-file-additional-files-separator)
+                          t))))))))
+
+(defun refbox-note-source-key-list ()
+  "Return keys known to have notes, or `unknown' when not enumerable."
+  (cond
+   ((plist-get (refbox-note-source--plist) :keys)
+    (refbox--listify (funcall (plist-get (refbox-note-source--plist) :keys))))
+   ((eq refbox-notes-source 'file)
+    (refbox-note-source-file-keys))
+   (t 'unknown)))
+
+(defun refbox-search--key-filter-for-post-tag (tag)
+  "Return key filter for TAG, or `unknown' when TAG needs post-filtering."
+  (pcase tag
+    ((or "has:note" "has:notes")
+     (if (eq refbox-reference-note-predicate #'refbox-reference-has-notes-p)
+         (refbox-note-source-key-list)
+       'unknown))
+    ("is:cited"
+     (if (eq refbox-reference-cited-predicate
+             #'refbox-reference-cited-in-current-buffer-p)
+         (refbox--current-citation-keys)
+       'unknown))
+    (_ 'unknown)))
+
+(defun refbox-search--post-filter-plan (tags)
+  "Return a plist describing key filters and remaining TAGS."
+  (let (key-filter remaining-tags empty-key-filter)
+    (dolist (tag tags)
+      (let ((keys (refbox-search--key-filter-for-post-tag tag)))
+        (cond
+         ((eq keys 'unknown)
+          (push tag remaining-tags))
+         ((null keys)
+          (setq empty-key-filter t
+                key-filter nil))
+         (key-filter
+          (setq key-filter
+                (refbox--string-list-intersection key-filter keys))
+          (when (null key-filter)
+            (setq empty-key-filter t)))
+         (t
+          (setq key-filter keys)))))
+    (list :keys key-filter
+          :tags (nreverse remaining-tags)
+          :empty-key-filter empty-key-filter)))
+
 (defun refbox-search-references
     (query &optional limit source-paths unranked field-names omit-resources search-fields
-           include-completion-display)
+           include-completion-display key-filter)
   "Search indexed references for QUERY using bounded LIMIT.
 
 When SOURCE-PATHS is non-nil, restrict results to those
@@ -1821,14 +1925,24 @@ pre-shaped standard completion display columns."
          (clean-query (plist-get parsed :query))
          (resource-kinds (plist-get parsed :resource-kinds))
          (post-filter-tags (plist-get parsed :post-filter-tags))
+         (post-filter-plan (refbox-search--post-filter-plan post-filter-tags))
+         (post-filter-tags (plist-get post-filter-plan :tags))
+         (post-key-filter (plist-get post-filter-plan :keys))
+         (post-empty-key-filter (plist-get post-filter-plan :empty-key-filter))
          (requested-limit (refbox-rpc--search-limit limit))
          (rpc-limit (if post-filter-tags
                         (refbox-rpc--search-limit refbox-search-maximum-limit)
                       requested-limit))
          (source-paths
           (cl-remove-if
-           #'refbox--blank-string-p
-           (mapcar #'expand-file-name source-paths)))
+            #'refbox--blank-string-p
+            (mapcar #'expand-file-name source-paths)))
+         (key-filter
+          (unless post-empty-key-filter
+            (delete-dups
+             (cl-remove-if
+              #'refbox--blank-string-p
+              (append key-filter post-key-filter)))))
          (field-names
           (delete-dups
            (cl-remove-if
@@ -1839,13 +1953,16 @@ pre-shaped standard completion display columns."
            (cl-remove-if
             #'refbox--blank-string-p
             (mapcar #'refbox--field-name-normalize search-fields))))
-         (response (refbox-rpc-request
+         (response (unless post-empty-key-filter
+                     (refbox-rpc-request
                     refbox-rpc-method-search-entries
                     (append
                      (list :query clean-query
                            :limit rpc-limit)
                      (when source-paths
                        (list :source_paths (vconcat source-paths)))
+                     (when key-filter
+                       (list :keys (vconcat key-filter)))
                      (when resource-kinds
                        (list :resource_kinds (vconcat resource-kinds)))
                      (when search-fields
@@ -1863,7 +1980,7 @@ pre-shaped standard completion display columns."
                      (when unranked
                        (list :ranked :json-false))
                      (when omit-resources
-                       (list :include_resources :json-false)))))
+                       (list :include_resources :json-false))))))
          (entries (plist-get response :entries)))
     (setq entries (refbox--listify entries))
     (if post-filter-tags
@@ -1886,32 +2003,44 @@ interactive search paths should use `refbox-search-references'."
 
 REFERENCE may be a key string or a candidate plist carrying both key
 and source path."
-  (let* ((resolved (refbox-rpc-request
-                    refbox-rpc-method-entry-by-key
-                    (refbox--reference-rpc-params reference)))
-         (key (plist-get resolved :key))
-         (source-path (plist-get resolved :source_path))
-         (candidates (refbox-search-references
-                      key
-                      refbox-search-maximum-limit
-                      (and source-path (list source-path)))))
+  (if (and (listp reference)
+           (plist-member reference :fields))
+      reference
+    (let* ((resolved (refbox-rpc-request
+                      refbox-rpc-method-entry-by-key
+                      (refbox--reference-rpc-params reference)))
+           (key (plist-get resolved :key))
+           (entry-id (plist-get resolved :id))
+           (source-path (plist-get resolved :source_path))
+           (candidates (refbox-search-references
+                        ""
+                        refbox-search-maximum-limit
+                        (and source-path (list source-path))
+                        nil nil nil nil nil
+                        (list key))))
     (or (cl-find-if (lambda (candidate)
                       (and (equal (refbox-reference-field candidate "key") key)
+                           (or (not entry-id)
+                               (equal (refbox--reference-entry-id candidate)
+                                      entry-id))
                            (or (not source-path)
                                (equal (refbox-reference-field candidate "source_path")
                                       source-path))))
                     candidates)
-        (append resolved (list :score 0.0 :fields nil :resources nil)))))
+        (append resolved (list :score 0.0 :fields nil :resources nil))))))
 
 (defun refbox-get-entry (reference)
   "Return REFERENCE as a bibliography entry alist."
   (refbox-reference-entry-alist (refbox-entry-by-key reference)))
 
-(defun refbox-get-entries (&optional limit)
+(defun refbox-get-entries (limit)
   "Return a hash table of indexed bibliography entries.
 
-When LIMIT is non-nil, return at most that many entries.  Without
-LIMIT, enumerate the full index in daemon-sized pages."
+Return at most LIMIT entries.  Whole-corpus materialization is not a
+scalable refbox API; callers that need broader traversal should use
+`refbox-list-references' explicitly with bounded pages."
+  (unless (and (integerp limit) (> limit 0))
+    (user-error "`refbox-get-entries' requires a positive LIMIT"))
   (let ((entries (make-hash-table :test 'equal))
         (remaining limit)
         (offset 0)
@@ -1930,8 +2059,10 @@ LIMIT, enumerate the full index in daemon-sized pages."
         (setq remaining (- remaining (length page)))))
     entries))
 
-(defun refbox--all-reference-candidates (&optional limit)
-  "Return indexed reference candidates, optionally bounded by LIMIT."
+(defun refbox--all-reference-candidates (limit)
+  "Return indexed reference candidates bounded by LIMIT."
+  (unless (and (integerp limit) (> limit 0))
+    (user-error "Full-corpus reference materialization requires a positive limit"))
   (let ((remaining limit)
         (offset 0)
         (page-size refbox-search-maximum-limit)
@@ -1951,13 +2082,14 @@ LIMIT, enumerate the full index in daemon-sized pages."
     (reference-or-references supplied-p)
   "Return candidates for resource APIs.
 
-When REFERENCE-OR-REFERENCES is omitted, enumerate the full index.
-When it is explicitly nil, return nil."
+When REFERENCE-OR-REFERENCES is omitted, signal a user error instead
+of materializing the full corpus.  When it is explicitly nil, return
+nil."
   (cond
    ((and supplied-p (null reference-or-references))
     nil)
    ((not supplied-p)
-    (refbox--all-reference-candidates))
+    (user-error "Pass explicit references; full-corpus resource materialization is not supported"))
    ((and (listp reference-or-references)
          (plist-member reference-or-references :key))
     (list reference-or-references))
@@ -2164,17 +2296,14 @@ whose cdr is passed as additional arguments."
 
 (defun refbox-reference-resources (candidate)
   "Return indexed resources for CANDIDATE via the daemon."
-  (let ((key (refbox--reference-key candidate))
-        (source-path (refbox--reference-source-path candidate)))
+  (let ((key (refbox--reference-key candidate)))
     (unless key
       (user-error "Reference candidate has no key"))
     (refbox--listify
      (plist-get
       (refbox-rpc-request
        refbox-rpc-method-resources-by-key
-       (append (list :key key)
-               (unless (refbox--blank-string-p source-path)
-                 (list :source_path source-path))))
+       (refbox--reference-rpc-params candidate))
       :resources))))
 
 (defun refbox-resource--clean-value (value)
@@ -2782,7 +2911,7 @@ callable."
   "Required plist properties for registered note sources.")
 
 (defconst refbox-note-source--function-properties
-  '(:items :all-items :hasitems :preload :open :create :create-label :transform :annotate)
+  '(:items :all-items :keys :hasitems :preload :open :create :create-label :transform :annotate)
   "Note source plist properties whose values must be callable.")
 
 (defconst refbox-note-source--known-properties
@@ -2913,7 +3042,7 @@ callable."
 REFERENCE-OR-REFERENCES may be a single reference key, an indexed
 candidate, or a list of reference keys.  Return a hash table mapping
 keys to non-empty file lists.  When REFERENCE-OR-REFERENCES is omitted,
-enumerate all indexed references; when it is explicitly nil, return nil."
+signal a user error; when it is explicitly nil, return nil."
   (when (or reference-or-references (not supplied-p))
     (refbox--resource-table
      (refbox--resource-reference-candidates
@@ -2928,7 +3057,7 @@ enumerate all indexed references; when it is explicitly nil, return nil."
 REFERENCE-OR-REFERENCES may be a single reference key, an indexed
 candidate, or a list of reference keys.  Return a hash table mapping
 keys to non-empty link lists.  When REFERENCE-OR-REFERENCES is omitted,
-enumerate all indexed references; when it is explicitly nil, return nil."
+signal a user error; when it is explicitly nil, return nil."
   (when (or reference-or-references (not supplied-p))
     (refbox--resource-table
      (refbox--resource-reference-candidates
@@ -2943,7 +3072,7 @@ enumerate all indexed references; when it is explicitly nil, return nil."
 REFERENCE-OR-REFERENCES may be a single reference key, an indexed
 candidate, or a list of reference keys.  Return a hash table mapping
 keys to non-empty note lists.  When REFERENCE-OR-REFERENCES is omitted,
-enumerate all indexed references; when it is explicitly nil, return nil."
+signal a user error; when it is explicitly nil, return nil."
   (when (or reference-or-references (not supplied-p))
     (refbox--resource-table
      (refbox--resource-reference-candidates
@@ -2952,11 +3081,19 @@ enumerate all indexed references; when it is explicitly nil, return nil."
 
 (defun refbox-note-source-all-items ()
   "Return all items from the active note source."
-  (if-let ((function (plist-get (refbox-note-source--plist) :all-items)))
-      (refbox--listify (funcall function))
-    (delete-dups
-     (apply #'append
-            (hash-table-values (refbox-get-notes))))))
+  (let ((plist (refbox-note-source--plist)))
+    (if-let ((all-items (plist-get plist :all-items)))
+        (refbox--listify (funcall all-items))
+      (let ((keys (refbox-note-source-key-list)))
+        (if (eq keys 'unknown)
+            (user-error
+             "Note source `%s' must provide `:all-items' or `:keys' for global note listing"
+             refbox-notes-source)
+          (delete-dups
+           (apply #'append
+                  (mapcar (lambda (key)
+                            (refbox-note-source-items (list :key key)))
+                          keys))))))))
 
 (defun refbox-note-source-has-items-p (reference)
   "Return non-nil when REFERENCE has active note source items."
@@ -3394,11 +3531,33 @@ non-nil, is a bibliography entry alist used as candidate metadata."
         (and (plist-member reference :source-path)
              (plist-get reference :source-path)))))
 
+(defun refbox--normalize-entry-id (value)
+  "Return VALUE as a numeric daemon entry id when possible."
+  (cond
+   ((integerp value) value)
+   ((and (stringp value)
+         (string-match-p "\\`[0-9]+\\'" value))
+    (string-to-number value))))
+
+(defun refbox--reference-entry-id (reference)
+  "Return REFERENCE's daemon entry id, when available."
+  (when (listp reference)
+    (refbox--normalize-entry-id
+     (or (and (plist-member reference :id)
+              (plist-get reference :id))
+         (and (plist-member reference :entry_id)
+              (plist-get reference :entry_id))
+         (and (plist-member reference :entry-id)
+              (plist-get reference :entry-id))))))
+
 (defun refbox--reference-rpc-params (reference)
   "Return key-shaped RPC params for REFERENCE."
   (let ((key (refbox--reference-key reference))
-        (source-path (refbox--reference-source-path reference)))
+        (source-path (refbox--reference-source-path reference))
+        (entry-id (refbox--reference-entry-id reference)))
     (append (list :key key)
+            (when entry-id
+              (list :id entry-id))
             (unless (refbox--blank-string-p source-path)
               (list :source_path source-path)))))
 
@@ -3907,6 +4066,15 @@ passed to the adapter command."
    "locale"
    #'refbox-csl--locale-match-p))
 
+(defun refbox-csl--locale-id ()
+  "Return the selected CSL locale id."
+  (let ((locale refbox-citeproc-csl-locale))
+    (if (or (file-name-absolute-p locale)
+            (file-name-directory locale)
+            (string-suffix-p ".xml" locale))
+        (string-remove-prefix "locales-" (file-name-base locale))
+      locale)))
+
 ;;;###autoload
 (defun refbox-citeproc-select-csl-style ()
   "Select a CSL style from `refbox-citeproc-csl-styles-dir'."
@@ -3929,10 +4097,44 @@ passed to the adapter command."
         (message "refbox CSL style: %s" (plist-get item :title))
         refbox-citeproc-csl-style))))
 
+(defun refbox-citeproc--require ()
+  "Load citeproc-el or signal an actionable user error."
+  (unless (require 'citeproc nil t)
+    (user-error "Install citeproc-el to use `refbox-citeproc-format-reference'")))
+
+(defun refbox-citeproc--cslize-special-vars (entry)
+  "Convert BibTeX ENTRY name and date values to CSL values."
+  (mapcar
+   (pcase-lambda (`(,var . ,value))
+     (cons var
+           (cond
+            ((memq var citeproc--date-vars)
+             (citeproc-bt--to-csl-date value nil))
+            ((memq var citeproc--name-vars)
+             (citeproc-bt--to-csl-names value))
+            (t value))))
+   entry))
+
+(defun refbox-citeproc--csl-from-entry (entry)
+  "Return a CSL item converted from bibliography ENTRY."
+  (pcase (caar entry)
+    ('nil nil)
+    ((pred stringp) (citeproc-blt-entry-to-csl entry))
+    ((pred symbolp) (refbox-citeproc--cslize-special-vars entry))
+    (_ (error "Bibliography entry has unknown field shape: %S" entry))))
+
+(defun refbox-citeproc--reference-id (reference index)
+  "Return citeproc id for REFERENCE at INDEX."
+  (let ((key (refbox--reference-key reference)))
+    (if-let ((entry-id (refbox--reference-entry-id reference)))
+        (format "%s\0%s" key entry-id)
+      (format "%s\0%s" key index))))
+
 (defun refbox-citeproc--format-references (references &optional style)
   "Return CSL-formatted reference strings for REFERENCES.
 
 STYLE, when non-nil, overrides `refbox-citeproc-csl-style'."
+  (refbox-citeproc--require)
   (let ((references (refbox--reference-list references)))
     (unless references
       (user-error "No references selected"))
@@ -3944,15 +4146,32 @@ STYLE, when non-nil, overrides `refbox-citeproc-csl-style'."
            (or style refbox-citeproc-csl-style)))
       (let* ((style-path (refbox-csl--style-file))
              (locale-path (refbox-csl--locale-file))
-             (response
-              (refbox-rpc-request
-               refbox-rpc-method-format-references
-               (list :keys (vconcat (mapcar #'refbox--reference-key references))
-                     :style_path style-path
-                     :locale_path locale-path))))
-        (mapcar (lambda (item)
-                  (plist-get item :text))
-                (refbox--listify (plist-get response :references)))))))
+             (locale-dir (file-name-directory locale-path))
+             (locale-id (refbox-csl--locale-id))
+             (items (make-hash-table :test 'equal))
+             ids)
+        (cl-loop for reference in references
+                 for index from 0
+                 for id = (refbox-citeproc--reference-id reference index)
+                 do (push id ids)
+                 do (puthash id
+                             (refbox-citeproc--csl-from-entry
+                              (refbox--entry-alist reference))
+                             items))
+        (let* ((processor
+                (citeproc-create
+                 style-path
+                 (lambda (keys)
+                   (mapcar (lambda (key)
+                             (cons key (gethash key items)))
+                           keys))
+                 (citeproc-locale-getter-from-dir locale-dir)
+                 locale-id))
+               (references
+                (car (progn
+                       (citeproc-add-uncited (nreverse ids) processor)
+                       (citeproc-render-bib processor 'plain)))))
+          references)))))
 
 (defun refbox-citeproc-format-reference (references &optional style)
   "Return CSL-formatted reference text for REFERENCES.
@@ -4392,11 +4611,13 @@ selection can still resolve to the candidate it came from."
 
 (defun refbox--reference-identity (reference)
   "Return a stable identity string for REFERENCE."
-  (let ((key (refbox--reference-key reference))
+  (let ((entry-id (refbox--reference-entry-id reference))
+        (key (refbox--reference-key reference))
         (source-path (refbox--reference-source-path reference)))
-    (if source-path
-        (concat key "\0" source-path)
-      key)))
+    (cond
+     (entry-id (format "%s" entry-id))
+     (source-path (concat key "\0" source-path))
+     (t key))))
 
 (defun refbox--multiple-group-function (selected)
   "Return a completion group function using SELECTED reference table."
@@ -4516,25 +4737,36 @@ control completion and validation."
     (member (downcase extension)
             (refbox--normalized-bibliography-extensions))))
 
-(defun refbox--bibliography-root ()
-  "Return the daemon bibliography root used for file-level sync."
-  (when-let ((root (car refbox-bibliography-roots)))
-    (let ((root (expand-file-name root)))
-      (when (file-directory-p root)
-        (file-name-as-directory (file-truename root))))))
+(defun refbox--bibliography-roots ()
+  "Return configured bibliography root directories."
+  (cl-loop for root in refbox-bibliography-roots
+           for expanded = (file-name-as-directory (expand-file-name root))
+           when (file-directory-p expanded)
+           collect expanded))
 
-(defun refbox--file-in-bibliography-root-p (file)
-  "Return non-nil when FILE is inside the active bibliography root."
-  (when-let ((root (refbox--bibliography-root)))
-    (file-in-directory-p (expand-file-name file) root)))
+(defun refbox--explicit-bibliography-files ()
+  "Return configured explicit bibliography files."
+  (mapcar #'expand-file-name refbox-bibliography))
+
+(defun refbox--file-in-bibliography-roots-p (file)
+  "Return non-nil when FILE is inside a configured bibliography root."
+  (let ((file (expand-file-name file)))
+    (cl-some (lambda (root)
+               (file-in-directory-p file root))
+             (refbox--bibliography-roots))))
+
+(defun refbox--explicit-bibliography-file-p (file)
+  "Return non-nil when FILE is an explicit bibliography source."
+  (member (expand-file-name file) (refbox--explicit-bibliography-files)))
 
 (defun refbox--syncable-file-p (file)
   "Return non-nil when FILE is eligible for targeted autosync."
   (and file
        (not (auto-save-file-name-p file))
        (not (backup-file-name-p file))
-       (refbox--bibliography-extension-p file)
-       (refbox--file-in-bibliography-root-p file)))
+       (or (refbox--explicit-bibliography-file-p file)
+           (and (refbox--bibliography-extension-p file)
+                (refbox--file-in-bibliography-roots-p file)))))
 
 (defun refbox--syncable-buffer-p (&optional buffer)
   "Return non-nil when BUFFER visits a syncable bibliography file."
@@ -4794,8 +5026,9 @@ SOURCE-PATHS restricts searches to those bibliography source files."
   (interactive)
   (let* ((response (refbox-rpc-request refbox-rpc-method-ping))
          (version (plist-get response :version))
-         (root (plist-get response :root)))
-    (message "refbox %s at %s" version root)
+         (roots (length (plist-get response :roots)))
+         (files (length (plist-get response :files))))
+    (message "refbox %s: %s roots, %s explicit files" version roots files)
     response))
 
 ;;;###autoload

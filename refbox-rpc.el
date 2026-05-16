@@ -4,7 +4,7 @@
 
 ;; Author: Ayan Das <bvits@riseup.net>
 ;; Maintainer: Ayan Das <bvits@riseup.net>
-;; Version: 0.4.2
+;; Version: 0.4.8
 ;; Package-Requires: ((emacs "29.1") (jsonrpc "1.0.27"))
 ;; Keywords: bib, tex, files, convenience
 
@@ -30,6 +30,7 @@
 ;;; Code:
 
 (require 'jsonrpc)
+(require 'cl-lib)
 (require 'subr-x)
 
 (defgroup refbox nil
@@ -45,10 +46,8 @@
 (defcustom refbox-bibliography-roots nil
   "Bibliography root directories indexed by refbox.
 
-The first root is used when starting the current daemon.  Multiple
-roots are retained in configuration so later discovery surfaces can
-present the user's full bibliography policy without changing option
-names."
+Every root is sent to the daemon and participates in the derived
+index through the same discovery path."
   :type '(repeat directory)
   :group 'refbox)
 
@@ -127,21 +126,52 @@ so this timeout must allow legitimate one-time setup to finish."
 (defconst refbox-rpc-method-library-files-by-keys "refbox/libraryFilesByKeys")
 (defconst refbox-rpc-method-raw-entry "refbox/rawEntry")
 (defconst refbox-rpc-method-source-location "refbox/sourceLocation")
-(defconst refbox-rpc-method-format-references "refbox/formatReferences")
-
 (defun refbox-rpc-live-p ()
   "Return non-nil when the refbox JSON-RPC process is live."
   (and refbox--connection
        (jsonrpc-running-p refbox--connection)))
 
-(defun refbox-rpc--daemon-root ()
-  "Return the configured daemon root or signal a direct user error."
-  (unless refbox-bibliography-roots
-    (user-error "`refbox-bibliography-roots' must contain at least one directory"))
-  (let ((root (expand-file-name (car refbox-bibliography-roots))))
-    (unless (file-directory-p root)
-      (user-error "refbox bibliography root does not exist: %s" root))
-    (file-truename root)))
+(defun refbox-rpc--bibliography-roots ()
+  "Return configured bibliography roots for the daemon."
+  (let (roots)
+    (dolist (root refbox-bibliography-roots)
+      (let ((root (directory-file-name
+                   (file-name-as-directory (expand-file-name root)))))
+        (unless (file-directory-p root)
+          (user-error "refbox bibliography root does not exist: %s" root))
+        (push root roots)))
+    (delete-dups (nreverse roots))))
+
+(defun refbox-rpc--bibliography-files ()
+  "Return explicit bibliography files for the daemon."
+  (let (files)
+    (dolist (file refbox-bibliography)
+      (let ((file (expand-file-name file)))
+        (when (file-directory-p file)
+          (user-error "refbox bibliography file is a directory: %s" file))
+        (push file files)))
+    (delete-dups (nreverse files))))
+
+(defun refbox-rpc--bibliography-extensions (&optional required)
+  "Return normalized bibliography extensions for root discovery.
+
+When REQUIRED is non-nil, signal a direct user error if none are
+configured."
+  (let ((extensions
+         (cl-loop for extension in refbox-bibliography-extensions
+                  when (and (stringp extension)
+                            (not (string-empty-p extension)))
+                  collect (downcase (string-remove-prefix "." extension)))))
+    (when (and required (null extensions))
+      (user-error "`refbox-bibliography-extensions' must contain at least one extension"))
+    (delete-dups extensions)))
+
+(defun refbox-rpc--string-list (value option)
+  "Return VALUE as a list of strings for OPTION."
+  (dolist (item value)
+    (unless (stringp item)
+      (user-error "`%s' must contain only strings" option)))
+  value)
 
 (defun refbox-rpc--resolve-server-program ()
   "Return the executable path for `refbox-server-program'."
@@ -182,19 +212,44 @@ so this timeout must allow legitimate one-time setup to finish."
 
 (defun refbox-rpc--configuration ()
   "Return the connection-relevant refbox daemon configuration."
-  (list :program (refbox-rpc--resolve-server-program)
-        :root (refbox-rpc--daemon-root)
-        :db (refbox-rpc--database-file)))
+  (let ((roots (refbox-rpc--bibliography-roots))
+        (files (refbox-rpc--bibliography-files)))
+    (unless (or roots files)
+      (user-error "`refbox-bibliography-roots' or `refbox-bibliography' must configure a corpus"))
+    (list :program (refbox-rpc--resolve-server-program)
+          :db (refbox-rpc--database-file)
+          :roots roots
+          :files files
+          :extensions (refbox-rpc--bibliography-extensions roots)
+          :include-globs (refbox-rpc--string-list
+                          refbox-bibliography-include-globs
+                          "refbox-bibliography-include-globs")
+          :exclude-globs (refbox-rpc--string-list
+                          refbox-bibliography-exclude-globs
+                          "refbox-bibliography-exclude-globs")
+          :include-hidden (and refbox-bibliography-include-hidden t))))
 
 (defun refbox-rpc--command (&optional configuration)
   "Return the daemon command for CONFIGURATION.
 
 When CONFIGURATION is nil, validate and use the current user options."
   (let ((configuration (or configuration (refbox-rpc--configuration))))
-    (list (plist-get configuration :program)
-          "serve"
-          "--root" (plist-get configuration :root)
-          "--db" (plist-get configuration :db))))
+    (let ((command (list (plist-get configuration :program)
+                         "serve"
+                         "--db" (plist-get configuration :db))))
+      (dolist (root (plist-get configuration :roots))
+        (setq command (append command (list "--root" root))))
+      (dolist (file (plist-get configuration :files))
+        (setq command (append command (list "--file" file))))
+      (dolist (extension (plist-get configuration :extensions))
+        (setq command (append command (list "--extension" extension))))
+      (dolist (glob (plist-get configuration :include-globs))
+        (setq command (append command (list "--include-glob" glob))))
+      (dolist (glob (plist-get configuration :exclude-globs))
+        (setq command (append command (list "--exclude-glob" glob))))
+      (when (plist-get configuration :include-hidden)
+        (setq command (append command (list "--include-hidden"))))
+      command)))
 
 (defun refbox-rpc-shutdown ()
   "Stop the live refbox JSON-RPC connection, if any."

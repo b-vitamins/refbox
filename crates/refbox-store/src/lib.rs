@@ -11,7 +11,7 @@ use refbox_core::{
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use thiserror::Error;
 
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 const ENTRY_FTS_COLUMNS: &[&str] = &[
     "entry_key",
     "title",
@@ -117,6 +117,7 @@ pub struct SearchResult {
 #[derive(Debug, Clone, Copy)]
 pub struct SearchOptions<'a> {
     pub source_paths: &'a [String],
+    pub keys: &'a [String],
     pub resource_kinds: &'a [String],
     pub search_fields: &'a [String],
     pub allow_empty_query: bool,
@@ -127,6 +128,7 @@ impl Default for SearchOptions<'_> {
     fn default() -> Self {
         Self {
             source_paths: &[],
+            keys: &[],
             resource_kinds: &[],
             search_fields: &[],
             allow_empty_query: false,
@@ -349,6 +351,22 @@ impl RefboxStore {
         Ok(entries)
     }
 
+    pub fn entry_by_id(&self, id: i64) -> Result<Option<StoredEntry>> {
+        self.connection
+            .query_row(
+                "SELECT e.id, f.path, e.entry_key, e.entry_type,
+                        e.source_path, e.source_start_byte, e.source_start_line, e.source_start_column,
+                        e.source_end_byte, e.source_end_line, e.source_end_column
+                 FROM entries e
+                 JOIN files f ON f.id = e.file_id
+                 WHERE e.id = ?1",
+                params![id],
+                stored_entry_from_row,
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
     pub fn list_entries(&self, limit: usize, offset: usize) -> Result<Vec<StoredEntry>> {
         let limit = i64::try_from(limit).map_err(|_| StoreError::LimitOutOfRange(limit))?;
         let offset = i64::try_from(offset).map_err(|_| StoreError::LimitOutOfRange(offset))?;
@@ -499,7 +517,18 @@ impl RefboxStore {
             .map(|kind| kind.trim().to_ascii_lowercase())
             .filter(|kind| !kind.is_empty())
             .collect::<Vec<_>>();
-        if fts_query.is_none() && resource_kinds.is_empty() && !options.allow_empty_query {
+        let keys = options
+            .keys
+            .iter()
+            .map(|key| key.trim())
+            .filter(|key| !key.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        if fts_query.is_none()
+            && keys.is_empty()
+            && resource_kinds.is_empty()
+            && !options.allow_empty_query
+        {
             return Ok(Vec::new());
         }
         let source_paths = options
@@ -511,7 +540,11 @@ impl RefboxStore {
             .collect::<Vec<_>>();
 
         if let Some(fts_query) = &fts_query {
-            if options.ranked && source_paths.is_empty() && resource_kinds.is_empty() {
+            if options.ranked
+                && source_paths.is_empty()
+                && keys.is_empty()
+                && resource_kinds.is_empty()
+            {
                 let ranking_window = requested_limit.saturating_mul(16).max(1_000);
                 let ranking_window = i64::try_from(ranking_window)
                     .map_err(|_| StoreError::LimitOutOfRange(ranking_window))?;
@@ -578,6 +611,19 @@ impl RefboxStore {
             sql.push(')');
             for path in &source_paths {
                 parameters.push(path);
+                next_param += 1;
+            }
+        }
+        if !keys.is_empty() {
+            let placeholders = (0..keys.len())
+                .map(|index| format!("?{}", index + next_param))
+                .collect::<Vec<_>>()
+                .join(", ");
+            sql.push_str(" AND e.entry_key IN (");
+            sql.push_str(&placeholders);
+            sql.push(')');
+            for key in &keys {
+                parameters.push(key);
                 next_param += 1;
             }
         }
@@ -1010,6 +1056,8 @@ impl RefboxStore {
     }
 
     fn migrate(&mut self) -> Result<()> {
+        self.connection
+            .execute_batch("PRAGMA foreign_keys = OFF;")?;
         let tx = self.connection.transaction()?;
         tx.execute_batch(
             "CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1039,6 +1087,10 @@ impl RefboxStore {
 
         tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
         tx.commit()?;
+        self.connection.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             PRAGMA foreign_key_check;",
+        )?;
         Ok(())
     }
 
@@ -1108,6 +1160,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (5, MIGRATION_005),
     (6, MIGRATION_006),
     (7, MIGRATION_007),
+    (8, MIGRATION_008),
 ];
 
 const MIGRATION_001: &str = r#"
@@ -1128,8 +1181,7 @@ CREATE TABLE IF NOT EXISTS entries (
     source_start_column INTEGER NOT NULL,
     source_end_byte INTEGER NOT NULL,
     source_end_line INTEGER NOT NULL,
-    source_end_column INTEGER NOT NULL,
-    UNIQUE(file_id, entry_key)
+    source_end_column INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS fields (
@@ -1357,6 +1409,45 @@ FROM entry_fts;
 
 DROP TABLE entry_fts;
 ALTER TABLE entry_fts_v7 RENAME TO entry_fts;
+"#;
+
+const MIGRATION_008: &str = r#"
+DROP INDEX IF EXISTS entries_key_idx;
+DROP INDEX IF EXISTS entries_file_key_idx;
+DROP INDEX IF EXISTS entries_source_idx;
+
+CREATE TABLE entries_v8 (
+    id INTEGER PRIMARY KEY,
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    entry_key TEXT NOT NULL,
+    entry_type TEXT NOT NULL,
+    raw_text TEXT NOT NULL,
+    source_path TEXT NOT NULL,
+    source_start_byte INTEGER NOT NULL,
+    source_start_line INTEGER NOT NULL,
+    source_start_column INTEGER NOT NULL,
+    source_end_byte INTEGER NOT NULL,
+    source_end_line INTEGER NOT NULL,
+    source_end_column INTEGER NOT NULL
+);
+
+INSERT INTO entries_v8(
+    id, file_id, entry_key, entry_type, raw_text,
+    source_path, source_start_byte, source_start_line, source_start_column,
+    source_end_byte, source_end_line, source_end_column
+)
+SELECT
+    id, file_id, entry_key, entry_type, raw_text,
+    source_path, source_start_byte, source_start_line, source_start_column,
+    source_end_byte, source_end_line, source_end_column
+FROM entries;
+
+DROP TABLE entries;
+ALTER TABLE entries_v8 RENAME TO entries;
+
+CREATE INDEX IF NOT EXISTS entries_key_idx ON entries(entry_key);
+CREATE INDEX IF NOT EXISTS entries_file_key_idx ON entries(file_id, entry_key);
+CREATE INDEX IF NOT EXISTS entries_source_idx ON entries(source_path, source_start_line, source_start_column);
 "#;
 
 fn insert_file_rows(

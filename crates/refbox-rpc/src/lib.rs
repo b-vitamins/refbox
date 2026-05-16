@@ -20,7 +20,6 @@ pub const METHOD_RESOLVE_FILES: &str = "refbox/resolveFiles";
 pub const METHOD_LIBRARY_FILES_BY_KEYS: &str = "refbox/libraryFilesByKeys";
 pub const METHOD_RAW_ENTRY: &str = "refbox/rawEntry";
 pub const METHOD_SOURCE_LOCATION: &str = "refbox/sourceLocation";
-pub const METHOD_FORMAT_REFERENCES: &str = "refbox/formatReferences";
 pub const METHOD_DIAGNOSTICS: &str = "refbox/diagnostics";
 pub const METHOD_DUPLICATE_GROUPS: &str = "refbox/duplicateGroups";
 
@@ -143,7 +142,8 @@ pub struct EmptyParams {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusResponse {
-    pub root: String,
+    pub roots: Vec<String>,
+    pub files: Vec<String>,
     pub db: String,
     pub schema_version: i64,
     pub counts: IndexStoreCounts,
@@ -181,6 +181,7 @@ pub struct SearchEntriesRequest {
     pub query: String,
     pub limit: Option<usize>,
     pub source_paths: Option<Vec<String>>,
+    pub keys: Option<Vec<String>>,
     pub resource_kinds: Option<Vec<String>>,
     pub search_fields: Option<Vec<String>>,
     pub field_names: Option<Vec<String>>,
@@ -205,6 +206,7 @@ pub struct ListEntriesRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EntrySearchItem {
+    pub id: i64,
     pub key: String,
     pub source_path: String,
     pub entry_type: String,
@@ -233,6 +235,7 @@ pub struct EntryFieldItem {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntryByKeyRequest {
+    pub id: Option<i64>,
     pub key: String,
     pub source_path: Option<String>,
 }
@@ -250,6 +253,7 @@ pub struct EntriesResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourcesByKeyRequest {
+    pub id: Option<i64>,
     pub key: String,
     pub source_path: Option<String>,
     pub include_crossrefs: Option<bool>,
@@ -317,6 +321,7 @@ pub struct EntryItem {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RawEntryRequest {
+    pub id: Option<i64>,
     pub key: String,
     pub source_path: Option<String>,
 }
@@ -330,6 +335,7 @@ pub struct RawEntryResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceLocationRequest {
+    pub id: Option<i64>,
     pub key: String,
     pub source_path: Option<String>,
 }
@@ -339,25 +345,6 @@ pub struct SourceLocationResponse {
     pub key: String,
     pub source_path: String,
     pub source: SourceSpan,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FormatReferencesRequest {
-    pub keys: Vec<String>,
-    pub style_path: Option<String>,
-    pub locale_path: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FormatReferencesResponse {
-    pub references: Vec<FormattedReferenceItem>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FormattedReferenceItem {
-    pub key: String,
-    pub source_path: String,
-    pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
