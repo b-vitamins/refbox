@@ -339,6 +339,7 @@ citation formatter."
       ('citation-reference (org-element-parent context))
       (_ nil))))
 
+;;;###autoload
 (defun refbox-org-citation-at-point (&optional datum)
   "Return Org citation keys at point with their bounds."
   (when-let ((citation (refbox-org--citation-at-point datum)))
@@ -352,6 +353,7 @@ citation formatter."
           (cons (org-element-begin reference)
                 (org-element-end reference)))))
 
+;;;###autoload
 (defun refbox-org-key-at-point (&optional datum)
   "Return the Org citation key at point with its bounds."
   (or (refbox-org--reference-key-and-bounds-at-point datum)
@@ -539,6 +541,7 @@ DIRECTION is -1 for left and 1 for right."
   (interactive)
   (refbox-org--shift-reference 1))
 
+;;;###autoload
 (defun refbox-org-follow (datum arg)
   "Follow Org citation DATUM with ARG."
   (interactive (list (org-element-context) current-prefix-arg))
@@ -700,6 +703,7 @@ DIRECTION is -1 for left and 1 for right."
        face refbox-org-highlight
        help-echo "refbox Org citation"))))
 
+;;;###autoload
 (defun refbox-org-activate (citation)
   "Activate Org CITATION with configured refbox activation functions."
   (dolist (function refbox-org-activation-functions)

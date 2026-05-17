@@ -351,58 +351,7 @@ long-form tags used by commands and indicator definitions."
   :type '(alist :key-type string :value-type string)
   :group 'refbox)
 
-(defcustom refbox-reference-resource-indicator "F"
-  "Indicator used when a reference has local resource fields."
-  :type 'string
-  :group 'refbox)
-
-(defcustom refbox-reference-link-indicator "L"
-  "Indicator used when a reference has external link fields."
-  :type 'string
-  :group 'refbox)
-
-(defcustom refbox-reference-note-indicator "N"
-  "Indicator used when `refbox-reference-note-predicate' matches."
-  :type 'string
-  :group 'refbox)
-
-(defcustom refbox-reference-cited-indicator "C"
-  "Indicator used when `refbox-reference-cited-predicate' matches."
-  :type 'string
-  :group 'refbox)
-
-(defcustom refbox-reference-resource-field-names '("file")
-  "Field names treated as local resource fields for candidate indicators."
-  :type '(repeat string)
-  :group 'refbox)
-
-(defcustom refbox-reference-note-predicate #'refbox-reference-has-notes-p
-  "Function called with a candidate to decide whether it has a note."
-  :type '(choice (const :tag "Disabled" nil) function)
-  :group 'refbox)
-
-(defcustom refbox-reference-cited-predicate
-  #'refbox-reference-cited-in-current-buffer-p
-  "Function called with a candidate to decide whether it is cited."
-  :type '(choice (const :tag "Disabled" nil) function)
-  :group 'refbox)
-
-(defcustom refbox-symbols
-  '((file . ("F" . " "))
-    (note . ("N" . " "))
-    (link . ("L" . " ")))
-  "Alist of simple present/absent symbols for file, note, and link indicators."
-  :type '(alist :key-type symbol
-                :value-type (cons (string :tag "Present")
-                                  (string :tag "Absent"))
-                :options (file note link))
-  :group 'refbox)
-
-(defcustom refbox-symbol-separator " "
-  "Padding inserted between simple indicator symbols."
-  :type 'string
-  :group 'refbox)
-
+;;;###autoload
 (cl-defstruct
     (refbox-indicator (:constructor refbox-indicator-create)
                       (:copier nil))
@@ -416,28 +365,28 @@ long-form tags used by commands and indicator definitions."
 
 (defvar refbox-indicator-files
   (refbox-indicator-create
-   :symbol refbox-reference-resource-indicator
+   :symbol "F"
    :function #'refbox-has-files
    :tag "has:files")
   "Default indicator for references with files.")
 
 (defvar refbox-indicator-links
   (refbox-indicator-create
-   :symbol refbox-reference-link-indicator
+   :symbol "L"
    :function #'refbox-has-links
    :tag "has:links")
   "Default indicator for references with links.")
 
 (defvar refbox-indicator-notes
   (refbox-indicator-create
-   :symbol refbox-reference-note-indicator
+   :symbol "N"
    :function #'refbox-has-notes
    :tag "has:notes")
   "Default indicator for references with notes.")
 
 (defvar refbox-indicator-cited
   (refbox-indicator-create
-   :symbol refbox-reference-cited-indicator
+   :symbol "C"
    :function #'refbox-is-cited
    :tag "is:cited")
   "Default indicator for references cited in the current buffer.")
@@ -467,20 +416,12 @@ accepting a reference key or candidate."
   (cons `(refbox-reference (styles ,@refbox-completion-category-styles))
         (cl-remove 'refbox-reference completion-category-defaults :key #'car)))
 
-(defcustom refbox-crossref-field-names '("crossref")
-  "Field names whose values name parent references.
-
-Parent keys are used when resolving local file and note resources
-that are discovered from configured directories rather than
-returned directly by the daemon."
-  :type '(repeat string)
-  :group 'refbox)
-
 (defcustom refbox-crossref-variable "crossref"
   "Primary field name whose value names a parent reference.
 
-When non-nil, this field is included with `refbox-crossref-field-names'
-while resolving related local files and notes."
+Parent keys are used when resolving local file and note resources
+discovered from configured directories and when inheriting indexed
+resources from parent entries."
   :type '(choice (const :tag "Disabled" nil) string)
   :group 'refbox)
 
@@ -507,11 +448,6 @@ When nil, associated file lookup does not filter by extension."
   :type 'string
   :group 'refbox)
 
-(defcustom refbox-resource-file-field-names '("file")
-  "Indexed field names treated as file-resource fields."
-  :type '(repeat string)
-  :group 'refbox)
-
 (defcustom refbox-file-parser-functions
   '(refbox-resource-parse-file-field-default
     refbox-resource-parse-file-field-triplet)
@@ -520,11 +456,9 @@ When nil, associated file lookup does not filter by extension."
   :group 'refbox)
 
 (defconst refbox--default-file-sources
-  '((indexed-fields
-     :items refbox-resource-file-source-indexed-items
+  '((:items refbox-resource-file-source-indexed-items
      :hasitems refbox-resource-file-source-indexed-has-items)
-    (library-paths
-     :items refbox-resource-file-source-library-items
+    (:items refbox-resource-file-source-library-items
      :hasitems refbox-resource-file-source-library-has-items))
   "Default sources used to discover files associated with references.")
 
@@ -532,14 +466,13 @@ When nil, associated file lookup does not filter by extension."
   refbox--default-file-sources
   "Sources used to discover files associated with references.
 
-Each source is an alist entry of the form (NAME . PLIST).  NAME
-is a symbol identifying the source.  PLIST recognizes `:items'
-and optional `:hasitems'.  Both functions receive CANDIDATE and
-RESOURCES, where RESOURCES are the indexed resources already
-loaded for CANDIDATE.  `:items' returns existing file names;
-`:hasitems' should return non-nil when the source can report a
-file association more cheaply than materializing all items."
-  :type 'alist
+Each source is a plist recognizing `:items' and optional
+`:hasitems'.  Both functions receive CANDIDATE and RESOURCES,
+where RESOURCES are the indexed resources already loaded for
+CANDIDATE.  `:items' returns existing file names; `:hasitems'
+should return non-nil when the source can report a file
+association more cheaply than materializing all items."
+  :type '(repeat (plist :value-type function :options (:items :hasitems)))
   :group 'refbox)
 
 (defcustom refbox-file-additional-files-separator nil
@@ -689,13 +622,13 @@ source with `refbox-register-notes-source'."
   :group 'refbox)
 
 (defcustom refbox-citeproc-csl-styles-dir nil
-  "Directories containing CSL style files."
-  :type '(repeat directory)
+  "Directory containing CSL style files."
+  :type 'directory
   :group 'refbox)
 
 (defcustom refbox-citeproc-csl-locales-dir nil
-  "Directories containing CSL locale files."
-  :type '(repeat directory)
+  "Directory containing CSL locale files."
+  :type 'directory
   :group 'refbox)
 
 (defcustom refbox-citeproc-csl-style nil
@@ -964,20 +897,13 @@ candidate and exits the selector.")
 
 (defun refbox--crossref-field-names ()
   "Return field names used for parent reference keys."
-  (delete-dups
-   (cl-remove-if
-    #'refbox--blank-string-p
-    (append refbox-crossref-field-names
-            (list refbox-crossref-variable)))))
+  (unless (refbox--blank-string-p refbox-crossref-variable)
+    (list refbox-crossref-variable)))
 
 (defun refbox--file-field-names ()
   "Return field names used for local file declarations."
-  (delete-dups
-   (cl-remove-if
-    #'refbox--blank-string-p
-    (append refbox-resource-file-field-names
-            refbox-reference-resource-field-names
-            (list refbox-file-variable)))))
+  (unless (refbox--blank-string-p refbox-file-variable)
+    (list refbox-file-variable)))
 
 (defun refbox-reference-field (candidate field)
   "Return FIELD from CANDIDATE.
@@ -1195,8 +1121,7 @@ reference key string."
 The returned function accepts either an indexed candidate plist or a
 reference key string."
   (lambda (reference)
-    (when refbox-reference-note-predicate
-      (funcall refbox-reference-note-predicate reference))))
+    (refbox-reference-has-notes-p reference)))
 
 (defun refbox-is-cited ()
   "Return a predicate matching references cited in the current buffer.
@@ -1204,8 +1129,7 @@ reference key string."
 The returned function accepts either an indexed candidate plist or a
 reference key string."
   (lambda (reference)
-    (when refbox-reference-cited-predicate
-      (funcall refbox-reference-cited-predicate reference))))
+    (refbox-reference-cited-in-current-buffer-p reference)))
 
 (defun refbox--citation-buffer ()
   "Return the buffer whose citation context should be inspected."
@@ -1229,8 +1153,8 @@ reference key string."
   "Return source arguments with current-buffer local bibliographies applied.
 
 When callers do not provide SOURCE-PATHS or INCLUDE-CONFIGURED-SOURCES,
-use the Citar-style current-buffer bibliography context: local files for
-the buffer plus the configured corpus."
+use the current-buffer bibliography context: local files for the buffer
+plus the configured corpus."
   (if (or source-paths include-configured-sources)
       (list source-paths include-configured-sources)
     (let ((local-source-paths
@@ -1259,7 +1183,9 @@ the buffer plus the configured corpus."
 
 (defun refbox-reference-cited-in-current-buffer-p (candidate)
   "Return non-nil when CANDIDATE's key appears in the current buffer."
-  (let ((key (refbox-reference-field candidate "key")))
+  (let ((key (if (stringp candidate)
+                 candidate
+               (refbox-reference-field candidate "key"))))
     (and (not (refbox--blank-string-p key))
          (if refbox--dynamic-cache
              (gethash key (refbox--current-citation-key-table))
@@ -1271,11 +1197,6 @@ the buffer plus the configured corpus."
                         (widen)
                         (goto-char (point-min))
                         (search-forward key nil t))))))))))
-
-(defun refbox--predicate-matches-p (predicate candidate)
-  "Return non-nil when PREDICATE matches CANDIDATE."
-  (and predicate
-       (funcall predicate candidate)))
 
 (defun refbox--indicator-predicate (indicator)
   "Return INDICATOR's cached predicate."
@@ -1350,12 +1271,7 @@ the buffer plus the configured corpus."
               (cl-some (lambda (kind) (member kind resource-kinds))
                        link-fields)
             (refbox-reference-has-links-p candidate)))
-         (has-notes
-          (and refbox-reference-note-predicate
-               (or refbox-notes-paths
-                   (not (eq refbox-reference-note-predicate
-                            #'refbox-reference-has-notes-p)))
-               (funcall refbox-reference-note-predicate candidate))))
+         (has-notes (refbox-reference-has-notes-p candidate)))
     (refbox--finalize-indicator-text
      (concat
       (refbox--indicator-chunk refbox-indicator-links has-links)
@@ -1363,8 +1279,7 @@ the buffer plus the configured corpus."
       (refbox--indicator-chunk refbox-indicator-notes has-notes)
       (refbox--indicator-chunk
        refbox-indicator-cited
-       (and refbox-reference-cited-predicate
-            (funcall refbox-reference-cited-predicate candidate)))))))
+       (refbox-reference-cited-in-current-buffer-p candidate))))))
 
 (defun refbox-template-clean (value)
   "Return VALUE with common BibTeX wrapping and whitespace cleaned."
@@ -1846,9 +1761,9 @@ direct function transform."
   "Return non-nil when CANDIDATE matches search TAG."
   (pcase tag
     ((or "has:note" "has:notes")
-     (refbox--predicate-matches-p refbox-reference-note-predicate candidate))
+     (refbox-reference-has-notes-p candidate))
     ("is:cited"
-     (refbox--predicate-matches-p refbox-reference-cited-predicate candidate))
+     (refbox-reference-cited-in-current-buffer-p candidate))
     (_ t)))
 
 (defun refbox-search--post-filter (entries tags limit)
@@ -1919,14 +1834,9 @@ direct function transform."
   "Return key filter for TAG, or `unknown' when TAG needs post-filtering."
   (pcase tag
     ((or "has:note" "has:notes")
-     (if (eq refbox-reference-note-predicate #'refbox-reference-has-notes-p)
-         (refbox-note-source-key-list)
-       'unknown))
+     (refbox-note-source-key-list))
     ("is:cited"
-     (if (eq refbox-reference-cited-predicate
-             #'refbox-reference-cited-in-current-buffer-p)
-         (refbox--current-citation-keys)
-       'unknown))
+     (refbox--current-citation-keys))
     (_ 'unknown)))
 
 (defun refbox-search--post-filter-plan (tags)
@@ -2354,7 +2264,7 @@ whose cdr is passed as additional arguments."
          (t string)))))))
 
 (defun refbox-capf--candidate-annotation (candidate)
-  "Return Citar-style CAPF annotation text for CANDIDATE."
+  "Return concise CAPF annotation text for CANDIDATE."
   (let* ((author (refbox-reference-field candidate "author"))
          (editor (refbox-reference-field candidate "editor"))
          (title (refbox-reference-field candidate "title")))
@@ -2517,7 +2427,7 @@ whose cdr is passed as additional arguments."
   "Return normalized EXTENSIONS."
   (mapcar (lambda (extension)
             (downcase (string-remove-prefix "." extension)))
-          extensions))
+          (refbox--string-list extensions "extensions")))
 
 (defun refbox-resource--extension-allowed-p (file extensions)
   "Return non-nil when FILE has an accepted extension."
@@ -2546,11 +2456,12 @@ whose cdr is passed as additional arguments."
 
 (defun refbox-resource--directory-list (dirs recursive)
   "Return existing DIRS, optionally including recursive subdirectories."
-  (refbox--dynamic-cache-get
-   'resource-directories
-   (list (mapcar #'expand-file-name dirs) recursive)
-   (lambda ()
-     (refbox-resource--directory-list-uncached dirs recursive))))
+  (let ((dirs (refbox--string-list dirs "directories")))
+    (refbox--dynamic-cache-get
+     'resource-directories
+     (list (mapcar #'expand-file-name dirs) recursive)
+     (lambda ()
+       (refbox-resource--directory-list-uncached dirs recursive)))))
 
 (defun refbox-resource--library-dirs ()
   "Return configured library directories."
@@ -2636,7 +2547,7 @@ whose cdr is passed as additional arguments."
                    (let ((root (file-name-as-directory
                                 (expand-file-name root))))
                      (and (file-directory-p root) root)))
-                 roots))))
+                 (refbox--string-list roots "roots")))))
 
 (defun refbox-resource--file-index-key (roots recursive extensions)
   "Return the cache key for a ROOTS file index."
@@ -2793,26 +2704,29 @@ materialization from an indicator path."
 (defun refbox-resource--cheap-file-lookup-available-p
     (roots recursive extensions additional-sep)
   "Return non-nil when cheap key lookup can use ROOTS without materializing."
-  (refbox--dynamic-cache-get
-   'resource-cheap-file-lookup-available
-   (list (mapcar #'expand-file-name roots) recursive extensions additional-sep)
-   (lambda ()
-     (let* ((key (refbox-resource--file-index-key roots recursive extensions))
-            (normalized-roots (nth 0 key))
-            (normalized-extensions (nth 2 key)))
-       (and normalized-roots
-            (or (and (not recursive)
-                     normalized-extensions
-                     (not additional-sep))
-                (not (eq (refbox--dynamic-cache-value
-                          'resource-file-index key)
-                         refbox--cache-miss))))))))
+  (pcase-let ((`(,_keys ,roots ,extensions)
+               (refbox-resource--normalize-file-search nil roots extensions)))
+    (refbox--dynamic-cache-get
+     'resource-cheap-file-lookup-available
+     (list roots recursive extensions additional-sep)
+     (lambda ()
+       (let ((key (list roots recursive extensions)))
+         (and roots
+              (or (and (not recursive)
+                       extensions
+                       (not additional-sep))
+                  (not (eq (refbox--dynamic-cache-value
+                            'resource-file-index key)
+                           refbox--cache-miss)))))))))
 
 (defun refbox-resource-file-source--plist (source)
   "Return the plist for file SOURCE."
-  (unless (and (consp source) (symbolp (car source)) (listp (cdr source)))
+  (unless (and (proper-list-p source)
+               (cl-evenp (length source))
+               (cl-loop for (key _value) on source by #'cddr
+                        always (keywordp key)))
     (user-error "Invalid refbox file source: %S" source))
-  (cdr source))
+  source)
 
 (defun refbox-resource-file-source--function (source property &optional required)
   "Return SOURCE function PROPERTY.
@@ -2824,9 +2738,7 @@ callable."
     (cond
      ((functionp function) function)
      (required
-      (user-error "refbox file source %s has no callable %s"
-                  (car source)
-                  property))
+      (user-error "refbox file source has no callable %s" property))
      (t nil))))
 
 (defun refbox-resource-file-source-indexed-items (candidate resources)
@@ -2995,17 +2907,24 @@ callable."
   "Return the existing or default note filename for KEY."
   (when (refbox--blank-string-p key)
     (user-error "Reference candidate has no key"))
-  (unless refbox-notes-paths
-    (user-error "`refbox-notes-paths' must contain at least one directory"))
-  (unless refbox-file-note-extensions
-    (user-error "`refbox-file-note-extensions' must contain at least one extension"))
-  (or (car (refbox-note-files key))
-      (expand-file-name
-       (format "%s.%s"
-               key
-               (string-remove-prefix "." (car refbox-file-note-extensions)))
-       (car refbox-notes-paths))))
+  (let ((notes-paths (refbox--string-list
+                      refbox-notes-paths
+                      "refbox-notes-paths"))
+        (note-extensions (refbox--string-list
+                          refbox-file-note-extensions
+                          "refbox-file-note-extensions")))
+    (unless notes-paths
+      (user-error "`refbox-notes-paths' must contain at least one directory"))
+    (unless note-extensions
+      (user-error "`refbox-file-note-extensions' must contain at least one extension"))
+    (or (car (refbox-note-files key))
+        (expand-file-name
+         (format "%s.%s"
+                 key
+                 (string-remove-prefix "." (car note-extensions)))
+         (car notes-paths)))))
 
+;;;###autoload
 (defun refbox-org-format-note-default (key candidate)
   "Insert default Org note content for KEY and CANDIDATE."
   (let ((title (string-trim (refbox-reference-format-note candidate))))
@@ -3323,7 +3242,7 @@ EMPTY-MESSAGE, when non-nil, is displayed when CHOICES is empty."
     (_ nil)))
 
 (defun refbox--resource-choice-display (choice label)
-  "Return Citar-style display text for resource CHOICE with LABEL."
+  "Return display text for resource CHOICE with LABEL."
   (pcase (plist-get choice :type)
     ('file (file-name-nondirectory (plist-get choice :target)))
     ('link (plist-get choice :target))
@@ -4131,10 +4050,10 @@ report if the effective limit is invalid."
                  :test #'equal)))
 
 (defun refbox--context-candidate-for-key (key candidates source-paths)
-  "Return the Citar-style candidate for KEY from CANDIDATES.
+  "Return the contextual candidate for KEY from CANDIDATES.
 
 Candidates from current-buffer SOURCE-PATHS take priority over configured
-corpus candidates, matching Citar's local-bibliography precedence."
+corpus candidates."
   (let (selected selected-rank fallback)
     (dolist (candidate candidates)
       (when (equal (refbox--reference-key candidate) key)
@@ -4310,7 +4229,7 @@ key-shaped daemon requests for raw/source/resource commands."
       (string-trim-right (buffer-string)))))
 
 (defun refbox--bibtex-export-text (references)
-  "Return Citar-style BibTeX export text for REFERENCES."
+  "Return BibTeX export text for REFERENCES."
   (if references
       (concat
        (string-join
@@ -4487,9 +4406,13 @@ passed to the adapter command."
 (defun refbox--local-bibliography-extension ()
   "Return the preferred extension for a generated local bibliography."
   (let ((extension
-         (or (when-let ((file (car refbox-bibliography)))
+         (or (when-let ((file (car (refbox--string-list
+                                    refbox-bibliography
+                                    "refbox-bibliography"))))
                (file-name-extension file))
-             (car refbox-bibliography-extensions)
+             (car (refbox--string-list
+                   refbox-bibliography-extensions
+                   "refbox-bibliography-extensions"))
              "bib")))
     (if (refbox--blank-string-p extension)
         "bib"
@@ -4508,9 +4431,14 @@ passed to the adapter command."
                        default-directory)))))
     (refbox-export-bibliography file)))
 
-(defun refbox-csl--directories (dirs)
-  "Return existing CSL DIRS."
-  (refbox-resource--directory-list dirs nil))
+(defun refbox-csl--directories (dir)
+  "Return existing CSL directories for configured DIR plus Org fallback."
+  (refbox-resource--directory-list
+   (append
+    (unless (refbox--blank-string-p dir)
+      (list dir))
+    (refbox-csl--fallback-directories))
+   nil))
 
 (defun refbox-csl--fallback-directories ()
   "Return Org-provided fallback CSL directories when available."
@@ -4531,9 +4459,7 @@ passed to the adapter command."
              (cl-remove-if-not
               #'refbox-csl--readable-file-p
               (directory-files dir t "\\.csl\\'")))
-           (refbox-csl--directories
-            (append refbox-citeproc-csl-styles-dir
-                    (refbox-csl--fallback-directories))))))
+           (refbox-csl--directories refbox-citeproc-csl-styles-dir))))
 
 (defun refbox-csl--locale-files ()
   "Return configured CSL locale files."
@@ -4543,9 +4469,7 @@ passed to the adapter command."
              (cl-remove-if-not
               #'refbox-csl--readable-file-p
               (directory-files dir t "\\.xml\\'")))
-           (refbox-csl--directories
-            (append refbox-citeproc-csl-locales-dir
-                    (refbox-csl--fallback-directories))))))
+           (refbox-csl--directories refbox-citeproc-csl-locales-dir))))
 
 (defun refbox-csl--node-children (node)
   "Return XML NODE children."
@@ -4745,6 +4669,7 @@ STYLE, when non-nil, overrides `refbox-citeproc-csl-style'."
                          (citeproc-render-bib processor 'plain)))))
             references))))))
 
+;;;###autoload
 (defun refbox-citeproc-format-reference (references &optional style)
   "Return CSL-formatted reference text for REFERENCES.
 
@@ -4791,19 +4716,22 @@ STYLE, when non-nil, overrides `refbox-citeproc-csl-style'."
 
 (defun refbox-library--primary-directory ()
   "Return a library destination directory, creating it if needed."
-  (unless refbox-library-paths
-    (user-error "`refbox-library-paths' must contain at least one directory"))
-  (dolist (directory refbox-library-paths)
-    (make-directory (file-name-as-directory (expand-file-name directory)) t))
-  (let* ((directories (refbox-resource--directory-list refbox-library-paths nil))
-         (directory (if (cdr directories)
-                        (completing-read "Directory: "
-                                         directories
-                                         nil
-                                         t)
-                      (car directories))))
-    (make-directory directory t)
-    (file-name-as-directory (expand-file-name directory))))
+  (let ((library-paths (refbox--string-list
+                        refbox-library-paths
+                        "refbox-library-paths")))
+    (unless library-paths
+      (user-error "`refbox-library-paths' must contain at least one directory"))
+    (dolist (directory library-paths)
+      (make-directory (file-name-as-directory (expand-file-name directory)) t))
+    (let* ((directories (refbox-resource--directory-list library-paths nil))
+           (directory (if (cdr directories)
+                          (completing-read "Directory: "
+                                           directories
+                                           nil
+                                           t)
+                        (car directories))))
+      (make-directory directory t)
+      (file-name-as-directory (expand-file-name directory)))))
 
 (defun refbox-library-destination-file (reference extension)
   "Return destination library file for REFERENCE and EXTENSION."
@@ -4827,9 +4755,8 @@ STYLE, when non-nil, overrides `refbox-citeproc-csl-style'."
 (defun refbox-library--write-buffer (buffer destination overwrite)
   "Write BUFFER to DESTINATION.
 
-When DESTINATION is BUFFER's visited file, follow Citar's
-buffer-source behavior: unchanged buffers report that no copy is
-needed, while modified buffers save the visited file after any
+When DESTINATION is BUFFER's visited file, unchanged buffers report that
+no copy is needed, while modified buffers save the visited file after any
 required overwrite confirmation."
   (with-current-buffer buffer
     (if (and buffer-file-name
@@ -5044,7 +4971,6 @@ asks before replacing an existing file."
 (defun refbox--completion-preload-candidates (candidates)
   "Preload optional per-page metadata for completion CANDIDATES."
   (when (and candidates
-             refbox-reference-note-predicate
              (cl-some (lambda (indicator)
                         (eq (refbox-indicator-function indicator)
                             #'refbox-has-notes))
@@ -5277,7 +5203,7 @@ decoration."
       (error nil))))
 
 (defun refbox--multiple-selection-prompt (prompt selected total)
-  "Return Citar-style multi-selection PROMPT for SELECTED and TOTAL."
+  "Return multi-selection PROMPT for SELECTED and TOTAL."
   (format "%s (%s/%s): "
           prompt
           (hash-table-count selected)
@@ -5365,7 +5291,9 @@ INCLUDE-CONFIGURED-SOURCES control completion and validation."
 
 (defun refbox--normalized-bibliography-extensions ()
   "Return normalized bibliography extensions accepted by refbox."
-  (cl-loop for extension in refbox-bibliography-extensions
+  (cl-loop for extension in (refbox--string-list
+                             refbox-bibliography-extensions
+                             "refbox-bibliography-extensions")
            when (and (stringp extension)
                      (not (string-empty-p extension)))
            collect (downcase (string-remove-prefix "." extension))))
@@ -5378,14 +5306,17 @@ INCLUDE-CONFIGURED-SOURCES control completion and validation."
 
 (defun refbox--bibliography-roots ()
   "Return configured bibliography root directories."
-  (cl-loop for root in refbox-bibliography-roots
+  (cl-loop for root in (refbox--string-list
+                        refbox-bibliography-roots
+                        "refbox-bibliography-roots")
            for expanded = (file-name-as-directory (expand-file-name root))
            when (file-directory-p expanded)
            collect expanded))
 
 (defun refbox--explicit-bibliography-files ()
   "Return configured explicit bibliography files."
-  (mapcar #'expand-file-name refbox-bibliography))
+  (mapcar #'expand-file-name
+          (refbox--string-list refbox-bibliography "refbox-bibliography")))
 
 (defun refbox--file-in-bibliography-roots-p (file)
   "Return non-nil when FILE is inside a configured bibliography root."

@@ -134,10 +134,27 @@ so this timeout must allow legitimate one-time setup to finish."
   (and refbox--connection
        (jsonrpc-running-p refbox--connection)))
 
+(defun refbox--string-list (value option)
+  "Return VALUE as a list of strings for OPTION.
+
+Nil means an empty list.  A single string is treated as one path-like item."
+  (let ((items (cond
+                ((null value) nil)
+                ((stringp value) (list value))
+                ((listp value) value)
+                (t (user-error "`%s' must be a string or a list of strings"
+                               option)))))
+    (dolist (item items)
+      (unless (stringp item)
+        (user-error "`%s' must contain only strings" option)))
+    items))
+
 (defun refbox-rpc--bibliography-roots ()
   "Return configured bibliography roots for the daemon."
   (let (roots)
-    (dolist (root refbox-bibliography-roots)
+    (dolist (root (refbox--string-list
+                   refbox-bibliography-roots
+                   "refbox-bibliography-roots"))
       (let ((root (directory-file-name
                    (file-name-as-directory (expand-file-name root)))))
         (unless (file-directory-p root)
@@ -148,7 +165,9 @@ so this timeout must allow legitimate one-time setup to finish."
 (defun refbox-rpc--bibliography-files ()
   "Return explicit bibliography files for the daemon."
   (let (files)
-    (dolist (file refbox-bibliography)
+    (dolist (file (refbox--string-list
+                   refbox-bibliography
+                   "refbox-bibliography"))
       (let ((file (expand-file-name file)))
         (when (file-directory-p file)
           (user-error "refbox bibliography file is a directory: %s" file))
@@ -161,20 +180,15 @@ so this timeout must allow legitimate one-time setup to finish."
 When REQUIRED is non-nil, signal a direct user error if none are
 configured."
   (let ((extensions
-         (cl-loop for extension in refbox-bibliography-extensions
+         (cl-loop for extension in (refbox--string-list
+                                    refbox-bibliography-extensions
+                                    "refbox-bibliography-extensions")
                   when (and (stringp extension)
                             (not (string-empty-p extension)))
                   collect (downcase (string-remove-prefix "." extension)))))
     (when (and required (null extensions))
       (user-error "`refbox-bibliography-extensions' must contain at least one extension"))
     (delete-dups extensions)))
-
-(defun refbox-rpc--string-list (value option)
-  "Return VALUE as a list of strings for OPTION."
-  (dolist (item value)
-    (unless (stringp item)
-      (user-error "`%s' must contain only strings" option)))
-  value)
 
 (defun refbox-rpc--resolve-server-program ()
   "Return the executable path for `refbox-server-program'."
@@ -224,10 +238,10 @@ configured."
           :roots roots
           :files files
           :extensions (refbox-rpc--bibliography-extensions roots)
-          :include-globs (refbox-rpc--string-list
+          :include-globs (refbox--string-list
                           refbox-bibliography-include-globs
                           "refbox-bibliography-include-globs")
-          :exclude-globs (refbox-rpc--string-list
+          :exclude-globs (refbox--string-list
                           refbox-bibliography-exclude-globs
                           "refbox-bibliography-exclude-globs")
           :include-hidden (and refbox-bibliography-include-hidden t))))

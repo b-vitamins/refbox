@@ -31,8 +31,8 @@
 ;;   [@key; @other]
 ;;   [see @key pp. 10-12]
 ;;
-;; `refbox-markdown-insert-key' inserts a bare `@key'.  The citation command
-;; inserts or replaces one bracketed citation at point.
+;; `refbox-markdown-insert-keys' inserts bare `@key' references.  The citation
+;; command inserts or replaces one bracketed citation at point.
 
 ;;; Code:
 
@@ -74,11 +74,6 @@ Captures the actual key in group 1.")
             (or (plist-get candidate :key)
                 (user-error "refbox candidate has no key")))
           (refbox-read-references "References: ")))
-
-(defun refbox-markdown--selected-key ()
-  "Read one reference key for Markdown."
-  (or (plist-get (refbox-read-reference "Reference: ") :key)
-      (user-error "refbox candidate has no key")))
 
 (defun refbox-markdown--read-affixes (&optional invert-prompt)
   "Read or return configured Markdown citation affixes."
@@ -176,6 +171,7 @@ Captures the actual key in group 1.")
                                :body-end body-end
                                :keys (refbox-markdown--keys-in-string body))))))))))))
 
+;;;###autoload
 (defun refbox-markdown-citation-at-point ()
   "Return Markdown citation keys at point with their bounds."
   (when-let ((citation (refbox-markdown--citation-at-point)))
@@ -215,6 +211,7 @@ Captures the actual key in group 1.")
                                 (match-end 0))))))
          nil)))))
 
+;;;###autoload
 (defun refbox-markdown-key-at-point ()
   "Return the Markdown citation key at point with its bounds."
   (refbox-markdown--key-and-bounds-at-point))
@@ -242,12 +239,6 @@ Captures the actual key in group 1.")
             #'refbox-markdown-completion-at-point
             nil
             t))
-
-;;;###autoload
-(defun refbox-markdown-insert-key ()
-  "Insert a bare Pandoc Markdown citation key at point."
-  (interactive)
-  (insert "@" (refbox-markdown--selected-key)))
 
 ;;;###autoload
 (defun refbox-markdown-insert-keys (keys)

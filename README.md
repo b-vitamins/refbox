@@ -67,8 +67,8 @@ Useful resource, note, and formatting options:
 (setq refbox-notes-paths '("~/notes/references"))
 
 ;; Optional CSL formatting through citeproc.
-(setq refbox-citeproc-csl-styles-dir '("~/csl/styles"))
-(setq refbox-citeproc-csl-locales-dir '("~/csl/locales"))
+(setq refbox-citeproc-csl-styles-dir "~/csl/styles")
+(setq refbox-citeproc-csl-locales-dir "~/csl/locales")
 (setq refbox-citeproc-csl-style "apa")
 (setq refbox-citeproc-csl-locale "en-US")
 ```
@@ -218,7 +218,6 @@ Use:
 
 ```text
 M-x refbox-markdown-insert-citation
-M-x refbox-markdown-insert-key
 ```
 
 Relevant options:

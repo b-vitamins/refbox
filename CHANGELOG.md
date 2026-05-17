@@ -7,6 +7,12 @@ The format follows Keep a Changelog, and this project follows SemVer.
 ## [Unreleased]
 
 ### Changed
+- Made citeproc CSL style and locale configuration use Citar-shaped single directory values instead of list-valued directory knobs.
+- Removed unused simple indicator knobs; `refbox-indicators` is now the single authoritative indicator configuration path.
+- Removed the separate note and cited predicate knobs; note and cited indicators now use the same `refbox-indicators` path as other indicators.
+- Removed duplicate file and crossref field-name knobs; `refbox-file-variable` and `refbox-crossref-variable` now own those contracts.
+- Removed the extra Markdown single-key insertion command; Markdown insertion now follows Citar's `insert-keys` and `insert-citation` surface.
+- Made `refbox-file-sources` use Citar-shaped source plists instead of named alist entries.
 - Made the daemon corpus configuration match the Emacs configuration: multiple bibliography roots, explicit bibliography files, discovery extensions, include/exclude globs, and hidden-file policy are now sent through one authoritative sync path.
 - Let explicit bibliography files participate in full sync and targeted autosync even when they live outside discovery roots.
 - Route reference-list formatting through the Emacs citeproc integration instead of a daemon-side placeholder formatter.
@@ -14,6 +20,9 @@ The format follows Keep a Changelog, and this project follows SemVer.
 - Renamed `refbox-search-tag-aliases` to `refbox-search-tag-shortcuts` as the single public configuration point for terse search tags.
 
 ### Fixed
+- Treated single string values for bibliography, library, notes, extension, and discovery-glob options as one configured item instead of iterating them character by character.
+- Autoloaded mode-local citation inspection helpers and Org citation processors so callers see the same public surface as Citar without preloading feature files.
+- Autoloaded the indicator struct, citeproc reference formatter, and default Org note formatter to match Citar's package surface for user configuration.
 - Preserved duplicate-key entries, including same-file duplicates, by using daemon row ids for completion identity, entry lookup, resources, raw entry text, and source locations.
 - Indexed Org and LaTeX local bibliography files through explicit incremental sync before scoped searches, with freshness caching so local CAPF and insertion work for files outside configured roots.
 - Treated Org and LaTeX local bibliography files as scoped additions to the configured corpus, matching Citar selection behavior without leaking ad-hoc local files into unrelated searches.

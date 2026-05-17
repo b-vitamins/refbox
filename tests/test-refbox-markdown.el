@@ -36,15 +36,6 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
         :fields nil
         :resources nil))
 
-(ert-deftest refbox-markdown-test-inserts-one-key ()
-  "Bare key insertion should insert one Pandoc key."
-  (refbox-markdown-test-with-buffer "Alpha |omega"
-    (cl-letf (((symbol-function 'refbox-read-reference)
-               (lambda (&rest _args)
-                 (refbox-markdown-test-candidate "alpha"))))
-      (refbox-markdown-insert-key)
-      (should (equal (buffer-string) "Alpha @alphaomega")))))
-
 (ert-deftest refbox-markdown-test-inserts-multiple-citation-keys ()
   "Citation insertion should support multiple keys."
   (refbox-markdown-test-with-buffer "Alpha |omega"

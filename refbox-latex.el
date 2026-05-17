@@ -253,6 +253,7 @@ when the configured key argument is absent."
             (setq citation parsed))))
       citation)))
 
+;;;###autoload
 (defun refbox-latex-citation-at-point ()
   "Return LaTeX citation keys at point with their bounds."
   (when-let ((citation (refbox-latex--citation-at-point)))
@@ -286,10 +287,12 @@ when the configured key argument is absent."
        when (and (<= begin point) (<= point end))
        return (cons key (cons begin end))))))
 
+;;;###autoload
 (defun refbox-latex-key-at-point ()
   "Return the LaTeX citation key at point with its bounds."
   (refbox-latex--key-and-bounds-at-point))
 
+;;;###autoload
 (defun refbox-latex-list-keys (&optional buffer)
   "Return unique LaTeX citation keys in BUFFER."
   (with-current-buffer (or buffer (current-buffer))
