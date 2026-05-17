@@ -1596,6 +1596,9 @@
                   ":foo.pdf:PDF;:bar.pdf:PDF")
                  '("foo.pdf" "bar.pdf")))
   (should (equal (refbox-resource-parse-file-field-triplet
+                  ":foo,bar.pdf:PDF")
+                 '("foo,bar.pdf")))
+  (should (equal (refbox-resource-parse-file-field-triplet
                   "Title\\: Subtitle:C\\:\\\\title.pdf:PDF")
                  '("C:\\title.pdf" "C\\:\\\\title.pdf"))))
 
@@ -1745,6 +1748,7 @@
                  `((mock
                     :items ,(lambda (key _reference)
                               (list (format "note:%s" key)))
+                    :hasitems ,#'ignore
                     :open ,#'ignore))))
             (cl-letf (((symbol-function 'refbox-entries-by-keys)
                        (lambda (keys limit)
@@ -1885,6 +1889,7 @@
           (refbox-notes-sources
            `((mock
               :items ,#'ignore
+              :hasitems ,#'ignore
               :open ,#'ignore
               :create ,(lambda (key reference)
                          (setq seen (list key reference)))))))
@@ -1921,6 +1926,44 @@
           (should (equal (refbox-note-source-file-create "alpha" '(:key "alpha"))
                          file))
           (should (equal (buffer-string) "note:alpha:alpha")))
+      (when-let ((buffer (find-buffer-visiting file)))
+        (with-current-buffer buffer
+          (set-buffer-modified-p nil))
+        (kill-buffer buffer))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-file_note_creation_uses_find_file_like_citar ()
+  "File-backed note creation should not route creation through the note opener."
+  (let* ((root (make-temp-file "refbox-create-note-find-file-" t))
+         (file (expand-file-name "alpha.org" root)))
+    (unwind-protect
+        (let ((refbox-notes-paths (list root))
+              (refbox-file-note-extensions '("org"))
+              (refbox-open-note-function
+               (lambda (_file)
+                 (error "creation should use find-file directly")))
+              (refbox-note-format-function
+               (lambda (key _reference)
+                 (insert "created:" key))))
+          (should (equal (refbox-note-source-file-create "alpha" '(:key "alpha"))
+                         file))
+          (should (equal (buffer-string) "created:alpha")))
+      (when-let ((buffer (find-buffer-visiting file)))
+        (with-current-buffer buffer
+          (set-buffer-modified-p nil))
+        (kill-buffer buffer))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-file_note_creation_requires_formatter_like_citar ()
+  "New file-backed notes should require a configured formatter."
+  (let* ((root (make-temp-file "refbox-create-note-format-required-" t))
+         (file (expand-file-name "alpha.org" root)))
+    (unwind-protect
+        (let ((refbox-notes-paths (list root))
+              (refbox-file-note-extensions '("org"))
+              (refbox-note-format-function nil))
+          (should-error (refbox-note-source-file-create "alpha" '(:key "alpha"))
+                        :type 'user-error))
       (when-let ((buffer (find-buffer-visiting file)))
         (with-current-buffer buffer
           (set-buffer-modified-p nil))
@@ -1991,6 +2034,7 @@
             :keys ,(lambda () '("alpha" "beta"))
             :items ,(lambda (key _reference)
                       (list (format "note:%s" key)))
+            :hasitems ,#'ignore
             :open ,#'ignore))))
     (should (equal (sort (refbox-note-source-all-items)
                          #'string-lessp)
@@ -2003,6 +2047,7 @@
          `((mock
             :keys ,(lambda () nil)
             :items ,#'ignore
+            :hasitems ,#'ignore
             :open ,#'ignore))))
     (should-not (refbox-note-source-all-items))))
 
@@ -2012,6 +2057,7 @@
         (refbox-notes-sources
          `((mock
             :items ,#'ignore
+            :hasitems ,#'ignore
             :open ,#'ignore))))
     (should-error (refbox-note-source-all-items) :type 'user-error)))
 
@@ -2023,6 +2069,8 @@
            `((mock
               :items ,(lambda (key _reference)
                         (list (format "note:%s" key)))
+              :hasitems ,(lambda (key _reference)
+                           (equal key "smith2020"))
               :open ,(lambda (item)
                        (push item opened))
               :create ,#'ignore))))
@@ -2055,14 +2103,19 @@
   (let ((refbox-notes-sources nil))
     (should (eq (refbox-register-notes-source
                  'mock
-                 (list :items #'ignore :open #'ignore :create #'ignore))
+                 (list :items #'ignore
+                       :hasitems #'ignore
+                       :open #'ignore
+                       :create #'ignore))
                 'mock))
     (should (alist-get 'mock refbox-notes-sources))
     (should (eq (refbox-remove-notes-source 'mock) 'mock))
     (should-not (alist-get 'mock refbox-notes-sources))
     (should (eq (refbox-register-notes-source
                  'mock
-                 (list :items #'ignore :open #'ignore))
+                 (list :items #'ignore
+                       :hasitems #'ignore
+                       :open #'ignore))
                 'mock))
     (should (alist-get 'mock refbox-notes-sources))
     (should (eq (refbox-remove-notes-source 'mock) 'mock))
@@ -2073,25 +2126,42 @@
   (let ((refbox-notes-sources nil))
     (should-error
      (refbox-register-notes-source
-      "mock" (list :items #'ignore :open #'ignore))
-     :type 'user-error)
-    (should-error
-     (refbox-register-notes-source 'mock (list :items #'ignore))
-     :type 'user-error)
-    (should-error
-     (refbox-register-notes-source 'mock (list :items #'ignore :open "no"))
+      "mock" (list :items #'ignore :hasitems #'ignore :open #'ignore))
      :type 'user-error)
     (should-error
      (refbox-register-notes-source
-      'mock (list :name 'bad :items #'ignore :open #'ignore))
+      'mock (list :items #'ignore :open #'ignore))
      :type 'user-error)
     (should-error
      (refbox-register-notes-source
-      'mock (list :category "bad" :items #'ignore :open #'ignore))
+      'mock (list :items #'ignore :hasitems #'ignore :open "no"))
+     :type 'user-error)
+    (should-error
+     (refbox-register-notes-source
+      'mock (list :name 'bad
+                  :items #'ignore
+                  :hasitems #'ignore
+                  :open #'ignore))
+     :type 'user-error)
+    (should-error
+     (refbox-register-notes-source
+      'mock (list :category "bad"
+                  :items #'ignore
+                  :hasitems #'ignore
+                  :open #'ignore))
+     :type 'user-error)
+    (should-error
+     (refbox-register-notes-source
+      'mock (list :items #'ignore
+                  :hasitems "no"
+                  :open #'ignore))
      :type 'user-error)
     (should (eq (refbox-register-notes-source
                  'mock
-                 (list :category 'file :items #'ignore :open #'ignore))
+                 (list :category 'file
+                       :items #'ignore
+                       :hasitems #'ignore
+                       :open #'ignore))
                 'mock))
     (let (warnings)
       (cl-letf (((symbol-function 'display-warning)
@@ -2099,7 +2169,10 @@
                    (push (list type message) warnings))))
         (should (eq (refbox-register-notes-source
                      'mock
-                     (list :items #'ignore :open #'ignore :extra t))
+                     (list :items #'ignore
+                           :hasitems #'ignore
+                           :open #'ignore
+                           :extra t))
                     'mock)))
       (should (alist-get 'mock refbox-notes-sources))
       (should (equal (caar warnings) 'refbox))
@@ -2109,6 +2182,8 @@
   "Identifier and URL resources should format into openable links."
   (should (equal (refbox-resource-link-url '(:kind "doi" :value "{10.1000/refbox}"))
                  "https://doi.org/10.1000/refbox"))
+  (should (equal (refbox-resource-link-url '(:kind "doi" :value "https://example.test/id"))
+                 "https://doi.org/https://example.test/id"))
   (should (equal (refbox-resource-link-url '(:kind "url" :value "{https://example.test}"))
                  "https://example.test")))
 
@@ -2127,7 +2202,14 @@
       (should (equal (refbox-reference-links
                       candidate
                       (refbox--candidate-resources candidate))
-                     '("https://example.test/eprint/12345"))))))
+                     '("https://example.test/eprint/12345"))))
+    (let ((refbox-link-fields
+           '(("eprint" . "https://example.test/string/%s"))))
+      (should (refbox-reference-has-links-p candidate))
+      (should (equal (refbox-reference-links
+                      candidate
+                      (refbox--candidate-resources candidate))
+                     '("https://example.test/string/12345"))))))
 
 (ert-deftest refbox-test-resource_choices_are_grouped_by_type ()
   "Resource completion should expose Citar-style type groups."
@@ -2135,6 +2217,7 @@
          (refbox-notes-sources
           '((mock :name "Slipbox Notes"
                   :items ignore
+                  :hasitems ignore
                   :open ignore)))
          (choices '((:type file :label "file alpha")
                     (:type link :label "link alpha")
@@ -2153,11 +2236,40 @@
                    '("Library Files" "Links" "Slipbox Notes"
                      "Create Slipbox Notes")))))
 
+(ert-deftest refbox-test-resource_selection_prompt_matches_citar ()
+  "Resource commands should use Citar's resource selection prompt."
+  (let* ((root (make-temp-file "refbox-resource-prompt-" t))
+         (file-a (expand-file-name "a.pdf" root))
+         (file-b (expand-file-name "b.pdf" root))
+         (candidate (list :key "alpha"
+                          :resources
+                          (list (list :kind "file" :value file-a)
+                                (list :kind "file" :value file-b))))
+         opened)
+    (unwind-protect
+        (progn
+          (with-temp-file file-a)
+          (with-temp-file file-b)
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (prompt collection &rest _args)
+                       (should (equal prompt "Select resource: "))
+                       (car (all-completions "" collection))))
+                    ((symbol-function 'refbox-reference-resources)
+                     (lambda (reference)
+                       (plist-get reference :resources)))
+                    ((symbol-function 'refbox-file-open)
+                     (lambda (file)
+                       (push file opened))))
+            (refbox-open-files candidate)
+            (should (equal opened (list file-a)))))
+      (delete-directory root t))))
+
 (ert-deftest refbox-test-resource_note_choices_support_annotations ()
   "Note-source annotations should participate in resource completion."
   (let* ((refbox-notes-source 'mock)
          (refbox-notes-sources
           '((mock :items ignore
+                  :hasitems ignore
                   :open ignore
                   :annotate (lambda (item)
                               (format " <%s>" item)))))
@@ -2178,6 +2290,7 @@
          (refbox-notes-sources
           '((mock :category file
                   :items (lambda (_key _reference) '("/tmp/note.org"))
+                  :hasitems ignore
                   :open ignore)))
          (choice (car (refbox--note-choices (list '(:key "alpha"))))))
     (should (eq (plist-get choice :type) 'note))
@@ -2209,7 +2322,11 @@
                                          :owner_source_path
                                          (expand-file-name "main.bib" root))
                                    (list :kind "doi" :value "10.1000/refbox"))))
-            (cl-letf (((symbol-function 'refbox-reference-resources)
+            (cl-letf (((symbol-function 'find-file)
+                       (lambda (target)
+                         (push (cons 'find-file target) opened)
+                         target))
+                      ((symbol-function 'refbox-reference-resources)
                        (lambda (_candidate)
                          (refbox--candidate-resources candidate))))
               (refbox-open-files candidate)
@@ -2217,7 +2334,7 @@
               (refbox-create-note candidate)))
           (should (member (cons 'file file) opened))
           (should (member (cons 'link "https://doi.org/10.1000/refbox") opened))
-          (should (member (cons 'note (expand-file-name "smith2020.org" root))
+          (should (member (cons 'find-file (expand-file-name "smith2020.org" root))
                           opened)))
       (delete-directory root t))))
 
@@ -2492,9 +2609,34 @@
                    (pcase (plist-get params :key)
                      ("alpha" (list :raw raw-alpha))
                      ("beta" (list :raw raw-beta))))))
-        (refbox-insert-raw-entry '("alpha" "beta")))
-      (should (equal (buffer-string)
-                     (concat raw-alpha "\n\n" raw-beta))))))
+	        (refbox-insert-raw-entry '("alpha" "beta")))
+	      (should (equal (buffer-string)
+	                     (concat raw-alpha "\n\n" raw-beta))))))
+
+(ert-deftest refbox-test-raw-entry-insertion_selects_interactively ()
+  "Interactive raw entry insertion should select references first."
+  (let ((raw-alpha "@article{alpha,\n  title = {Alpha}\n}"))
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'refbox-select-refs)
+                 (lambda (&rest _args) '("alpha")))
+                ((symbol-function 'refbox-rpc-request)
+                 (lambda (_method params)
+                   (should (equal (plist-get params :key) "alpha"))
+                   (list :raw raw-alpha))))
+        (call-interactively #'refbox-insert-raw-entry)
+        (should (equal (buffer-string) raw-alpha))))))
+
+(ert-deftest refbox-test-raw-entry-insertion_nil_is_empty_output ()
+  "Programmatic nil raw entry insertion should not prompt."
+  (with-temp-buffer
+    (cl-letf (((symbol-function 'refbox-select-refs)
+               (lambda (&rest _args)
+                 (error "nil raw entry insertion should not select references")))
+              ((symbol-function 'refbox-rpc-request)
+               (lambda (&rest _args)
+                 (error "nil raw entry insertion should not call the daemon"))))
+      (should-not (refbox-insert-raw-entry nil))
+      (should (equal (buffer-string) "")))))
 
 (ert-deftest refbox-test-insert-bibtex-removes-configured_fields ()
   "BibTeX insertion should omit fields configured for export removal."
@@ -2653,6 +2795,38 @@
             (should (equal (buffer-string) "url-pdf"))))
       (delete-directory root t))))
 
+(ert-deftest refbox-test-library-default-file-name_matches_citar ()
+  "Default library file names should follow Citar's citekey-extension contract."
+  (should (equal (refbox-library-default-file-name "alpha" nil) "alpha"))
+  (should (equal (refbox-library-default-file-name "alpha" "") "alpha"))
+  (should (equal (refbox-library-default-file-name "alpha" "pdf") "alpha.pdf"))
+  (should (equal (refbox-library-default-file-name "alpha" ".pdf") "alpha.pdf"))
+  (should (equal (refbox-library-default-file-name "nested/key" "pdf")
+                 "nested/key.pdf")))
+
+(ert-deftest refbox-test-save-file-to-library_accepts_empty_extension ()
+  "Saving a library file with an empty extension should write the bare key."
+  (let* ((root (make-temp-file "refbox-library-empty-extension-" t))
+         (library (expand-file-name "library" root))
+         (destination (expand-file-name "alpha" library)))
+    (unwind-protect
+        (let ((refbox-library-paths (list library)))
+          (cl-letf (((symbol-function 'read-string)
+                     (lambda (prompt &rest _args)
+                       (should (equal prompt "File extension: "))
+                       "")))
+            (should (equal (refbox-save-file-to-library
+                            "alpha"
+                            (list :write-file
+                                  (lambda (file _overwrite)
+                                    (with-temp-file file
+                                      (insert "bare-key")))))
+                           destination)))
+          (with-temp-buffer
+            (insert-file-contents destination)
+            (should (equal (buffer-string) "bare-key"))))
+      (delete-directory root t))))
+
 (ert-deftest refbox-test-add-file-to-library_uses_configured_sources ()
   "The interactive add-file command should dispatch through configured sources."
   (let* ((root (make-temp-file "refbox-custom-source-" t))
@@ -2715,15 +2889,16 @@
 (ert-deftest refbox-test-add-file-to-library_uses_configured_writer ()
   "The interactive add-file command should dispatch through the configured writer."
   (let (called)
-    (let ((refbox-add-file-sources
-           `((?c "custom" "Use a test source"
-              ,(lambda (_reference)
-                 (list :extension "pdf"
-                       :write-file #'ignore)))))
-          (refbox-add-file-function
-           (lambda (reference source)
-             (setq called (list reference source))
-             "custom-destination")))
+	  (let ((refbox-add-file-sources
+	         `((?c "custom" "Use a test source"
+	            ,(lambda (_reference)
+	               (list :extension "pdf"
+	                     :write-file #'ignore)))))
+	        (refbox-library-paths (list temporary-file-directory))
+	        (refbox-add-file-function
+	         (lambda (reference source)
+	           (setq called (list reference source))
+	           "custom-destination")))
       (cl-letf (((symbol-function 'read-multiple-choice)
                  (lambda (_prompt choices)
                    (car choices))))
@@ -2734,13 +2909,23 @@
 
 (ert-deftest refbox-test-add-file-to-library_rejects_empty_sources ()
   "The interactive add-file command should fail at the source boundary."
-  (let ((refbox-add-file-sources nil))
+  (let ((refbox-library-paths (list temporary-file-directory))
+        (refbox-add-file-sources nil))
     (should-error (refbox-add-file-to-library "alpha") :type 'user-error)))
 
 (ert-deftest refbox-test-add-file-to-library_rejects_invalid_writer ()
   "The interactive add-file command should fail on invalid writer config."
-  (let ((refbox-add-file-function nil))
+  (let ((refbox-library-paths (list temporary-file-directory))
+        (refbox-add-file-function nil))
     (should-error (refbox-add-file-to-library "alpha") :type 'user-error)))
+
+(ert-deftest refbox-test-add-file-to-library_rejects_empty_library_paths_first ()
+  "The interactive add-file command should validate library paths before prompting."
+  (let ((refbox-library-paths nil))
+    (cl-letf (((symbol-function 'read-multiple-choice)
+               (lambda (&rest _args)
+                 (error "missing library paths should not prompt for a source"))))
+      (should-error (refbox-add-file-to-library "alpha") :type 'user-error))))
 
 (ert-deftest refbox-test-add-file-to-library_prompts_for_multiple_directories ()
   "Library add helpers should let users choose among configured directories."
@@ -3015,6 +3200,7 @@
           (refbox-notes-sources
            `((mock
               :items ,#'ignore
+              :hasitems ,#'ignore
               :open ,(lambda (_item)
                        (error "nil open-note should not open a note"))
               :create ,(lambda (key reference)

@@ -258,10 +258,8 @@ When TRANSFORM is non-nil, return the displayed candidate."
 
 (defun refbox-org--style-fragment (style)
   "Return Org citation style fragment for STYLE."
-  (let ((style (cond
-                ((stringp style) style)
-                (style (refbox-org-select-style))
-                (t nil))))
+  (let ((style (when style
+                 (refbox-org-select-style))))
     (cond
      ((null style) "")
      ((string-empty-p style) "")

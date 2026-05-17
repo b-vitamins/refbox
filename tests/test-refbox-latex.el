@@ -279,6 +279,12 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
 	                       "A \\cite{alpha,gamma, beta} Z"))
 	        (should (looking-at " Z"))))))
 
+(ert-deftest refbox-latex-test-inserts_existing_keys_again_like_citar ()
+  "LaTeX citation edits should not silently drop duplicate selected keys."
+  (refbox-latex-test-with-buffer "A \\cite{al|pha, beta} Z"
+    (refbox-latex-insert-citation '("alpha"))
+    (should (equal (buffer-string) "A \\cite{alpha,alpha, beta} Z"))))
+
 (ert-deftest refbox-latex-test-nil_citation_insert_does_not_prompt ()
   "Programmatic nil LaTeX insertion should match Citar's no-op."
   (refbox-latex-test-with-buffer "Before | after"

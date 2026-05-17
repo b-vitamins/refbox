@@ -476,14 +476,9 @@ is configured, append the key argument after configured optional args."
            (refbox-latex-local-bib-files)
            t)))
 
-(defun refbox-latex--new-keys (keys existing)
-  "Return KEYS that are not already present in EXISTING."
-  (cl-remove-if (lambda (key) (member key existing)) keys))
-
 (defun refbox-latex--insert-keys-into-citation (citation keys)
   "Insert KEYS into existing LaTeX CITATION."
   (let* ((existing (plist-get citation :keys))
-         (keys (refbox-latex--new-keys keys existing))
          (text (string-join keys refbox-latex-key-separator))
          (key-begin (plist-get citation :key-begin))
          (key-end (plist-get citation :key-end))

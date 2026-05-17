@@ -50,11 +50,20 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                      "Alpha [cite:@alpha; @beta]omega")))))
 
 (ert-deftest refbox-org-test-inserts_supplied_citation_keys ()
-  "Org insertion should accept direct key lists and explicit styles."
+  "Org insertion should accept direct key lists."
   (refbox-org-test-with-buffer "Alpha |omega"
-    (refbox-org-insert-citation '("alpha" "beta") "text")
+    (refbox-org-insert-citation '("alpha" "beta"))
     (should (equal (buffer-string)
-                   "Alpha [cite/text:@alpha; @beta]omega"))))
+                   "Alpha [cite:@alpha; @beta]omega"))))
+
+(ert-deftest refbox-org-test-style_argument_prompts_like_citar ()
+  "A non-nil Org style argument should prompt for the citation style."
+  (refbox-org-test-with-buffer "Alpha |omega"
+    (cl-letf (((symbol-function 'refbox-org-select-style)
+               (lambda (&rest _args) "text")))
+      (refbox-org-insert-citation '("alpha") "ignored")
+      (should (equal (buffer-string)
+                     "Alpha [cite/text:@alpha]omega")))))
 
 (ert-deftest refbox-org-test-insertion_includes_local_bibliography_with_configured_corpus ()
   "Org insertion should add local bibliography files to configured reference selection."

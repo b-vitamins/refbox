@@ -67,6 +67,18 @@ The format follows Keep a Changelog, and this project follows SemVer.
 - Matched Citar's mode citation-adapter contract by keeping reference selection in `insert-edit` and generic insertion paths.
 - Matched Citar's citeproc formatter contract by treating programmatic nil references as empty output.
 - Matched Citar's exact-key selection behavior by allowing completion UIs to accept keys outside the current result page.
+- Fixed `refbox-insert-raw-entry` so the documented interactive command selects references and programmatic nil inserts nothing.
+- Bounded cross-reference resource inheritance by preferring same-source parent entries instead of inheriting from every duplicate parent key in the corpus.
+- Matched Citar's add-file command contract by validating library paths, sources, and writer configuration before prompting for a file source.
+- Matched Citar's library-file save behavior for empty extensions, raw citekey filenames, and add-file prompt labels.
+- Matched Citar's LaTeX citation editing by inserting selected keys as supplied instead of dropping duplicates.
+- Matched Citar's Org citation insertion by treating a non-nil style argument as a request to select a style.
+- Fixed triplet file-field parsing so commas inside file names do not prevent Citar-style resource discovery.
+- Matched Citar's link formatting by always applying `refbox-link-fields` templates and honoring string field keys.
+- Matched Citar's file-backed note creation by using `find-file` for new note buffers instead of the configurable note opener.
+- Matched Citar's file-backed note creation contract by requiring a note formatter for newly created notes.
+- Matched Citar's note-source contract by requiring `:hasitems` instead of materializing note items for note predicates.
+- Matched Citar's resource selection prompt text across file, link, note, attach, and generic open commands.
 
 ## [0.4.8] - 2026-05-17
 

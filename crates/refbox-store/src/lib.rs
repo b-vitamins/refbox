@@ -441,18 +441,6 @@ impl RefboxStore {
         Ok(resources)
     }
 
-    pub fn resources_for_key(
-        &self,
-        key: &str,
-        crossref_fields: &[String],
-    ) -> Result<Vec<StoredResource>> {
-        let mut resources = Vec::new();
-        for entry in self.entries_by_key(key, None, None)? {
-            resources.extend(self.resources_for_entry(entry.id, crossref_fields)?);
-        }
-        Ok(resources)
-    }
-
     pub fn resources_for_keys(
         &self,
         keys: &[String],
@@ -1118,7 +1106,7 @@ impl RefboxStore {
 
         let parent_keys = self.crossref_parent_keys(entry_id, crossref_fields)?;
         for parent_key in parent_keys {
-            for parent in self.entries_by_key(&parent_key, None, None)? {
+            for parent in self.crossref_parent_entries(&parent_key, request_owner)? {
                 if visited.contains(&parent.id) {
                     continue;
                 }
@@ -1143,6 +1131,19 @@ impl RefboxStore {
         }
 
         Ok(())
+    }
+
+    fn crossref_parent_entries(
+        &self,
+        parent_key: &str,
+        request_owner: &ResourceOwner,
+    ) -> Result<Vec<StoredEntry>> {
+        let local = self.entries_by_key(parent_key, Some(&request_owner.source_path), Some(1))?;
+        if local.is_empty() {
+            self.entries_by_key(parent_key, None, Some(1))
+        } else {
+            Ok(local)
+        }
     }
 
     fn crossref_parent_keys(

@@ -632,7 +632,7 @@ t is used as the default when no extension entry matches."
 
 (defcustom refbox-note-format-function #'refbox-org-format-note-default
   "Function called with KEY and CANDIDATE in a newly opened note buffer."
-  :type '(choice (const :tag "Empty note" nil) function)
+  :type 'function
   :group 'refbox)
 
 (defcustom refbox-notes-source 'file
@@ -663,8 +663,8 @@ directly openable by `:open'.  `:keys' receives no arguments and
 returns note keys that can be expanded through `:items'.  `:open',
 `:transform', and `:annotate' receive a note item.  `:create' and
 `:create-label' receive KEY and REFERENCE.
-`:items' and `:open' are required when registering a note source with
-`refbox-register-notes-source'."
+`:items', `:hasitems', and `:open' are required when registering a note
+source with `refbox-register-notes-source'."
   :type 'alist
   :group 'refbox)
 
@@ -2466,23 +2466,21 @@ whose cdr is passed as additional arguments."
 
 (defun refbox-resource-parse-file-field-triplet (file-field)
   "Parse FILE-FIELD entries shaped as title:path:type triplets."
-  (let ((text (refbox-resource--clean-value file-field))
-        files)
-    (dolist (sepchar (delq nil
-                            (list (and (string-search ";" text) ?\;)
-                                  (and (string-search "," text) ?,)
-                                  (unless (or (string-search ";" text)
-                                              (string-search "," text))
-                                    ?,))))
-      (dolist (item (refbox-resource--split-escaped-string text sepchar))
-        (let ((parts (refbox-resource--split-escaped-string item ?:)))
-          (when (>= (length parts) 3)
-            (setq files
-                  (append
-                   files
-                   (refbox-resource--file-field-variants
-                    (string-join (butlast (cdr parts)) ":"))))))))
-    files))
+  (let* ((text (refbox-resource--clean-value file-field))
+         (parse-item
+          (lambda (item)
+            (let ((parts (refbox-resource--split-escaped-string item ?:)))
+              (when (>= (length parts) 3)
+                (refbox-resource--file-field-variants
+                 (string-join (butlast (cdr parts)) ":"))))))
+         split-files)
+    (dolist (sepchar '(?\; ?,))
+      (let* ((items (refbox-resource--split-escaped-string text sepchar))
+             (files (apply #'append (mapcar parse-item items))))
+        (when (and (cdr items) files)
+          (setq split-files (append split-files files)))))
+    (or split-files
+        (funcall parse-item text))))
 
 (defun refbox-resource--parse-file-field (value)
   "Return candidate file paths parsed from VALUE."
@@ -2931,15 +2929,13 @@ callable."
 (defun refbox-resource-link-url (resource)
   "Return the URL represented by RESOURCE."
   (let* ((kind-name (refbox--resource-kind resource))
-         (kind (and (not (refbox--blank-string-p kind-name))
-                    (intern kind-name)))
-         (template (alist-get kind refbox-link-fields))
+         (template (and (not (refbox--blank-string-p kind-name))
+                        (cdr (assoc-string kind-name
+                                           refbox-link-fields
+                                           'case-fold))))
          (value (refbox-resource--clean-value (refbox--resource-value resource))))
     (when (and template (not (string-empty-p value)))
-      (if (or (eq kind 'url)
-              (string-match-p "\\`https?://" value))
-          value
-        (format template value)))))
+      (format template value))))
 
 (defun refbox-reference-links (candidate &optional resources)
   "Return link URLs for CANDIDATE."
@@ -3017,7 +3013,7 @@ callable."
       (user-error "Unknown refbox note source: %s" refbox-notes-source)))
 
 (defconst refbox-note-source--required-properties
-  '(:items :open)
+  '(:items :hasitems :open)
   "Required plist properties for registered note sources.")
 
 (defconst refbox-note-source--function-properties
@@ -3120,10 +3116,11 @@ callable."
   (let* ((file (refbox-note-filename key))
          (exists (file-exists-p file)))
     (make-directory (file-name-directory file) t)
-    (funcall refbox-open-note-function file)
+    (find-file file)
     (unless exists
-      (when (and refbox-note-format-function
-                 buffer-file-name
+      (unless (functionp refbox-note-format-function)
+        (user-error "Make sure `refbox-note-format-function' is non-nil"))
+      (when (and buffer-file-name
                  (equal (file-truename buffer-file-name)
                         (file-truename file)))
         (funcall refbox-note-format-function key reference)))
@@ -3211,9 +3208,9 @@ signal a user error; when it is explicitly nil, return nil."
   "Return non-nil when REFERENCE has active note source items."
   (let ((key (refbox--reference-key reference)))
     (and (not (refbox--blank-string-p key))
-         (if-let ((hasitems (plist-get (refbox-note-source--plist) :hasitems)))
-             (funcall hasitems key reference)
-           (not (null (refbox-note-source-items reference)))))))
+         (funcall (refbox-note-source--function :hasitems)
+                  key
+                  reference))))
 
 (defun refbox-note-source-preload (references)
   "Preload active note source metadata for REFERENCES when supported."
@@ -3559,7 +3556,7 @@ COMMAND controls `refbox-open-always-create-notes'."
          (choices (refbox--file-choices references)))
     (when-let ((choice
                 (refbox--read-resource-choice-or-nil
-                 "File: "
+                 "Select resource: "
                  choices
                  'refbox-open-files
                  (format "No associated files for %s"
@@ -3574,8 +3571,8 @@ COMMAND controls `refbox-open-always-create-notes'."
                           (refbox--contextual-reference-list references)))
          (choices (refbox--file-choices references))
          (choice
-          (refbox--read-resource-choice-or-nil
-           "Attach file: "
+         (refbox--read-resource-choice-or-nil
+           "Select resource: "
            choices
            'refbox-attach-files
            (format "No associated files for %s"
@@ -3598,7 +3595,7 @@ COMMAND controls `refbox-open-always-create-notes'."
          (choices (refbox--link-choices references)))
     (when-let ((choice
                 (refbox--read-resource-choice-or-nil
-                 "Link: "
+                 "Select resource: "
                  choices
                  'refbox-open-links
                  (format "No link found for %s"
@@ -3618,7 +3615,7 @@ COMMAND controls `refbox-open-always-create-notes'."
            'refbox-open-notes)))
     (when-let ((choice
                 (refbox--read-resource-choice-or-nil
-                 "Note: "
+                 "Select resource: "
                  choices
                  'refbox-open-notes)))
       (refbox--open-resource-choice choice))))
@@ -3630,7 +3627,7 @@ COMMAND controls `refbox-open-always-create-notes'."
    (list
     (when-let ((choice
                 (refbox--read-resource-choice-or-nil
-                 "Note: "
+                 "Select resource: "
                  (refbox--all-note-choices)
                  'refbox-open-note)))
       (plist-get choice :target))))
@@ -3677,7 +3674,7 @@ non-nil, is a bibliography entry alist used as candidate metadata."
       (user-error "No associated resources: %s"
                   (refbox--reference-message-subject references)))
     (refbox--open-resource-choice
-     (refbox--read-resource-choice "Resource: " choices 'refbox-open))))
+     (refbox--read-resource-choice "Select resource: " choices 'refbox-open))))
 
 (defun refbox--reference-key (reference)
   "Return the key represented by REFERENCE."
@@ -4104,16 +4101,16 @@ key-shaped daemon requests for raw/source/resource commands."
   (car (refbox--contextual-reference-list (list reference))))
 
 ;;;###autoload
-(defun refbox-insert-raw-entry (&optional references)
+(defun refbox-insert-raw-entry (references)
   "Insert raw bibliography entries for REFERENCES."
-  (interactive)
-  (let ((references (refbox--contextual-reference-list references)))
-    (unless references
-      (user-error "No references selected"))
-    (insert
-     (string-join
-      (mapcar #'refbox-raw-entry references)
-      "\n\n"))))
+  (interactive (list (refbox-select-refs)))
+  (let ((references (and references
+                         (refbox--contextual-reference-list references))))
+    (when references
+      (insert
+       (string-join
+        (mapcar #'refbox-raw-entry references)
+        "\n\n")))))
 
 (defun refbox--raw-entry-field-end ()
   "Return the end position of the raw field at point."
@@ -4668,15 +4665,11 @@ STYLE, when non-nil, overrides `refbox-citeproc-csl-style'."
           (message "Copied:\n%s" text))
       (message "Key not found."))))
 
-(defun refbox-library--safe-key (key)
-  "Return KEY made safe for a single file name."
-  (replace-regexp-in-string "[/\\]" "_" key))
-
 (defun refbox-library-default-file-name (key extension)
   "Return default library file name for KEY and EXTENSION."
-  (format "%s.%s"
-          (refbox-library--safe-key key)
-          (string-remove-prefix "." extension)))
+  (if (refbox--blank-string-p extension)
+      key
+    (format "%s.%s" key (string-remove-prefix "." extension))))
 
 (defun refbox-library--primary-directory ()
   "Return a library destination directory, creating it if needed."
@@ -4686,7 +4679,7 @@ STYLE, when non-nil, overrides `refbox-citeproc-csl-style'."
     (make-directory (file-name-as-directory (expand-file-name directory)) t))
   (let* ((directories (refbox-resource--directory-list refbox-library-paths nil))
          (directory (if (cdr directories)
-                        (completing-read "Library directory: "
+                        (completing-read "Directory: "
                                          directories
                                          nil
                                          t)
@@ -4696,8 +4689,6 @@ STYLE, when non-nil, overrides `refbox-citeproc-csl-style'."
 
 (defun refbox-library-destination-file (reference extension)
   "Return destination library file for REFERENCE and EXTENSION."
-  (when (refbox--blank-string-p extension)
-    (user-error "Cannot add a library file without an extension"))
   (expand-file-name
    (funcall refbox-library-file-name-function
             (refbox--reference-key reference)
@@ -4744,7 +4735,7 @@ OVERWRITE follows the same convention as `copy-file'; an integer
 asks before replacing an existing file."
   (let* ((overwrite (or overwrite 1))
          (extension (or (plist-get source :extension)
-                        (read-string "Extension: ")))
+                        (read-string "File extension: ")))
          (write-file (plist-get source :write-file))
          (destination (refbox-library-destination-file reference extension)))
     (unless (functionp write-file)
@@ -4754,7 +4745,7 @@ asks before replacing an existing file."
 
 (defun refbox-add-file-source-buffer (_reference)
   "Return an add-file source plist for a selected buffer."
-  (let ((buffer (get-buffer (read-buffer "Buffer: " (current-buffer) t))))
+  (let ((buffer (get-buffer (read-buffer "Add file buffer: " (current-buffer) t))))
     (list
      :extension (when (buffer-file-name buffer)
                   (file-name-extension (buffer-file-name buffer)))
@@ -4766,7 +4757,7 @@ asks before replacing an existing file."
 
 (defun refbox-add-file-source-file (_reference)
   "Return an add-file source plist for an existing file."
-  (let ((file (read-file-name "File: " nil nil t)))
+  (let ((file (read-file-name "Add file: " nil nil t)))
     (list
      :extension (file-name-extension file)
      :write-file
@@ -4775,7 +4766,7 @@ asks before replacing an existing file."
 
 (defun refbox-add-file-source-url (_reference)
   "Return an add-file source plist for a URL."
-  (let* ((url (read-string "URL: "))
+  (let* ((url (read-string "Add file URL: "))
          (extension (url-file-extension url)))
     (list
      :extension (when (and extension (> (length extension) 1))
@@ -4810,6 +4801,10 @@ asks before replacing an existing file."
 (defun refbox-add-file-to-library (reference)
   "Add a configured source resource to REFERENCE's library files."
   (interactive (list (refbox-select-ref)))
+  (unless refbox-library-paths
+    (user-error "Make sure `refbox-library-paths' is non-nil"))
+  (unless refbox-add-file-sources
+    (user-error "Make sure `refbox-add-file-sources' is non-nil"))
   (unless (functionp refbox-add-file-function)
     (user-error "refbox-add-file-function is not callable"))
   (let* ((source (refbox-add-file-source--read))

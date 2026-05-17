@@ -941,6 +941,48 @@ fn resource_queries_inherit_crossref_resources() {
 }
 
 #[test]
+fn crossref_resource_inheritance_prefers_same_source_parent() {
+    let mut store = RefboxStore::open_in_memory().expect("store should open");
+    let local = parse_bibliography_file(
+        "refs/local.bib",
+        r#"@proceedings{parent2020,
+  title = {Local Parent},
+  file = {local-parent.pdf}
+}
+@inproceedings{child2020,
+  title = {Child Work},
+  crossref = {parent2020}
+}"#,
+    );
+    let global = parse_bibliography_file(
+        "refs/global.bib",
+        r#"@proceedings{parent2020,
+  title = {Global Parent},
+  file = {global-parent.pdf}
+}"#,
+    );
+
+    store
+        .insert_file(&global)
+        .expect("global file should insert");
+    store.insert_file(&local).expect("local file should insert");
+
+    let child = store
+        .entries_by_key("child2020", Some("refs/local.bib"), Some(1))
+        .expect("child should query");
+    let resources = store
+        .resources_for_entry(child[0].id, &["crossref".to_string()])
+        .expect("resources should query");
+    let inherited_files = resources
+        .iter()
+        .filter(|resource| resource.kind == "file")
+        .map(|resource| resource.value.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(inherited_files, vec!["local-parent.pdf"]);
+}
+
+#[test]
 fn large_author_lists_do_not_materialize_unused_name_rows() {
     let db_path = unique_db_path("refbox-large-authors");
     let author_count = 512;
