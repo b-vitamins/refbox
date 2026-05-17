@@ -61,7 +61,7 @@ fn inserts_parsed_files_and_queries_records_back() {
     store.insert_file(&file).expect("file should insert");
 
     let entries = store
-        .entries_by_key("smith2020")
+        .entries_by_key("smith2020", None, None)
         .expect("entry should query");
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].file_path, "refs/main.bib");
@@ -254,7 +254,7 @@ fn diagnostics_and_source_locations_are_queryable() {
     );
 
     let recovered = store
-        .entries_by_key("afterbroken")
+        .entries_by_key("afterbroken", None, None)
         .expect("recovered entry should query");
     assert_eq!(recovered.len(), 1);
     assert_eq!(recovered[0].source.start.line, 4);
@@ -282,11 +282,23 @@ fn duplicate_keys_from_different_files_are_preserved() {
         .expect("second file should insert");
 
     let entries = store
-        .entries_by_key("dup2020")
+        .entries_by_key("dup2020", None, None)
         .expect("duplicate entries should query");
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].file_path, "refs/a.bib");
     assert_eq!(entries[1].file_path, "refs/b.bib");
+    assert_eq!(
+        store
+            .entries_by_key("dup2020", None, Some(1))
+            .expect("limited duplicate entries should query")
+            .len(),
+        1
+    );
+    let scoped_entries = store
+        .entries_by_key("dup2020", Some("refs/b.bib"), Some(2))
+        .expect("scoped duplicate entries should query");
+    assert_eq!(scoped_entries.len(), 1);
+    assert_eq!(scoped_entries[0].file_path, "refs/b.bib");
 
     let duplicate_groups = store
         .duplicate_groups(100)
@@ -331,7 +343,7 @@ fn duplicate_keys_from_same_file_are_preserved() {
         .expect("same-file duplicate keys should insert");
 
     let entries = store
-        .entries_by_key("dup2020")
+        .entries_by_key("dup2020", None, None)
         .expect("duplicate entries should query");
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].file_path, "refs/dups.bib");
@@ -840,7 +852,7 @@ fn resource_queries_inherit_crossref_resources() {
     store.insert_file(&file).expect("file should insert");
 
     let child = store
-        .entries_by_key("child2020")
+        .entries_by_key("child2020", None, None)
         .expect("child should query");
     assert_eq!(child.len(), 1);
 
@@ -994,7 +1006,7 @@ PRAGMA user_version = 5;
 
     let store = RefboxStore::open(&db_path).expect("store should migrate");
     let entries = store
-        .entries_by_key("alpha")
+        .entries_by_key("alpha", None, None)
         .expect("entry should query after migration");
     assert_eq!(entries[0].source.start.column, 1);
     assert_eq!(entries[0].source.end.column, 2);

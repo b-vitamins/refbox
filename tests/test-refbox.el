@@ -369,8 +369,8 @@
                  (citation-at-point . refbox-test-citation-at-point))))))
         (with-temp-buffer
           (refbox-test-mode)
-          (refbox-insert-keys)
-          (should (equal (buffer-string) "alpha|beta"))
+          (call-interactively #'refbox-insert-keys)
+          (should (equal (buffer-string) "theta|iota"))
           (erase-buffer)
           (refbox-insert-citation '("gamma" "delta") 'style)
           (should (equal (buffer-string) "gamma|delta/style"))
@@ -404,6 +404,21 @@
         (should (equal (buffer-string) ""))
         (should (equal messages
                        '("Citation editing is not supported for refbox-test-mode")))))))
+
+(ert-deftest refbox-test-insert-citation_without_adapter_matches_citar_contract ()
+  "Programmatic unsupported citation insertion should use the adapter default."
+  (let ((refbox-major-mode-functions nil))
+    (with-temp-buffer
+      (refbox-test-mode)
+      (should-not (refbox-insert-citation nil))
+      (should (equal (buffer-string) ""))
+      (let ((error-data
+             (should-error (call-interactively #'refbox-insert-citation)
+                           :type 'error)))
+        (should (eq (car error-data) 'error))
+        (should (string-match-p
+                 "Citation insertion is not supported for refbox-test-mode"
+                 (cadr error-data)))))))
 
 (ert-deftest refbox-test-dwim_without_citation_matches_citar_error ()
   "DWIM should not prompt when no citation is at point."
@@ -1106,11 +1121,12 @@
 
 (ert-deftest refbox-test-read-reference_accepts_exact_key_fallback ()
   "Selection readers should accept an exact citekey returned by completion UIs."
-  (let (requested-key)
+  (let (requested-key require-match)
     (cl-letf (((symbol-function 'refbox--sync-current-bibliography-buffer-if-needed)
                #'ignore)
               ((symbol-function 'completing-read)
-               (lambda (_prompt collection &rest _args)
+               (lambda (_prompt collection _predicate require &rest _args)
+                 (setq require-match require)
                  (funcall collection "smith2020" nil t)
                  "smith2020"))
               ((symbol-function 'refbox-search-references)
@@ -1120,6 +1136,7 @@
                  (setq requested-key key)
                  refbox-test-reference-candidate)))
       (let ((selected (refbox--read-reference "Reference: " nil 5 nil)))
+        (should-not require-match)
         (should (equal requested-key "smith2020"))
         (should (equal (plist-get selected :key) "smith2020"))))))
 
@@ -1285,8 +1302,8 @@
                        ["crossref"]))
         (should (equal (plist-get (car results) :key) "smith2020"))))))
 
-(ert-deftest refbox-test-search-tag_aliases_use_daemon_resource_filters ()
-  "Short indicator aliases should map to their long search tags."
+(ert-deftest refbox-test-search-tag_shortcuts_use_daemon_resource_filters ()
+  "Short indicator tokens should map to their long search tags."
   (let (calls)
     (cl-letf (((symbol-function 'refbox-rpc-request)
                (lambda (method params)
@@ -1960,11 +1977,11 @@
       (refbox-open-notes refbox-test-reference-candidate)
       (should (equal created '("smith2020")))
       (should (equal opened '("note:smith2020")))
-      (cl-letf (((symbol-function 'completing-read)
-                 (lambda (_prompt collection &rest _args)
-                   (cadr (all-completions "" collection)))))
-        (refbox-open-note))
-      (should (equal opened '("note:orphan" "note:smith2020"))))))
+	      (cl-letf (((symbol-function 'completing-read)
+	                 (lambda (_prompt collection &rest _args)
+	                   (cadr (all-completions "" collection)))))
+	        (call-interactively #'refbox-open-note))
+	      (should (equal opened '("note:orphan" "note:smith2020"))))))
 
 (ert-deftest refbox-test-note_source_all_items_uses_enumerated_note_keys ()
   "Note source global listing should not enumerate the bibliography."
@@ -2352,7 +2369,7 @@
       (should-not (refbox-attach-files candidate))
       (should-not (refbox-open-links candidate))
       (should-not (refbox-open-notes candidate))
-      (should-not (refbox-open-note))
+      (should-not (refbox-open-note nil))
       (should (member "No associated files for empty2020" messages))
       (should (member "No link found for empty2020" messages)))))
 
@@ -2493,6 +2510,19 @@
       (should-not (string-match-p "file = " (buffer-string)))
       (should (string-suffix-p "\n\n" (buffer-string))))))
 
+(ert-deftest refbox-test-insert-bibtex_nil_matches_citar_contract ()
+  "Programmatic nil BibTeX insertion should insert nothing."
+  (cl-letf (((symbol-function 'refbox-select-refs)
+             (lambda (&rest _args)
+               (error "nil BibTeX insertion should not select")))
+            ((symbol-function 'refbox-read-references)
+             (lambda (&rest _args)
+               (error "nil BibTeX insertion should not prompt"))))
+    (with-temp-buffer
+      (refbox-insert-bibtex nil)
+      (should (equal (buffer-string) "")))
+    (should (equal (refbox--bibtex-export-text nil) ""))))
+
 (ert-deftest refbox-test-export-bibliography-removes-configured_fields ()
   "Local bibliography export should remove configured no-export fields."
   (let* ((root (make-temp-file "refbox-export-" t))
@@ -2511,6 +2541,18 @@
             (should (string-match-p "doi = {10.1000/alpha}" (buffer-string)))
             (should-not (string-match-p "file = " (buffer-string)))
             (should (string-suffix-p "\n\n" (buffer-string)))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-export-bibliography_empty_buffer_matches_citar ()
+  "Local bibliography export should create an empty file for no citations."
+  (let* ((root (make-temp-file "refbox-export-empty-" t))
+         (output (expand-file-name "local.bib" root)))
+    (unwind-protect
+        (with-temp-buffer
+          (should (equal (refbox-export-bibliography output) output))
+          (with-temp-buffer
+            (insert-file-contents output)
+            (should (equal (buffer-string) ""))))
       (delete-directory root t))))
 
 (ert-deftest refbox-test-export-local-bib-file_uses_buffer_directory ()
@@ -2879,8 +2921,19 @@
           (should (equal (cdr (assoc "key" csl-entry)) "alpha"))
           (should (equal (cdr (assoc "entry_id" csl-entry)) "42"))
           (should (equal (cdr (assoc "source_path" csl-entry)) "refs/main.bib"))
-          (should (equal (cdr (assoc "title" csl-entry)) "Alpha Reference")))
+	          (should (equal (cdr (assoc "title" csl-entry)) "Alpha Reference")))
       (delete-directory root t))))
+
+(ert-deftest refbox-test-citeproc-format-reference_nil_matches_citar_contract ()
+  "CSL formatting should treat programmatic nil references as empty output."
+  (cl-letf (((symbol-function 'refbox-citeproc--require)
+             (lambda ()
+               (error "nil citeproc formatting should not require citeproc")))
+            ((symbol-function 'refbox-rpc-request)
+             (lambda (&rest _)
+               (error "nil citeproc formatting should not call the daemon"))))
+    (should (equal (refbox-citeproc--format-references nil) ""))
+    (should (equal (refbox-citeproc-format-reference nil) ""))))
 
 (ert-deftest refbox-test-insert-and-copy-formatted_references ()
   "Insert and copy commands should use formatted reference text."
@@ -2904,6 +2957,78 @@
     (should (equal (refbox-copy-reference '("missing"))
                    "Key not found."))
     (should (equal (current-kill 0) "previous"))))
+
+(ert-deftest refbox-test-reference_actions_do_not_prompt_on_nil_like_citar ()
+  "Programmatic nil references should pass through instead of prompting."
+  (let ((refbox-format-reference-function nil))
+    (cl-letf (((symbol-function 'refbox-read-references)
+               (lambda (&rest _args)
+                 (error "nil reference actions should not prompt")))
+              ((symbol-function 'refbox-select-refs)
+               (lambda (&rest _args)
+                 (error "nil reference actions should not select")))
+              ((symbol-function 'refbox-reference-format-preview)
+               (lambda (_reference)
+                 (error "nil reference actions should not format entries"))))
+      (should (equal (refbox-format-references nil) nil))
+      (should (equal (refbox-format-reference nil) ""))
+      (with-temp-buffer
+        (refbox-insert-keys nil)
+        (should (equal (buffer-string) "")))
+      (with-temp-buffer
+        (refbox-insert-reference nil)
+        (should (equal (buffer-string) "")))
+      (should (equal (refbox-copy-reference nil) "Key not found.")))))
+
+(ert-deftest refbox-test-resource_actions_do_not_prompt_on_nil_like_citar ()
+  "Programmatic nil resource actions should not enter selection."
+  (let (opened-entry)
+    (cl-letf (((symbol-function 'refbox-read-references)
+               (lambda (&rest _args)
+                 (error "nil resource actions should not read references")))
+              ((symbol-function 'refbox-read-reference)
+               (lambda (&rest _args)
+                 (error "nil resource actions should not read a reference")))
+              ((symbol-function 'refbox-select-refs)
+               (lambda (&rest _args)
+                 (error "nil resource actions should not select references")))
+              ((symbol-function 'refbox-select-ref)
+               (lambda (&rest _args)
+                 (error "nil resource actions should not select a reference"))))
+      (should-not (refbox-open-files nil))
+      (should-not (refbox-attach-files nil))
+      (should-not (refbox-open-links nil))
+      (should-not (refbox-open-notes nil))
+      (should-error (refbox-open nil) :type 'user-error)
+      (should-error (refbox-open-source nil) :type 'user-error)
+      (let ((refbox-open-entry-function
+	     (lambda (reference)
+	       (setq opened-entry reference)
+	       :opened)))
+	(should (eq (refbox-open-entry nil) :opened))
+	(should-not opened-entry)))))
+
+(ert-deftest refbox-test-note_actions_do_not_prompt_on_nil_like_citar ()
+  "Programmatic nil note actions should not enter selection."
+  (let (created)
+    (let ((refbox-notes-source 'mock)
+          (refbox-notes-sources
+           `((mock
+              :items ,#'ignore
+              :open ,(lambda (_item)
+                       (error "nil open-note should not open a note"))
+              :create ,(lambda (key reference)
+                         (setq created (list key reference))
+                         :created)))))
+      (cl-letf (((symbol-function 'refbox-read-reference)
+                 (lambda (&rest _args)
+                   (error "nil note actions should not read a reference")))
+                ((symbol-function 'refbox-select-ref)
+                 (lambda (&rest _args)
+                   (error "nil note actions should not select a reference"))))
+        (should-not (refbox-open-note nil))
+        (should (eq (refbox-create-note nil) :created))
+        (should (equal created '(nil nil)))))))
 
 (ert-deftest refbox-test-reference_commands_select_before_custom_formatter ()
   "Interactive reference formatting should pass selected keys to formatters."

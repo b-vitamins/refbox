@@ -514,32 +514,28 @@ is configured, append the key argument after configured optional args."
     (goto-char (plist-get citation :end))))
 
 ;;;###autoload
-(defun refbox-latex-insert-citation (&optional keys invert-prompt command)
+(defun refbox-latex-insert-citation (keys &optional invert-prompt command)
   "Insert a LaTeX citation at point.
 
 When point is already in a citation command, add selected keys to
-that citation instead of replacing it.  KEYS, when non-nil, supplies
-citation keys directly.  INVERT-PROMPT reverses
+that citation instead of replacing it.  INVERT-PROMPT reverses
 `refbox-latex-prompt-for-cite-style'.  COMMAND, when non-nil, selects
 the citation command directly."
-  (interactive)
-  (let* ((citation (refbox-latex-citation-at-point))
-         (keys (or keys (refbox-latex--selected-keys))))
-    (unless keys
-      (user-error "No references selected"))
-    (if citation
-        (refbox-latex--insert-keys-into-citation citation keys)
-      (let* ((command (refbox-latex--read-command invert-prompt command))
-             (optional-args (refbox-latex--read-arguments command)))
-        (insert (refbox-latex--format-citation-from-spec
-                 command keys optional-args))))
-    (refbox-latex--move-after-citation)))
+  (when keys
+    (let ((citation (refbox-latex-citation-at-point)))
+      (if citation
+          (refbox-latex--insert-keys-into-citation citation keys)
+        (let* ((command (refbox-latex--read-command invert-prompt command))
+               (optional-args (refbox-latex--read-arguments command)))
+          (insert (refbox-latex--format-citation-from-spec
+                   command keys optional-args))))
+      (refbox-latex--move-after-citation))))
 
 ;;;###autoload
 (defun refbox-latex-insert-edit (&optional arg)
   "Insert or edit a LaTeX citation at point."
   (interactive "P")
-  (refbox-latex-insert-citation nil arg))
+  (refbox-latex-insert-citation (refbox-latex--selected-keys) arg))
 
 (defun refbox-latex--bib-file (path)
   "Return PATH with a .bib extension when it has no extension."

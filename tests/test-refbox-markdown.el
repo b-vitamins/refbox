@@ -49,12 +49,12 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
   "Citation insertion should support multiple keys."
   (refbox-markdown-test-with-buffer "Alpha |omega"
     (let ((refbox-markdown-prompt-for-extra-arguments nil))
-      (cl-letf (((symbol-function 'refbox-read-references)
-                 (lambda (&rest _args)
-                   (list (refbox-markdown-test-candidate "alpha")
-                         (refbox-markdown-test-candidate "beta")))))
-        (refbox-markdown-insert-citation)
-        (should (equal (buffer-string) "Alpha [@alpha; @beta]omega"))))))
+	      (cl-letf (((symbol-function 'refbox-read-references)
+	                 (lambda (&rest _args)
+	                   (list (refbox-markdown-test-candidate "alpha")
+	                         (refbox-markdown-test-candidate "beta")))))
+	        (refbox-markdown-insert-edit)
+	        (should (equal (buffer-string) "Alpha [@alpha; @beta]omega"))))))
 
 (ert-deftest refbox-markdown-test-inserts_supplied_citation_keys ()
   "Citation insertion should accept direct key lists."
@@ -137,11 +137,11 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
   (refbox-markdown-test-with-buffer "A [@al|pha; @beta] Z"
     (let ((refbox-markdown-default-prefix "see")
           (refbox-markdown-default-suffix "p. 4"))
-      (cl-letf (((symbol-function 'refbox-read-references)
-                 (lambda (&rest _args)
-                   (list (refbox-markdown-test-candidate "gamma")))))
-        (refbox-markdown-insert-citation)
-        (should (equal (buffer-string) "A [@alpha; @gamma; @beta] Z"))))))
+	      (cl-letf (((symbol-function 'refbox-read-references)
+	                 (lambda (&rest _args)
+	                   (list (refbox-markdown-test-candidate "gamma")))))
+	        (refbox-markdown-insert-edit)
+	        (should (equal (buffer-string) "A [@alpha; @gamma; @beta] Z"))))))
 
 (ert-deftest refbox-markdown-test-inserts_new_citation_at_bracket_edges ()
   "Insertion at citation bracket edges should match Citar's boundary behavior."
@@ -157,16 +157,25 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
   "Prompted affixes should be reflected in inserted citations."
   (refbox-markdown-test-with-buffer "|"
     (let ((refbox-markdown-prompt-for-extra-arguments t))
-      (cl-letf (((symbol-function 'read-from-minibuffer)
-                 (lambda (prompt &rest _args)
-                   (if (string-prefix-p "Prenote" prompt)
-                       "compare"
-                     "chap. 3")))
-                ((symbol-function 'refbox-read-references)
-                 (lambda (&rest _args)
-                   (list (refbox-markdown-test-candidate "alpha")))))
-        (refbox-markdown-insert-citation)
-        (should (equal (buffer-string) "[compare @alpha, chap. 3]"))))))
+	      (cl-letf (((symbol-function 'read-from-minibuffer)
+	                 (lambda (prompt &rest _args)
+	                   (if (string-prefix-p "Prenote" prompt)
+	                       "compare"
+	                     "chap. 3")))
+	                ((symbol-function 'refbox-read-references)
+	                 (lambda (&rest _args)
+	                   (list (refbox-markdown-test-candidate "alpha")))))
+	        (refbox-markdown-insert-edit)
+	        (should (equal (buffer-string) "[compare @alpha, chap. 3]"))))))
+
+(ert-deftest refbox-markdown-test-nil_citation_insert_does_not_prompt ()
+  "Programmatic nil Markdown insertion should match Citar's no-op."
+  (refbox-markdown-test-with-buffer "Alpha |omega"
+    (cl-letf (((symbol-function 'refbox-read-references)
+               (lambda (&rest _args)
+                 (error "nil citation insertion should not read references"))))
+      (refbox-markdown-insert-citation nil)
+      (should (equal (buffer-string) "Alpha omega")))))
 
 (ert-deftest refbox-markdown-test-lists-current-buffer-keys ()
   "Current-buffer key listing should deduplicate Pandoc keys."

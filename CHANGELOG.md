@@ -11,6 +11,7 @@ The format follows Keep a Changelog, and this project follows SemVer.
 - Let explicit bibliography files participate in full sync and targeted autosync even when they live outside discovery roots.
 - Route reference-list formatting through the Emacs citeproc integration instead of a daemon-side placeholder formatter.
 - Let `make test-elisp TESTS=...` run a single ERT selector or a space-separated selector list for scoped parity work.
+- Renamed `refbox-search-tag-aliases` to `refbox-search-tag-shortcuts` as the single public configuration point for terse search tags.
 
 ### Fixed
 - Preserved duplicate-key entries, including same-file duplicates, by using daemon row ids for completion identity, entry lookup, resources, raw entry text, and source locations.
@@ -56,11 +57,21 @@ The format follows Keep a Changelog, and this project follows SemVer.
 - Removed extra interactive selection echo messages from reference readers and selectors.
 - Matched Citar's citeproc formatter contract by returning citeproc's formatted bibliography string directly.
 - Trimmed the default reference and citation action keymaps to Citar's visible bindings.
+- Pushed exact-key hydration limits into store queries instead of materializing every duplicate-key entry before truncating.
+- Matched Citar's reference action argument contract by passing programmatic nil references through instead of prompting.
+- Matched Citar's unsupported citation-insertion contract by reserving the hard error for interactive insertion.
+- Matched Citar's resource action argument contract by moving reference selection into interactive specs instead of programmatic nil calls.
+- Matched Citar's BibTeX insertion contract by treating programmatic nil references as empty output instead of prompting.
+- Matched Citar's local bibliography export behavior by writing an empty file when the current buffer has no citations.
+- Matched Citar's note action argument contract by moving note/reference selection into interactive specs instead of programmatic nil calls.
+- Matched Citar's mode citation-adapter contract by keeping reference selection in `insert-edit` and generic insertion paths.
+- Matched Citar's citeproc formatter contract by treating programmatic nil references as empty output.
+- Matched Citar's exact-key selection behavior by allowing completion UIs to accept keys outside the current result page.
 
 ## [0.4.8] - 2026-05-17
 
 ### Fixed
-- Added Citar-style short indicator search aliases such as `:p`, `:f`, `:n`, `:l`, and `:c`.
+- Added Citar-style short indicator search shortcuts such as `:p`, `:f`, `:n`, `:l`, and `:c`.
 - Exposed Refbox resource candidates to Embark so file and URL choices use native Embark actions while note/create-note choices keep Refbox actions.
 - Aligned Refbox Embark reference actions with the main reference action map while preserving duplicate-key source identity and multi-target selection.
 - Made CAPF completion return clean citation-key candidates with author/title annotations instead of minibuffer affixation, while hydrating only the fields needed for annotation.

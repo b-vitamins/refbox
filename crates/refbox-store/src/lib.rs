@@ -339,7 +339,15 @@ impl RefboxStore {
         })
     }
 
-    pub fn entries_by_key(&self, key: &str) -> Result<Vec<StoredEntry>> {
+    pub fn entries_by_key(
+        &self,
+        key: &str,
+        source_path: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<StoredEntry>> {
+        let limit = limit
+            .map(|limit| i64::try_from(limit).map_err(|_| StoreError::LimitOutOfRange(limit)))
+            .transpose()?;
         let mut statement = self.connection.prepare(
             "SELECT e.id, f.path, e.entry_key, e.entry_type,
                     e.source_path, e.source_start_byte, e.source_start_line, e.source_start_column,
@@ -347,10 +355,12 @@ impl RefboxStore {
              FROM entries e
              JOIN files f ON f.id = e.file_id
              WHERE e.entry_key = ?1
-             ORDER BY f.path, e.id",
+               AND (?2 IS NULL OR f.path = ?2)
+             ORDER BY f.path, e.id
+             LIMIT COALESCE(?3, -1)",
         )?;
         let entries = statement
-            .query_map(params![key], stored_entry_from_row)?
+            .query_map(params![key, source_path, limit], stored_entry_from_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(entries)
     }
@@ -437,7 +447,7 @@ impl RefboxStore {
         crossref_fields: &[String],
     ) -> Result<Vec<StoredResource>> {
         let mut resources = Vec::new();
-        for entry in self.entries_by_key(key)? {
+        for entry in self.entries_by_key(key, None, None)? {
             resources.extend(self.resources_for_entry(entry.id, crossref_fields)?);
         }
         Ok(resources)
@@ -451,7 +461,7 @@ impl RefboxStore {
     ) -> Result<Vec<StoredResource>> {
         let mut resources = Vec::new();
         for key in keys {
-            for entry in self.entries_by_key(key)?.into_iter().take(limit_per_key) {
+            for entry in self.entries_by_key(key, None, Some(limit_per_key))? {
                 resources.extend(self.resources_for_entry(entry.id, crossref_fields)?);
             }
         }
@@ -1108,7 +1118,7 @@ impl RefboxStore {
 
         let parent_keys = self.crossref_parent_keys(entry_id, crossref_fields)?;
         for parent_key in parent_keys {
-            for parent in self.entries_by_key(&parent_key)? {
+            for parent in self.entries_by_key(&parent_key, None, None)? {
                 if visited.contains(&parent.id) {
                     continue;
                 }

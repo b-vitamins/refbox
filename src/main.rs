@@ -400,10 +400,9 @@ impl Daemon {
                 for key in request.keys {
                     search_results.extend(
                         self.store
-                            .entries_by_key(&key)
+                            .entries_by_key(&key, None, Some(limit))
                             .map_err(store_error)?
                             .into_iter()
-                            .take(limit)
                             .map(|entry| SearchResult {
                                 entry_id: entry.id,
                                 file_path: entry.file_path,
@@ -593,10 +592,10 @@ impl Daemon {
             return Ok(entry);
         }
 
-        let mut entries = self.store.entries_by_key(key).map_err(store_error)?;
-        if let Some(source_path) = source_path {
-            entries.retain(|entry| entry.file_path == source_path);
-        }
+        let mut entries = self
+            .store
+            .entries_by_key(key, source_path, Some(2))
+            .map_err(store_error)?;
 
         match entries.len() {
             0 => Err(unknown_key(key.to_string())),

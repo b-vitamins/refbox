@@ -45,7 +45,7 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                (lambda (&rest _args)
                  (list (refbox-org-test-candidate "alpha")
                        (refbox-org-test-candidate "beta")))))
-      (refbox-org-insert-citation)
+      (refbox-org-insert-edit)
       (should (equal (buffer-string)
                      "Alpha [cite:@alpha; @beta]omega")))))
 
@@ -71,7 +71,7 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                        (lambda (&rest args)
                          (push args calls)
                          (list (refbox-org-test-candidate "alpha")))))
-              (refbox-org-insert-citation)
+              (refbox-org-insert-edit)
               (should (equal (nth 4 (car calls)) (list bib)))
               (should (eq (nth 5 (car calls)) t)))))
       (delete-directory root t))))
@@ -82,7 +82,7 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
     (cl-letf (((symbol-function 'refbox-read-reference)
                (lambda (&rest _args)
                  (refbox-org-test-candidate "gamma"))))
-      (refbox-org-insert-citation)
+      (refbox-org-insert-edit)
       (should (equal (buffer-string)
                      "[cite:@gamma; @beta]")))))
 
@@ -92,7 +92,7 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
     (cl-letf (((symbol-function 'refbox-read-reference)
                (lambda (&rest _args)
                  (refbox-org-test-candidate "gamma"))))
-      (refbox-org-insert-citation)
+      (refbox-org-insert-edit)
       (should (equal (buffer-string)
                      "[cite:@gamma;@alpha; @beta]")))))
 
@@ -111,9 +111,21 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
   (refbox-org-test-with-buffer "[cite/au|thor:@alpha]"
     (cl-letf (((symbol-function 'refbox-org--select-style)
                (lambda (_citation) "text")))
-      (refbox-org-insert-citation)
+      (refbox-org-insert-edit)
       (should (equal (buffer-string)
                      "[cite/text:@alpha]")))))
+
+(ert-deftest refbox-org-test-nil_citation_insert_does_not_prompt ()
+  "Programmatic nil Org insertion should not select references."
+  (refbox-org-test-with-buffer "Alpha |omega"
+    (cl-letf (((symbol-function 'refbox-read-references)
+               (lambda (&rest _args)
+                 (error "nil citation insertion should not read references")))
+              ((symbol-function 'refbox-read-reference)
+               (lambda (&rest _args)
+                 (error "nil citation insertion should not read a reference"))))
+      (refbox-org-insert-citation nil)
+      (should (equal (buffer-string) "Alpha [cite:]omega")))))
 
 (ert-deftest refbox-org-test-style_selection_uses_org_supported_styles ()
   "Style completion should use Org's supported style registry by default."

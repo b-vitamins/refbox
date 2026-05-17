@@ -308,6 +308,18 @@ When TRANSFORM is non-nil, return the displayed candidate."
    #'refbox-org--select-keys
    #'refbox-org--select-style))
 
+(defun refbox-org--insert-edit (style)
+  "Insert or edit an Org citation through the Refbox Org processor."
+  (let ((context (org-element-context))
+        (insert (refbox-org--insert-processor)))
+    (cond
+     ((org-element-type-p context '(citation citation-reference))
+      (funcall insert context style))
+     ((org-cite--allowed-p context)
+      (funcall insert nil style))
+     (t
+      (user-error "Cannot insert an Org citation here")))))
+
 ;;;###autoload
 (defun refbox-org-register-processor ()
   "Register the refbox Org citation processor for Org's native dispatcher."
@@ -319,30 +331,18 @@ When TRANSFORM is non-nil, return the displayed candidate."
    :activate #'refbox-org-activate))
 
 ;;;###autoload
-(defun refbox-org-insert-citation (&optional keys style)
+(defun refbox-org-insert-citation (keys &optional style)
   "Insert or edit an Org citation at point.
 
-KEYS, when non-nil, supplies citation keys directly.  When KEYS is nil,
-STYLE is forwarded to Org's insertion processor as the raw prefix
-argument."
-  (interactive (list nil current-prefix-arg))
-  (if keys
-      (refbox-org--insert-supplied-citation keys style)
-    (let ((context (org-element-context))
-          (insert (refbox-org--insert-processor)))
-      (cond
-       ((org-element-type-p context '(citation citation-reference))
-        (funcall insert context style))
-       ((org-cite--allowed-p context)
-        (funcall insert nil style))
-       (t
-        (user-error "Cannot insert an Org citation here"))))))
+KEYS supplies citation keys directly.  STYLE is forwarded to Org's
+citation formatter."
+  (refbox-org--insert-supplied-citation keys style))
 
 ;;;###autoload
 (defun refbox-org-insert-edit (&optional arg)
   "Insert or edit an Org citation at point."
   (interactive "P")
-  (refbox-org-insert-citation nil arg))
+  (refbox-org--insert-edit arg))
 
 (defun refbox-org-reference-at-point (&optional datum)
   "Return the Org citation reference at point or in DATUM."

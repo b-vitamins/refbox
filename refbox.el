@@ -335,7 +335,7 @@ once the input is selective enough to shape useful results."
   :type 'natnum
   :group 'refbox)
 
-(defcustom refbox-search-tag-aliases
+(defcustom refbox-search-tag-shortcuts
   '((":f" . "has:files")
     (":p" . "has:files")
     (":l" . "has:links")
@@ -343,7 +343,7 @@ once the input is selective enough to shape useful results."
     (":c" . "is:cited"))
   "Short search tokens expanded to Refbox search tags.
 
-These aliases keep the rich completion prompt terse while preserving the
+These shortcuts keep the rich completion prompt terse while preserving the
 long-form tags used by commands and indicator definitions."
   :type '(alist :key-type string :value-type string)
   :group 'refbox)
@@ -1817,7 +1817,7 @@ direct function transform."
 (defun refbox-search--normalize-tag (token)
   "Return canonical search tag for TOKEN."
   (let ((normalized (downcase token)))
-    (or (alist-get normalized refbox-search-tag-aliases nil nil #'equal)
+    (or (alist-get normalized refbox-search-tag-shortcuts nil nil #'equal)
         normalized)))
 
 (defun refbox-search--parse-query (query)
@@ -3234,7 +3234,7 @@ signal a user error; when it is explicitly nil, return nil."
 
 (defun refbox-note-source-create (reference)
   "Create or open a note for REFERENCE using the active source."
-  (let ((key (refbox--reference-key reference)))
+  (let ((key (and reference (refbox--reference-key reference))))
     (funcall (refbox-note-source--function :create) key reference)))
 
 (defun refbox--command-should-prompt-p (command)
@@ -3551,10 +3551,11 @@ COMMAND controls `refbox-open-always-create-notes'."
                      (plist-get choice :type))))))
 
 ;;;###autoload
-(defun refbox-open-files (&optional references)
+(defun refbox-open-files (references)
   "Open a file resource for REFERENCES."
-  (interactive)
-  (let* ((references (refbox--contextual-reference-list references))
+  (interactive (list (refbox-select-refs)))
+  (let* ((references (and references
+                          (refbox--contextual-reference-list references)))
          (choices (refbox--file-choices references)))
     (when-let ((choice
                 (refbox--read-resource-choice-or-nil
@@ -3566,10 +3567,11 @@ COMMAND controls `refbox-open-always-create-notes'."
       (refbox--open-resource-choice choice))))
 
 ;;;###autoload
-(defun refbox-attach-files (&optional references)
+(defun refbox-attach-files (references)
   "Attach a file resource for REFERENCES to an outgoing MIME message."
-  (interactive)
-  (let* ((references (refbox--contextual-reference-list references))
+  (interactive (list (refbox-select-ref)))
+  (let* ((references (and references
+                          (refbox--contextual-reference-list references)))
          (choices (refbox--file-choices references))
          (choice
           (refbox--read-resource-choice-or-nil
@@ -3588,10 +3590,11 @@ COMMAND controls `refbox-open-always-create-notes'."
         file))))
 
 ;;;###autoload
-(defun refbox-open-links (&optional references)
+(defun refbox-open-links (references)
   "Open a link resource for REFERENCES."
-  (interactive)
-  (let* ((references (refbox--contextual-reference-list references))
+  (interactive (list (refbox-select-refs)))
+  (let* ((references (and references
+                          (refbox--contextual-reference-list references)))
          (choices (refbox--link-choices references)))
     (when-let ((choice
                 (refbox--read-resource-choice-or-nil
@@ -3603,10 +3606,11 @@ COMMAND controls `refbox-open-always-create-notes'."
       (refbox--open-resource-choice choice))))
 
 ;;;###autoload
-(defun refbox-open-notes (&optional references)
+(defun refbox-open-notes (references)
   "Open or create a note for REFERENCES."
-  (interactive)
-  (let* ((references (refbox--contextual-reference-list references))
+  (interactive (list (refbox-select-refs)))
+  (let* ((references (and references
+                          (refbox--contextual-reference-list references)))
          (choices
           (refbox--note-choices
            references
@@ -3620,25 +3624,26 @@ COMMAND controls `refbox-open-always-create-notes'."
       (refbox--open-resource-choice choice))))
 
 ;;;###autoload
-(defun refbox-open-note (&optional note)
+(defun refbox-open-note (note)
   "Open NOTE, or select a note from all notes in the active source."
-  (interactive)
-  (if note
-      (refbox-note-source-open note)
+  (interactive
+   (list
     (when-let ((choice
                 (refbox--read-resource-choice-or-nil
                  "Note: "
                  (refbox--all-note-choices)
                  'refbox-open-note)))
-      (refbox-note-source-open (plist-get choice :target)))))
+      (plist-get choice :target))))
+  (when note
+    (refbox-note-source-open note)))
 
 ;;;###autoload
-(defun refbox-create-note (&optional key entry)
+(defun refbox-create-note (key &optional entry)
   "Create or open the note for KEY.
 
 KEY may be a reference key string or an indexed candidate.  ENTRY, when
 non-nil, is a bibliography entry alist used as candidate metadata."
-  (interactive)
+  (interactive (list (refbox-select-ref)))
   (refbox-note-source-create
    (cond
     ((and (listp key) (plist-member key :key)) key)
@@ -3648,14 +3653,14 @@ non-nil, is a bibliography entry alist used as candidate metadata."
            (if (stringp contextual)
                (refbox-entry-by-key contextual)
              contextual))))
-    (t
-     (refbox-read-reference)))))
+    (t nil))))
 
 ;;;###autoload
-(defun refbox-open (&optional references)
+(defun refbox-open (references)
   "Open a file, link, or note associated with REFERENCES."
-  (interactive)
-  (let* ((references (refbox--contextual-reference-list references))
+  (interactive (list (refbox-select-refs)))
+  (let* ((references (and references
+                          (refbox--contextual-reference-list references)))
          (choices
           (append
            (when (memq :files refbox-open-resources)
@@ -3743,11 +3748,10 @@ non-nil, is a bibliography entry alist used as candidate metadata."
         (move-to-column (max 0 (1- column)))))))
 
 ;;;###autoload
-(defun refbox-open-source (&optional reference)
+(defun refbox-open-source (reference)
   "Open REFERENCE's bibliography source at its indexed location."
-  (interactive)
-  (let* ((reference (or reference (refbox-read-reference)))
-         (location (refbox-source-location reference))
+  (interactive (list (refbox-read-reference)))
+  (let* ((location (refbox-source-location reference))
          (path (plist-get location :source_path))
          (source (plist-get location :source)))
     (unless (and path source)
@@ -3939,12 +3943,12 @@ report if the effective limit is invalid."
       (pop-to-buffer (current-buffer)))))
 
 ;;;###autoload
-(defun refbox-open-entry (&optional reference)
+(defun refbox-open-entry (reference)
   "Open REFERENCE's bibliography entry using `refbox-open-entry-function'."
-  (interactive)
-  (funcall refbox-open-entry-function (or reference (refbox-read-reference))))
+  (interactive (list (refbox-select-ref)))
+  (funcall refbox-open-entry-function reference))
 
-(defun refbox-open-entry-in-file (&optional reference)
+(defun refbox-open-entry-in-file (reference)
   "Open REFERENCE's bibliography entry at its indexed source location."
   (refbox-open-source reference))
 
@@ -3952,7 +3956,7 @@ report if the effective limit is invalid."
   "Return a Zotero select URL for REFERENCE."
   (format "zotero://select/items/@%s" (refbox--reference-key reference)))
 
-(defun refbox-open-entry-in-zotero (&optional reference)
+(defun refbox-open-entry-in-zotero (reference)
   "Open REFERENCE in Zotero using its citation key."
   (funcall refbox-zotero-open-function (refbox-zotero-url reference)))
 
@@ -4163,27 +4167,28 @@ key-shaped daemon requests for raw/source/resource commands."
 
 (defun refbox--bibtex-export-text (references)
   "Return Citar-style BibTeX export text for REFERENCES."
-  (concat
-   (string-join
-    (mapcar (lambda (reference)
-              (refbox-raw-entry-remove-fields
-               (refbox-raw-entry reference)
-               refbox-bibtex-no-export-fields))
-            references)
-    "\n\n")
-   "\n\n"))
+  (if references
+      (concat
+       (string-join
+        (mapcar (lambda (reference)
+                  (refbox-raw-entry-remove-fields
+                   (refbox-raw-entry reference)
+                   refbox-bibtex-no-export-fields))
+                references)
+        "\n\n")
+       "\n\n")
+    ""))
 
 ;;;###autoload
-(defun refbox-insert-bibtex (&optional references)
+(defun refbox-insert-bibtex (references)
   "Insert BibTeX entries for REFERENCES.
 
 Fields listed in `refbox-bibtex-no-export-fields' are removed before
 insertion."
-  (interactive)
-  (let ((references (refbox--contextual-reference-list references)))
-    (unless references
-      (user-error "No references selected"))
-    (insert (refbox--bibtex-export-text references))))
+  (interactive (list (refbox-select-refs)))
+  (insert
+   (refbox--bibtex-export-text
+    (and references (refbox--contextual-reference-list references)))))
 
 (defun refbox--generic-citation-keys ()
   "Return unique @KEY-style citation keys in the current buffer."
@@ -4293,19 +4298,18 @@ insertion."
     (refbox--major-mode-function 'local-bib-files #'ignore)))
 
 ;;;###autoload
-(defun refbox-insert-keys (&optional references)
+(defun refbox-insert-keys (references)
   "Insert selected reference keys in a mode-appropriate form."
-  (interactive)
-  (let ((keys (refbox--references-keys (refbox--reference-list references))))
-    (unless keys
-      (user-error "No references selected"))
+  (interactive (list (refbox-select-refs)))
+  (let ((keys (refbox--references-keys
+               (and references (refbox--reference-list references)))))
     (refbox--major-mode-function
      'insert-keys
      #'refbox--insert-keys-comma-space-separated
      keys)))
 
 ;;;###autoload
-(defun refbox-insert-citation (&optional references arg)
+(defun refbox-insert-citation (references &optional arg)
   "Insert or edit a citation using the current major-mode adapter.
 
 REFERENCES, when non-nil, supplies reference keys or candidates.  ARG is
@@ -4313,9 +4317,7 @@ passed to the adapter command."
   (interactive
    (if (refbox--get-major-mode-function 'insert-citation)
        (list (refbox-select-refs) current-prefix-arg)
-     (user-error "Citation insertion is not supported for %s" major-mode)))
-  (unless (refbox--get-major-mode-function 'insert-citation)
-    (user-error "Citation insertion is not supported for %s" major-mode))
+     (error "Citation insertion is not supported for %s" major-mode)))
   (refbox--major-mode-function
    'insert-citation
    #'ignore
@@ -4363,8 +4365,6 @@ passed to the adapter command."
   (interactive
    (list (read-file-name "Export bibliography to: " nil nil nil "references.bib")))
   (let ((keys (or keys (refbox-current-buffer-citation-keys))))
-    (unless keys
-      (user-error "Current buffer contains no citation keys"))
     (with-temp-file file
       (insert (refbox--bibtex-export-text keys)))
     file))
@@ -4589,44 +4589,46 @@ passed to the adapter command."
   "Return CSL-formatted reference strings for REFERENCES.
 
 STYLE, when non-nil, overrides `refbox-citeproc-csl-style'."
-  (refbox-citeproc--require)
-  (let ((references (refbox--resolved-reference-list references)))
-    (unless references
-      (user-error "No references selected"))
-    (when (or current-prefix-arg
-              (and (null style)
-                   (refbox--blank-string-p refbox-citeproc-csl-style)))
-      (refbox-citeproc-select-csl-style))
-    (let ((refbox-citeproc-csl-style
-           (or style refbox-citeproc-csl-style)))
-      (let* ((style-path (refbox-csl--style-file))
-             (locale-path (refbox-csl--locale-file))
-             (locale-dir (file-name-directory locale-path))
-             (locale-id (refbox-csl--locale-id))
-             (items (make-hash-table :test 'equal))
-             ids)
-        (cl-loop for reference in references
-                 for index from 0
-                 for id = (refbox-citeproc--reference-id reference index)
-                 do (push id ids)
-                 do (puthash id
-                             (refbox-citeproc--csl-from-entry
-                              (refbox--entry-alist reference))
-                             items))
-        (let* ((processor
-                (citeproc-create
-                 style-path
-                 (lambda (keys)
-                   (mapcar (lambda (key)
-                             (cons key (gethash key items)))
-                           keys))
-                 (citeproc-locale-getter-from-dir locale-dir)
-                 locale-id))
-               (references
-                (car (progn
-                       (citeproc-add-uncited (nreverse ids) processor)
-                       (citeproc-render-bib processor 'plain)))))
-          references)))))
+  (if (null references)
+      ""
+    (refbox-citeproc--require)
+    (let ((references (refbox--resolved-reference-list references)))
+      (unless references
+        (user-error "No references selected"))
+      (when (or current-prefix-arg
+                (and (null style)
+                     (refbox--blank-string-p refbox-citeproc-csl-style)))
+        (refbox-citeproc-select-csl-style))
+      (let ((refbox-citeproc-csl-style
+             (or style refbox-citeproc-csl-style)))
+        (let* ((style-path (refbox-csl--style-file))
+               (locale-path (refbox-csl--locale-file))
+               (locale-dir (file-name-directory locale-path))
+               (locale-id (refbox-csl--locale-id))
+               (items (make-hash-table :test 'equal))
+               ids)
+          (cl-loop for reference in references
+                   for index from 0
+                   for id = (refbox-citeproc--reference-id reference index)
+                   do (push id ids)
+                   do (puthash id
+                               (refbox-citeproc--csl-from-entry
+                                (refbox--entry-alist reference))
+                               items))
+          (let* ((processor
+                  (citeproc-create
+                   style-path
+                   (lambda (keys)
+                     (mapcar (lambda (key)
+                               (cons key (gethash key items)))
+                             keys))
+                   (citeproc-locale-getter-from-dir locale-dir)
+                   locale-id))
+                 (references
+                  (car (progn
+                         (citeproc-add-uncited (nreverse ids) processor)
+                         (citeproc-render-bib processor 'plain)))))
+            references))))))
 
 (defun refbox-citeproc-format-reference (references &optional style)
   "Return CSL-formatted reference text for REFERENCES.
@@ -4636,8 +4638,9 @@ STYLE, when non-nil, overrides `refbox-citeproc-csl-style'."
 
 (defun refbox-format-references (references)
   "Return template-formatted reference strings for REFERENCES."
-  (mapcar #'refbox-reference-format-preview
-          (refbox--resolved-reference-list references)))
+  (when references
+    (mapcar #'refbox-reference-format-preview
+            (refbox--resolved-reference-list references))))
 
 (defun refbox-format-reference (references)
   "Return formatted reference text for REFERENCES."
@@ -4649,13 +4652,13 @@ STYLE, when non-nil, overrides `refbox-citeproc-csl-style'."
            references))
 
 ;;;###autoload
-(defun refbox-insert-reference (&optional references)
+(defun refbox-insert-reference (references)
   "Insert formatted references for REFERENCES."
   (interactive (list (refbox-select-refs)))
   (insert (refbox--format-reference-text references)))
 
 ;;;###autoload
-(defun refbox-copy-reference (&optional references)
+(defun refbox-copy-reference (references)
   "Copy formatted references for REFERENCES to the kill ring."
   (interactive (list (refbox-select-refs)))
   (let ((text (refbox--format-reference-text references)))
@@ -4804,13 +4807,12 @@ asks before replacing an existing file."
   (read-multiple-choice "Add file from" refbox-add-file-sources))
 
 ;;;###autoload
-(defun refbox-add-file-to-library (&optional reference)
+(defun refbox-add-file-to-library (reference)
   "Add a configured source resource to REFERENCE's library files."
-  (interactive)
+  (interactive (list (refbox-select-ref)))
   (unless (functionp refbox-add-file-function)
     (user-error "refbox-add-file-function is not callable"))
-  (let* ((reference (or reference (refbox-read-reference)))
-         (source (refbox-add-file-source--read))
+  (let* ((source (refbox-add-file-source--read))
          (source-plist (funcall (refbox-add-file-source--function source)
                                 reference)))
     (funcall refbox-add-file-function reference source-plist)))
@@ -5136,7 +5138,7 @@ selection can still resolve to the candidate it came from."
                      prompt
                      (or table (refbox--completion-table state))
                      (refbox--completion-predicate predicate)
-                     (not allow-empty)
+                     nil
                      preset
                      'refbox-history
                      refbox-presets))

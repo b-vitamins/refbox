@@ -263,33 +263,29 @@ Captures the actual key in group 1.")
   (insert (mapconcat (lambda (key) (concat "@" key)) keys "; ")))
 
 ;;;###autoload
-(defun refbox-markdown-insert-citation (&optional keys invert-prompt)
+(defun refbox-markdown-insert-citation (keys &optional invert-prompt)
   "Insert a bracketed Pandoc Markdown citation at point.
 
 When point is already in a citation, add selected keys to that
-citation instead of replacing it.  KEYS, when non-nil, supplies citation
-keys directly.  INVERT-PROMPT reverses
+citation instead of replacing it.  INVERT-PROMPT reverses
 `refbox-markdown-prompt-for-extra-arguments'."
-  (interactive)
-  (let* ((citation (refbox-markdown-citation-at-point))
-         (keys (or keys (refbox-markdown--selected-keys))))
-    (unless keys
-      (user-error "No references selected"))
-    (if (and citation
-             (/= (point) (plist-get citation :begin))
-             (/= (point) (plist-get citation :end)))
-        (refbox-markdown--insert-keys-into-citation citation keys)
-      (let* ((affixes (refbox-markdown--read-affixes invert-prompt)))
-        (insert (refbox-markdown-format-citation
-                 keys
-                 (car affixes)
-                 (cdr affixes)))))))
+  (let ((citation (refbox-markdown-citation-at-point)))
+    (when keys
+      (if (and citation
+               (/= (point) (plist-get citation :begin))
+               (/= (point) (plist-get citation :end)))
+          (refbox-markdown--insert-keys-into-citation citation keys)
+        (let* ((affixes (refbox-markdown--read-affixes invert-prompt)))
+          (insert (refbox-markdown-format-citation
+                   keys
+                   (car affixes)
+                   (cdr affixes))))))))
 
 ;;;###autoload
 (defun refbox-markdown-insert-edit (&optional arg)
   "Insert or edit a Markdown citation at point."
   (interactive "P")
-  (refbox-markdown-insert-citation nil arg))
+  (refbox-markdown-insert-citation (refbox-markdown--selected-keys) arg))
 
 ;;;###autoload
 (defun refbox-markdown-list-keys (&optional buffer)
