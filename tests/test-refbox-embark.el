@@ -111,7 +111,7 @@
       (should (equal (refbox-embark-references encoded)
                      (list (list :key "alpha")
                            (list :key "beta"))))
-      (should (equal (substring-no-properties encoded) "alpha beta")))))
+      (should (equal (substring-no-properties encoded) "alpha & beta")))))
 
 (ert-deftest refbox-embark-test-candidate_transformer_uses_stable_identity ()
   "Minibuffer candidate transforms should not pass display strings to actions."
@@ -126,6 +126,14 @@
     (should (equal (refbox-embark-reference (cdr target))
                    (list :key "alpha"
                          :source_path "/tmp/refs.bib")))))
+
+(ert-deftest refbox-embark-test-candidate_transformer_preserves_multi_category ()
+  "Minibuffer candidate transforms should preserve Embark multi-category targets."
+  (let* ((display (propertize "Alpha" 'multi-category '(file . "/tmp/a.pdf")))
+         (target (refbox-embark-candidate-transformer
+                  'refbox-reference
+                  display)))
+    (should (equal target '(file . "/tmp/a.pdf")))))
 
 (ert-deftest refbox-embark-test-resource_transformer_exposes_file_targets ()
   "Resource choices should expose real file targets to generic Embark actions."
@@ -236,6 +244,12 @@
     (should (eq (lookup-key (cdr (assq 'refbox-reference embark-keymap-alist))
                             (kbd "g"))
                 #'ignore))
+    (should-not (lookup-key (cdr (assq 'refbox-resource embark-keymap-alist))
+                            (kbd "g")))
+    (should-not (lookup-key (cdr (assq 'refbox-key embark-keymap-alist))
+                            (kbd "g")))
+    (should-not (lookup-key (cdr (assq 'refbox-citation embark-keymap-alist))
+                            (kbd "g")))
     (should (eq (lookup-key (cdr (assq 'refbox-key embark-keymap-alist))
                             (kbd "i"))
                 #'refbox-embark-insert-edit))
@@ -263,6 +277,8 @@
     (should (memq #'refbox-embark-insert-citation
                   embark-multitarget-actions))
     (should (memq #'refbox-embark-run-default-action
+                  embark-multitarget-actions))
+    (should (memq #'refbox-embark-copy-reference
                   embark-multitarget-actions))
     (should (memq #'refbox-embark-copy-references
                   embark-multitarget-actions))

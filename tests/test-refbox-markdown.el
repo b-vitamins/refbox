@@ -47,6 +47,19 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
 	        (refbox-markdown-insert-edit)
 	        (should (equal (buffer-string) "Alpha [@alpha; @beta]omega"))))))
 
+(ert-deftest refbox-markdown-test-insert_edit_ignores_prefix_argument ()
+  "Mode-specific Markdown citation editing should ignore its prefix argument."
+  (refbox-markdown-test-with-buffer "Alpha |omega"
+    (let ((refbox-markdown-prompt-for-extra-arguments nil))
+      (cl-letf (((symbol-function 'read-from-minibuffer)
+                 (lambda (&rest _args)
+                   (error "prefix argument should not prompt for affixes")))
+                ((symbol-function 'refbox-read-references)
+                 (lambda (&rest _args)
+                   (list (refbox-markdown-test-candidate "alpha")))))
+        (refbox-markdown-insert-edit 'invert)
+        (should (equal (buffer-string) "Alpha [@alpha]omega"))))))
+
 (ert-deftest refbox-markdown-test-inserts_supplied_citation_keys ()
   "Citation insertion should accept direct key lists."
   (refbox-markdown-test-with-buffer "Alpha |omega"

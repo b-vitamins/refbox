@@ -36,6 +36,8 @@
 (require 'subr-x)
 (require 'refbox)
 
+(declare-function reftex-all-used-citation-keys "reftex-cite" ())
+
 (defgroup refbox-latex nil
   "LaTeX citation integration for refbox."
   :group 'refbox
@@ -296,14 +298,16 @@ when the configured key argument is absent."
 (defun refbox-latex-list-keys (&optional buffer)
   "Return unique LaTeX citation keys in BUFFER."
   (with-current-buffer (or buffer (current-buffer))
-    (let ((regexp (refbox-latex--command-regexp))
-          keys)
-      (save-excursion
-        (goto-char (point-min))
-        (while (re-search-forward regexp nil t)
-          (when-let ((citation (refbox-latex--parse-citation-at-match)))
-            (setq keys (append keys (plist-get citation :keys))))))
-      (delete-dups keys))))
+    (if (fboundp 'reftex-all-used-citation-keys)
+        (copy-sequence (reftex-all-used-citation-keys))
+      (let ((regexp (refbox-latex--command-regexp))
+            keys)
+        (save-excursion
+          (goto-char (point-min))
+          (while (re-search-forward regexp nil t)
+            (when-let ((citation (refbox-latex--parse-citation-at-match)))
+              (setq keys (append keys (plist-get citation :keys))))))
+        (delete-dups keys)))))
 
 (defun refbox-latex--completion-bounds ()
   "Return LaTeX citation key bounds for completion at point."
@@ -517,10 +521,10 @@ the citation command directly."
       (refbox-latex--move-after-citation))))
 
 ;;;###autoload
-(defun refbox-latex-insert-edit (&optional arg)
+(defun refbox-latex-insert-edit (&optional _arg)
   "Insert or edit a LaTeX citation at point."
   (interactive "P")
-  (refbox-latex-insert-citation (refbox-latex--selected-keys) arg))
+  (refbox-latex-insert-citation (refbox-latex--selected-keys)))
 
 (defun refbox-latex--bib-file (path)
   "Return PATH with a .bib extension when it has no extension."

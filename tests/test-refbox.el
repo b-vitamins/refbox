@@ -3975,10 +3975,11 @@
       (delete-directory root t))))
 
 (ert-deftest refbox-test-csl-style-metadata-and-selection ()
-  "CSL style selection should present metadata-backed choices."
+  "CSL style selection should follow Citar's title-to-filename contract."
   (let* ((root (make-temp-file "refbox-csl-" t))
          (style-dir (expand-file-name "styles" root))
-         (style-file (expand-file-name "apa.csl" style-dir)))
+         (style-file (expand-file-name "apa.csl" style-dir))
+         (other-style-file (expand-file-name "ieee.csl" style-dir)))
     (unwind-protect
         (progn
           (make-directory style-dir t)
@@ -3987,16 +3988,30 @@
                     "<id>http://www.zotero.org/styles/apa-test</id>"
                     "</info></style>"))
           (should (equal (refbox-citeproc-csl-metadata style-file)
+                         "APA Test"))
+          (should (equal (refbox-csl--style-info style-file)
                          (list :file style-file
                                :id "http://www.zotero.org/styles/apa-test"
                                :title "APA Test")))
           (let ((refbox-citeproc-csl-styles-dir style-dir)
                 refbox-citeproc-csl-style)
             (cl-letf (((symbol-function 'completing-read)
-                       (lambda (_prompt collection &rest _args)
-                         (car (all-completions "" collection)))))
-              (should (equal (refbox-citeproc-select-csl-style) style-file))
-              (should (equal refbox-citeproc-csl-style style-file))))
+                       (lambda (&rest _args)
+                         (error "single CSL style should not prompt"))))
+              (should (equal (refbox-citeproc-select-csl-style) "apa.csl"))
+              (should (equal refbox-citeproc-csl-style "apa.csl"))))
+          (with-temp-file other-style-file
+            (insert "<style><info><title>IEEE Test</title></info></style>"))
+          (let ((refbox-citeproc-csl-styles-dir style-dir)
+                refbox-citeproc-csl-style)
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (prompt collection &rest _args)
+                         (should (equal prompt "Select CSL style: "))
+                         (should (equal (assoc "APA Test" collection)
+                                        '("APA Test" . "apa.csl")))
+                         "APA Test")))
+              (should (equal (refbox-citeproc-select-csl-style) "apa.csl"))
+              (should (equal refbox-citeproc-csl-style "apa.csl"))))
           (let ((refbox-citeproc-csl-styles-dir style-dir)
                 (refbox-citeproc-csl-style "http://www.zotero.org/styles/apa-test"))
             (should (equal (refbox-csl--style-file) style-file))))

@@ -265,10 +265,10 @@ citation instead of replacing it.  INVERT-PROMPT reverses
                    (cdr affixes))))))))
 
 ;;;###autoload
-(defun refbox-markdown-insert-edit (&optional arg)
+(defun refbox-markdown-insert-edit (&optional _arg)
   "Insert or edit a Markdown citation at point."
   (interactive "P")
-  (refbox-markdown-insert-citation (refbox-markdown--selected-keys) arg))
+  (refbox-markdown-insert-citation (refbox-markdown--selected-keys)))
 
 ;;;###autoload
 (defun refbox-markdown-list-keys (&optional buffer)

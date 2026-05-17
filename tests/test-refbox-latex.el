@@ -118,6 +118,22 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
 	                       "Before \\parencite{alpha,beta} after"))
 	        (should (looking-at " after"))))))
 
+(ert-deftest refbox-latex-test-insert_edit_ignores_prefix_argument ()
+  "Mode-specific LaTeX citation editing should ignore its prefix argument."
+  (refbox-latex-test-with-buffer "Before | after"
+    (let ((refbox-latex-default-cite-command "parencite")
+          (refbox-latex-prompt-for-cite-style nil)
+          (refbox-latex-prompt-for-extra-arguments nil))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (&rest _args)
+                   (error "prefix argument should not prompt for command")))
+                ((symbol-function 'refbox-read-references)
+                 (lambda (&rest _args)
+                   (list (refbox-latex-test-candidate "alpha")))))
+        (refbox-latex-insert-edit 'invert)
+        (should (equal (buffer-string)
+                       "Before \\parencite{alpha} after"))))))
+
 (ert-deftest refbox-latex-test-inserts_supplied_citation_keys ()
   "Citation insertion should accept direct key lists and command overrides."
   (refbox-latex-test-with-buffer "Before | after"
@@ -397,6 +413,13 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
   "Key listing should deduplicate LaTeX citation keys."
   (refbox-latex-test-with-buffer "\\cite{alpha,beta}\n\\parencite{alpha}\n|"
     (should (equal (refbox-latex-list-keys) '("alpha" "beta")))))
+
+(ert-deftest refbox-latex-test-list_keys_prefers_reftex_when_loaded ()
+  "Key listing should use RefTeX when its citation scanner is available."
+  (refbox-latex-test-with-buffer "\\cite{alpha}\n|"
+    (cl-letf (((symbol-function 'reftex-all-used-citation-keys)
+               (lambda () '("reftex-alpha"))))
+      (should (equal (refbox-latex-list-keys) '("reftex-alpha"))))))
 
 (ert-deftest refbox-latex-test-capf-completes-scoped-citation-keys ()
   "LaTeX CAPF should complete citation keys through bounded scoped search."

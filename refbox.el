@@ -4746,7 +4746,7 @@ passed to the adapter command."
               (refbox-csl--node-children node)
               "")))
 
-(defun refbox-citeproc-csl-metadata (file)
+(defun refbox-csl--style-info (file)
   "Return metadata plist for CSL style FILE."
   (let* ((root (car (xml-parse-file file)))
          (info-node (and root (refbox-csl--child-node root 'info)))
@@ -4760,6 +4760,10 @@ passed to the adapter command."
                      (file-name-base file)
                    title))))
 
+(defun refbox-citeproc-csl-metadata (file)
+  "Return metadata title from CSL style FILE."
+  (plist-get (refbox-csl--style-info file) :title))
+
 (defun refbox-csl--name-match-p (file value extension)
   "Return non-nil when FILE name matches VALUE with EXTENSION."
   (let ((name (if (string-suffix-p extension value)
@@ -4771,7 +4775,7 @@ passed to the adapter command."
 (defun refbox-csl--style-match-p (file value)
   "Return non-nil when CSL style FILE matches VALUE."
   (or (refbox-csl--name-match-p file value ".csl")
-      (equal (plist-get (ignore-errors (refbox-citeproc-csl-metadata file)) :id)
+      (equal (plist-get (ignore-errors (refbox-csl--style-info file)) :id)
              value)))
 
 (defun refbox-csl--locale-match-p (file value)
@@ -4829,23 +4833,20 @@ passed to the adapter command."
 (defun refbox-citeproc-select-csl-style ()
   "Select a CSL style from `refbox-citeproc-csl-styles-dir'."
   (interactive)
-  (let ((metadata (mapcar #'refbox-citeproc-csl-metadata
-                          (refbox-csl--style-files))))
-    (unless metadata
+  (let* ((files (refbox-csl--style-files))
+         (choices
+          (mapcar
+           (lambda (file)
+             (cons (refbox-citeproc-csl-metadata file)
+                   (file-name-nondirectory file)))
+           files)))
+    (unless choices
       (user-error "`refbox-citeproc-csl-styles-dir' contains no readable CSL styles"))
-    (let ((table (make-hash-table :test 'equal)))
-      (dolist (item metadata)
-        (let* ((title (plist-get item :title))
-               (id (plist-get item :id))
-               (label (if id
-                          (format "%s <%s>" title id)
-                        title)))
-          (puthash label item table)))
-      (let* ((choice (completing-read "CSL style: " table nil t))
-             (item (gethash choice table)))
-        (setq refbox-citeproc-csl-style (plist-get item :file))
-        (message "refbox CSL style: %s" (plist-get item :title))
-        refbox-citeproc-csl-style))))
+    (let* ((style (if (= (length choices) 1)
+                      (caar choices)
+                    (completing-read "Select CSL style: " choices nil t)))
+           (file (cdr (assoc style choices))))
+      (setq refbox-citeproc-csl-style file))))
 
 (defun refbox-citeproc--require ()
   "Load citeproc-el or signal an actionable user error."

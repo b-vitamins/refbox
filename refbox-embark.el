@@ -143,6 +143,7 @@
     refbox-embark-insert-keys
     refbox-embark-run-default-action
     refbox-embark-open-notes
+    refbox-embark-copy-reference
     refbox-embark-copy-references)
   "Embark multi-target actions installed by `refbox-embark-mode'.")
 
@@ -167,7 +168,7 @@
 
 (defun refbox-embark--citation-target-string (keys)
   "Return an Embark target string for citation KEYS."
-  (let ((target (copy-sequence (string-join keys " "))))
+  (let ((target (copy-sequence (combine-and-quote-strings keys " & "))))
     (put-text-property
      0
      (length target)
@@ -212,7 +213,8 @@
 
 (defun refbox-embark-candidate-transformer (_type target)
   "Transform minibuffer completion TARGET to a stable refbox reference."
-  (or (when-let ((candidate (get-text-property 0 'refbox-candidate target)))
+  (or (get-text-property 0 'multi-category target)
+      (when-let ((candidate (get-text-property 0 'refbox-candidate target)))
         (cons 'refbox-reference (refbox-embark--target-string candidate)))
       (cons 'refbox-reference target)))
 
@@ -246,6 +248,12 @@
   (if (and (boundp 'embark-general-map)
            (keymapp embark-general-map))
       (make-composed-keymap map embark-general-map)
+    map))
+
+(defun refbox-embark--category-keymap (category map)
+  "Return Embark keymap MAP for CATEGORY."
+  (if (eq category 'refbox-reference)
+      (refbox-embark--with-general-map map)
     map))
 
 (defun refbox-embark--property-position (property)
@@ -326,19 +334,21 @@
 
 (defun refbox-embark-target-key-at-point ()
   "Return an Embark target for the citation key at point."
-  (pcase (refbox-embark--citation-key-and-bounds)
-    (`(,key ,start ,end)
-     (cons 'refbox-key
-           (cons (refbox-embark--target-string key)
-                 (cons start end))))))
+  (unless (minibufferp)
+    (pcase (refbox-embark--citation-key-and-bounds)
+      (`(,key ,start ,end)
+       (cons 'refbox-key
+             (cons (refbox-embark--target-string key)
+                   (cons start end)))))))
 
 (defun refbox-embark-target-citation-at-point ()
   "Return an Embark target for the whole citation at point."
-  (pcase (refbox-embark--citation-keys-and-bounds)
-    (`(,keys ,start ,end)
-     (cons 'refbox-citation
-           (cons (refbox-embark--citation-target-string keys)
-                 (cons start end))))))
+  (unless (minibufferp)
+    (pcase (refbox-embark--citation-keys-and-bounds)
+      (`(,keys ,start ,end)
+       (cons 'refbox-citation
+             (cons (refbox-embark--citation-target-string keys)
+                   (cons start end)))))))
 
 (defun refbox-embark-selected-candidates ()
   "Return selected refbox candidates from the active multi-reference prompt."
@@ -468,7 +478,7 @@
       (setf (alist-get category embark-transformer-alist) transformer)))
   (pcase-dolist (`(,category . ,map) refbox-embark--keymap-alist)
     (setf (alist-get category embark-keymap-alist)
-          (refbox-embark--with-general-map (symbol-value map))))
+          (refbox-embark--category-keymap category (symbol-value map))))
   (when (boundp 'embark-multitarget-actions)
     (dolist (action refbox-embark--multitarget-actions)
       (add-to-list 'embark-multitarget-actions action)))

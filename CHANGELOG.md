@@ -75,6 +75,12 @@ The format follows Keep a Changelog, and this project follows SemVer.
 - Matched Citar's Org citation reference shifting rewrite behavior for prefix and suffix text.
 - Removed extra Org style minibuffer history state so style selection follows Citar's prompt contract.
 - Matched Citar's Org citation-at-point boundary checks when reusing parsed citation elements.
+- Matched Citar's LaTeX insert-edit adapter by ignoring the prefix argument at the mode-specific edit layer.
+- Matched Citar's LaTeX key-listing path by preferring RefTeX's citation scanner when available.
+- Matched Citar's Markdown insert-edit adapter by ignoring the prefix argument at the mode-specific edit layer.
+- Matched Citar's Embark target contracts for citation key strings, multi-category candidates, minibuffer guards, and citation keymaps.
+- Marked the single-reference Embark copy action as multi-target capable, matching Citar's Embark action surface.
+- Matched Citar's citeproc style metadata and selection contract by returning titles and storing selected style filenames.
 - Trimmed the default reference and citation action keymaps to Citar's visible bindings.
 - Pushed exact-key hydration limits into store queries instead of materializing every duplicate-key entry before truncating.
 - Matched Citar's reference action argument contract by passing programmatic nil references through instead of prompting.
