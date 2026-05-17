@@ -4,7 +4,7 @@
 
 ;; Author: Ayan Das <bvits@riseup.net>
 ;; Maintainer: Ayan Das <bvits@riseup.net>
-;; Version: 0.5.1
+;; Version: 0.5.2
 ;; Package-Requires: ((emacs "29.1") (jsonrpc "1.0.27"))
 ;; Keywords: bib, tex, files, convenience
 
@@ -351,7 +351,6 @@ long-form tags used by commands and indicator definitions."
   :type '(alist :key-type string :value-type string)
   :group 'refbox)
 
-;;;###autoload
 (cl-defstruct
     (refbox-indicator (:constructor refbox-indicator-create)
                       (:copier nil))

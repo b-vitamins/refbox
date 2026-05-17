@@ -6,6 +6,12 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-05-17
+
+### Fixed
+- Removed the invalid autoload cookie from the indicator `cl-defstruct`, so
+  byte-compiled autoload files load cleanly in Guix package validation.
+
 ## [0.5.1] - 2026-05-17
 
 ### Fixed
