@@ -42,7 +42,7 @@ fn parses_valid_bibtex_and_biblatex_records() {
     );
 
     let book = entry(&file, "knuth1984");
-    assert_eq!(field_value(book, "title"), "The \\\"TeX\\\" book");
+    assert_eq!(field_value(book, "title"), "The T\u{0308}eXb\u{0308}ook");
     assert_eq!(book.dates[0].parts.year, Some(1984));
     assert!(
         book.resources
@@ -123,6 +123,189 @@ fn normalizes_protective_braces_in_primary_name_fields() {
     assert_eq!(field_value(entry, "editor"), "Team Refbox");
     assert_eq!(field_value(entry, "translator"), "{Translation Team}");
     assert_eq!(field_value(entry, "note"), "{Keep Braces}");
+}
+
+#[test]
+fn keeps_shorttitle_braces_like_parsebib() {
+    let file = parse_bibliography_file(
+        "shorttitle.bib",
+        r#"@book{short2024,
+  title = {{Full Title}},
+  shorttitle = {{Short Title}},
+}
+"#,
+    );
+
+    assert!(file.diagnostics.is_empty());
+    let entry = entry(&file, "short2024");
+    assert_eq!(field_value(entry, "title"), "Full Title");
+    assert_eq!(field_value(entry, "shorttitle"), "{Short Title}");
+}
+
+#[test]
+fn collapses_field_whitespace_like_parsebib_display_cache() {
+    let file = parse_bibliography_file(
+        "whitespace.bib",
+        r#"@article{space2024,
+  title = {A
+    Multi   Space Title},
+  author = {Doe,
+    Jane and Smith,   John},
+  note = {{A
+    Multi   Space Note}},
+}
+"#,
+    );
+
+    assert!(file.diagnostics.is_empty());
+    let entry = entry(&file, "space2024");
+    assert_eq!(field_value(entry, "title"), "A Multi Space Title");
+    assert_eq!(field_value(entry, "author"), "Doe, Jane and Smith, John");
+    assert_eq!(field_value(entry, "note"), "{A Multi Space Note}");
+}
+
+#[test]
+fn preserves_postprocessing_excluded_field_whitespace_like_parsebib() {
+    let file = parse_bibliography_file(
+        "resource-whitespace.bib",
+        r#"@article{resources2024,
+  file = {foo  bar.pdf; baz.pdf},
+  url = {https://example.org/a  b},
+  doi = {10.1000/abc  def},
+  note = {A  B},
+}
+"#,
+    );
+
+    assert!(file.diagnostics.is_empty());
+    let entry = entry(&file, "resources2024");
+    assert_eq!(field_value(entry, "file"), "foo  bar.pdf; baz.pdf");
+    assert_eq!(field_value(entry, "url"), "https://example.org/a  b");
+    assert_eq!(field_value(entry, "doi"), "10.1000/abc  def");
+    assert_eq!(field_value(entry, "note"), "A B");
+}
+
+#[test]
+fn leaves_strings_unexpanded_in_postprocessing_excluded_fields() {
+    let file = parse_bibliography_file(
+        "resource-strings.bib",
+        r#"@string{base = {prefix}}
+@article{resources2024,
+  file = base # { file.pdf},
+  url = base # {://example.org},
+  doi = base # {10.1000/x},
+  note = base # { note},
+  title = base # { title},
+}
+"#,
+    );
+
+    assert!(file.diagnostics.is_empty());
+    let entry = entry(&file, "resources2024");
+    assert_eq!(field_value(entry, "file"), "base file.pdf");
+    assert_eq!(field_value(entry, "url"), "base://example.org");
+    assert_eq!(field_value(entry, "doi"), "base10.1000/x");
+    assert_eq!(field_value(entry, "note"), "prefix note");
+    assert_eq!(field_value(entry, "title"), "prefix title");
+}
+
+#[test]
+fn inherits_crossref_fields_like_parsebib_cache() {
+    let file = parse_bibliography_file(
+        "crossref.bib",
+        r#"@proceedings{conf2024,
+  title = {Conference Title},
+  year = {2024},
+  publisher = {Parent Publisher},
+  doi = {10.1000/parent},
+}
+@inproceedings{paper2024,
+  title = {Paper Title},
+  author = {Doe, Jane},
+  crossref = {conf2024},
+}
+"#,
+    );
+
+    assert!(file.diagnostics.is_empty());
+    let child = entry(&file, "paper2024");
+    assert_eq!(field_value(child, "title"), "Paper Title");
+    assert_eq!(field_value(child, "author"), "Doe, Jane");
+    assert_eq!(field_value(child, "crossref"), "conf2024");
+    assert_eq!(field_value(child, "year"), "2024");
+    assert_eq!(field_value(child, "publisher"), "Parent Publisher");
+    assert_eq!(field_value(child, "doi"), "10.1000/parent");
+    assert_eq!(child.dates[0].raw, "2024");
+    assert!(
+        child
+            .resources
+            .iter()
+            .all(|resource| resource.lookup_name != "doi")
+    );
+}
+
+#[test]
+fn applies_biblatex_crossref_inheritance_rules_like_parsebib() {
+    let file = parse_bibliography_file(
+        "biblatex-crossref.bib",
+        r#"@proceedings{conf2024,
+  title = {Conference Title},
+  shorttitle = {Conf Short},
+  year = {2024},
+}
+@inproceedings{paper2024,
+  title = {Paper Title},
+  crossref = {conf2024},
+}
+@Comment{
+Local Variables:
+bibtex-dialect: biblatex
+End:
+}
+"#,
+    );
+
+    assert!(file.diagnostics.is_empty());
+    let child = entry(&file, "paper2024");
+    assert_eq!(field_value(child, "title"), "Paper Title");
+    assert_eq!(field_value(child, "booktitle"), "Conference Title");
+    assert_eq!(field_value(child, "year"), "2024");
+    assert!(
+        child
+            .fields
+            .iter()
+            .all(|field| field.lookup_name != "shorttitle")
+    );
+}
+
+#[test]
+fn cleans_primary_field_tex_markup_like_parsebib() {
+    let file = parse_bibliography_file(
+        "tex.bib",
+        r#"@article{tex2024,
+  title = {An {\LaTeX} Study -- Schr{\"o}dinger and {\'E}tude \& \textsc{abc}},
+  author = {Garc{\'i}a, Ana and M{\"u}ller, Max},
+  editor = {\AA Team},
+  note = {Keep {\LaTeX} and Schr{\"o}dinger},
+}
+"#,
+    );
+
+    assert!(file.diagnostics.is_empty());
+    let entry = entry(&file, "tex2024");
+    assert_eq!(
+        field_value(entry, "title"),
+        "An \\LaTeX Study \u{2013} Schro\u{0308}dinger and E\u{0301}tude & ABC"
+    );
+    assert_eq!(
+        field_value(entry, "author"),
+        "Garci\u{0301}a, Ana and Mu\u{0308}ller, Max"
+    );
+    assert_eq!(field_value(entry, "editor"), "\u{00C5}Team");
+    assert_eq!(
+        field_value(entry, "note"),
+        "Keep {\\LaTeX} and Schr{\\\"o}dinger"
+    );
 }
 
 #[test]

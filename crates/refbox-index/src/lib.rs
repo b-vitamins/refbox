@@ -551,11 +551,12 @@ fn bibliography_file_from_document(
     input: &str,
     document: &ParsedDocument<'_>,
 ) -> BibliographyFile {
-    let entries = document
+    let mut entries = document
         .entries()
         .iter()
         .map(|entry| bibliography_entry_from_parsed(&path, input, document, entry))
         .collect::<Vec<_>>();
+    inherit_crossref_fields(&mut entries, detect_bibtex_dialect(input));
     let diagnostics = document
         .diagnostics()
         .iter()
@@ -702,6 +703,10 @@ fn field_value_text(document: &ParsedDocument<'_>, field: &ParsedField<'_>) -> S
         }
     }
 
+    if field_postprocessing_excluded(&lookup_name) {
+        return field.value.plain_text();
+    }
+
     let text = document
         .expand_value(
             field.value.parsed(),
@@ -713,14 +718,13 @@ fn field_value_text(document: &ParsedDocument<'_>, field: &ParsedField<'_>) -> S
         )
         .unwrap_or_else(|_| field.value.plain_text());
 
-    if matches!(
-        lookup_name.as_str(),
-        "title" | "shorttitle" | "author" | "editor"
-    ) {
-        strip_unescaped_braces(&text)
+    let text = if field_tex_cleanup_enabled(&lookup_name) {
+        clean_tex_markup(&text)
     } else {
         text
-    }
+    };
+
+    collapse_display_whitespace(&text)
 }
 
 fn bare_raw_value_text(field: &ParsedField<'_>) -> Option<String> {
@@ -730,21 +734,496 @@ fn bare_raw_value_text(field: &ParsedField<'_>) -> Option<String> {
         .then(|| raw.to_string())
 }
 
-fn strip_unescaped_braces(text: &str) -> String {
-    let mut stripped = String::with_capacity(text.len());
-    let mut escaped = false;
-    for character in text.chars() {
-        if escaped {
-            stripped.push(character);
-            escaped = false;
-        } else if character == '\\' {
-            stripped.push(character);
-            escaped = true;
-        } else if character != '{' && character != '}' {
-            stripped.push(character);
+fn field_postprocessing_excluded(lookup_name: &str) -> bool {
+    matches!(lookup_name, "file" | "url" | "doi")
+}
+
+fn field_tex_cleanup_enabled(lookup_name: &str) -> bool {
+    matches!(lookup_name, "author" | "editor" | "title")
+}
+
+fn collapse_display_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn clean_tex_markup(text: &str) -> String {
+    replace_tex_literals(&replace_tex_commands(text))
+}
+
+fn replace_tex_commands(text: &str) -> String {
+    let chars = text.chars().collect::<Vec<_>>();
+    let mut cleaned = String::with_capacity(text.len());
+    let mut index = 0;
+
+    while index < chars.len() {
+        if chars[index] != '\\' {
+            cleaned.push(chars[index]);
+            index += 1;
+            continue;
+        }
+
+        let command_start = index;
+        index += 1;
+        if index >= chars.len() {
+            cleaned.push('\\');
+            break;
+        }
+
+        let name_start = index;
+        if chars[index].is_alphabetic() {
+            while index < chars.len() && chars[index].is_alphabetic() {
+                index += 1;
+            }
+        } else {
+            index += 1;
+        }
+        let command = chars[name_start..index].iter().collect::<String>();
+        let after_name = index;
+        while index < chars.len() && matches!(chars[index], ' ' | '\t') {
+            index += 1;
+        }
+
+        let argument_start = index;
+        while index < chars.len() && chars[index] == '[' {
+            if let Some(close) = chars[index + 1..]
+                .iter()
+                .position(|character| *character == ']')
+            {
+                index += close + 2;
+            } else {
+                index = argument_start;
+                break;
+            }
+        }
+
+        let mut braced_argument: Option<String> = None;
+        let mut letter_argument: Option<String> = None;
+        if index < chars.len() && chars[index] == '{' {
+            if let Some(close) = chars[index + 1..]
+                .iter()
+                .position(|character| *character == '}')
+            {
+                braced_argument = Some(
+                    chars[index + 1..index + 1 + close]
+                        .iter()
+                        .collect::<String>(),
+                );
+                index += close + 2;
+            } else {
+                index = after_name;
+            }
+        } else {
+            index = argument_start;
+            if index < chars.len() && chars[index].is_alphabetic() {
+                letter_argument = Some(chars[index].to_string());
+                index += 1;
+            } else {
+                index = after_name;
+            }
+        }
+
+        let argument = braced_argument
+            .as_deref()
+            .or(letter_argument.as_deref())
+            .map(clean_tex_markup)
+            .unwrap_or_default();
+        if let Some(accent) = tex_accent_replacement(&command) {
+            cleaned.push_str(&argument);
+            cleaned.push(accent);
+        } else if let Some(replacement) = tex_command_replacement(&command, &argument) {
+            cleaned.push_str(&replacement);
+        } else if let Some(argument) = braced_argument {
+            cleaned.push_str(&argument);
+        } else {
+            cleaned.extend(chars[command_start..index].iter());
         }
     }
-    stripped
+
+    cleaned
+}
+
+fn tex_accent_replacement(command: &str) -> Option<char> {
+    match command {
+        "\"" => Some('\u{0308}'),
+        "'" => Some('\u{0301}'),
+        "." => Some('\u{0307}'),
+        "=" => Some('\u{0304}'),
+        "^" => Some('\u{0302}'),
+        "`" => Some('\u{0300}'),
+        "b" => Some('\u{0331}'),
+        "c" => Some('\u{0327}'),
+        "d" => Some('\u{0323}'),
+        "H" => Some('\u{030B}'),
+        "k" => Some('\u{0328}'),
+        "U" => Some('\u{030E}'),
+        "u" => Some('\u{0306}'),
+        "v" => Some('\u{030C}'),
+        "~" => Some('\u{0303}'),
+        "|" => Some('\u{0313}'),
+        "f" => Some('\u{0311}'),
+        "G" | "C" => Some('\u{030F}'),
+        "h" => Some('\u{0309}'),
+        "r" => Some('\u{030A}'),
+        _ => None,
+    }
+}
+
+fn tex_command_replacement(command: &str, argument: &str) -> Option<String> {
+    let replacement = match command {
+        "ddag" | "textdaggerdbl" => "\u{2021}",
+        "dag" | "textdagger" => "\u{2020}",
+        "textpertenthousand" => "\u{2031}",
+        "textperthousand" => "\u{2030}",
+        "textquestiondown" => "\u{00BF}",
+        "P" => "\u{00B6}",
+        "textdollar" => "$",
+        "S" => "\u{00A7}",
+        "ldots" | "dots" | "textellipsis" => "\u{2026}",
+        "textemdash" => "\u{2014}",
+        "textendash" => "\u{2013}",
+        "textbar" => "|",
+        "AA" => "\u{00C5}",
+        "AE" => "\u{00C6}",
+        "DH" | "DJ" => "\u{00D0}",
+        "L" => "\u{0141}",
+        "SS" => "\u{1E9E}",
+        "NG" => "\u{014A}",
+        "OE" => "\u{0152}",
+        "O" => "\u{00D8}",
+        "TH" => "\u{00DE}",
+        "aa" => "\u{00E5}",
+        "ae" => "\u{00E6}",
+        "dh" | "dj" => "\u{00F0}",
+        "l" => "\u{0142}",
+        "ss" => "\u{00DF}",
+        "ng" => "\u{014B}",
+        "oe" => "\u{0153}",
+        "o" => "\u{00F8}",
+        "th" => "\u{00FE}",
+        "ij" => "ij",
+        "i" => "\u{0131}",
+        "j" => "\u{0237}",
+        "textit" | "emph" | "textbf" => return Some(argument.to_string()),
+        "textsc" => return Some(argument.to_uppercase()),
+        _ => return None,
+    };
+    Some(format!("{replacement}{argument}"))
+}
+
+fn replace_tex_literals(text: &str) -> String {
+    let chars = text.chars().collect::<Vec<_>>();
+    let mut replaced = String::with_capacity(text.len());
+    let mut index = 0;
+    while index < chars.len() {
+        let tail = &chars[index..];
+        if starts_with_chars(tail, &['\\', '%']) {
+            replaced.push('%');
+            index += 2;
+        } else if starts_with_chars(tail, &['\\', '&']) {
+            replaced.push('&');
+            index += 2;
+        } else if starts_with_chars(tail, &['\\', '#']) {
+            replaced.push('#');
+            index += 2;
+        } else if starts_with_chars(tail, &['\\', '$']) {
+            replaced.push('$');
+            index += 2;
+        } else if starts_with_chars(tail, &['`', '`']) {
+            replaced.push('\u{201C}');
+            index += 2;
+        } else if starts_with_chars(tail, &['\'', '\'']) {
+            replaced.push('\u{201D}');
+            index += 2;
+        } else if chars[index] == '`' {
+            replaced.push('\u{2018}');
+            index += 1;
+        } else if chars[index] == '\'' {
+            replaced.push('\u{2019}');
+            index += 1;
+        } else if starts_with_chars(tail, &['-', '-', '-']) {
+            replaced.push('\u{2014}');
+            index += 3;
+        } else if starts_with_chars(tail, &['-', '-']) {
+            replaced.push('\u{2013}');
+            index += 2;
+        } else if matches!(chars[index], '{' | '}') {
+            index += 1;
+        } else {
+            replaced.push(chars[index]);
+            index += 1;
+        }
+    }
+    replaced
+}
+
+fn starts_with_chars(text: &[char], prefix: &[char]) -> bool {
+    text.len() >= prefix.len() && text[..prefix.len()] == *prefix
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BibtexDialect {
+    Bibtex,
+    Biblatex,
+}
+
+fn detect_bibtex_dialect(input: &str) -> BibtexDialect {
+    let tail_start = input.len().saturating_sub(3000);
+    let tail = &input[tail_start..];
+    if tail
+        .to_ascii_lowercase()
+        .contains("bibtex-dialect: biblatex")
+    {
+        BibtexDialect::Biblatex
+    } else {
+        BibtexDialect::Bibtex
+    }
+}
+
+fn inherit_crossref_fields(entries: &mut [BibliographyEntry], dialect: BibtexDialect) {
+    let key_to_index = entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| (entry.id.key.clone(), index))
+        .collect::<BTreeMap<_, _>>();
+
+    for index in 0..entries.len() {
+        let mut visited = BTreeSet::new();
+        inherit_entry_crossref_fields(index, &key_to_index, entries, dialect, &mut visited);
+    }
+}
+
+fn inherit_entry_crossref_fields(
+    index: usize,
+    key_to_index: &BTreeMap<String, usize>,
+    entries: &mut [BibliographyEntry],
+    dialect: BibtexDialect,
+    visited: &mut BTreeSet<usize>,
+) {
+    if !visited.insert(index) {
+        return;
+    }
+
+    let Some(parent_key) = crossref_parent_key(&entries[index].fields) else {
+        visited.remove(&index);
+        return;
+    };
+    let Some(parent_index) = key_to_index.get(&parent_key).copied() else {
+        visited.remove(&index);
+        return;
+    };
+
+    inherit_entry_crossref_fields(parent_index, key_to_index, entries, dialect, visited);
+
+    let source_type = entries[parent_index].entry_type.clone();
+    let target_type = entries[index].entry_type.clone();
+    let parent_fields = entries[parent_index].fields.clone();
+    let mut existing_fields = entries[index]
+        .fields
+        .iter()
+        .map(|field| field.lookup_name.clone())
+        .collect::<BTreeSet<_>>();
+    let mut inherited_fields = Vec::new();
+
+    for field in parent_fields {
+        let Some(target_name) =
+            inherited_crossref_field_name(dialect, &source_type, &target_type, &field.lookup_name)
+        else {
+            continue;
+        };
+        if existing_fields.insert(target_name.clone()) {
+            inherited_fields.push(inherited_field_with_name(field, &target_name));
+        }
+    }
+
+    if !inherited_fields.is_empty() {
+        entries[index].fields.extend(inherited_fields);
+        entries[index].names = name_lists_from_fields(&entries[index].fields);
+        entries[index].dates = dates_from_fields(&entries[index].fields);
+    }
+
+    visited.remove(&index);
+}
+
+fn inherited_crossref_field_name(
+    dialect: BibtexDialect,
+    source_type: &str,
+    target_type: &str,
+    source_field: &str,
+) -> Option<String> {
+    match dialect {
+        BibtexDialect::Bibtex => Some(source_field.to_string()),
+        BibtexDialect::Biblatex => {
+            biblatex_inherited_field_name(source_type, target_type, source_field)
+        }
+    }
+}
+
+fn biblatex_inherited_field_name(
+    source_type: &str,
+    target_type: &str,
+    source_field: &str,
+) -> Option<String> {
+    for rule in BIBLATEX_INHERITANCE_RULES {
+        if type_list_contains(rule.source_types, source_type)
+            && type_list_contains(rule.target_types, target_type)
+        {
+            for (source, target) in rule.fields {
+                if source.eq_ignore_ascii_case(source_field) {
+                    return target.map(str::to_string);
+                }
+            }
+        }
+    }
+
+    if BIBLATEX_ALL_TYPE_EXCLUDED_FIELDS
+        .iter()
+        .any(|field| field.eq_ignore_ascii_case(source_field))
+    {
+        None
+    } else {
+        Some(source_field.to_string())
+    }
+}
+
+fn type_list_contains(types: &[&str], entry_type: &str) -> bool {
+    types
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(entry_type) || *candidate == "all")
+}
+
+fn inherited_field_with_name(mut field: BibliographyField, target_name: &str) -> BibliographyField {
+    field.raw_name = target_name.to_string();
+    field.lookup_name = normalize_lookup_name(target_name);
+    field
+}
+
+struct BiblatexInheritanceRule {
+    source_types: &'static [&'static str],
+    target_types: &'static [&'static str],
+    fields: &'static [(&'static str, Option<&'static str>)],
+}
+
+const BIBLATEX_ALL_TYPE_EXCLUDED_FIELDS: &[&str] = &[
+    "ids",
+    "crossref",
+    "xref",
+    "entryset",
+    "entrysubtype",
+    "execute",
+    "label",
+    "options",
+    "presort",
+    "related",
+    "relatedoptions",
+    "relatedstring",
+    "relatedtype",
+    "shorthand",
+    "shorthandintro",
+    "sortkey",
+];
+
+const MAIN_TITLE_INHERITANCE: &[(&str, Option<&str>)] = &[
+    ("title", Some("maintitle")),
+    ("subtitle", Some("mainsubtitle")),
+    ("titleaddon", Some("maintitleaddon")),
+    ("shorttitle", None),
+    ("sorttitle", None),
+    ("indextitle", None),
+    ("indexsorttitle", None),
+];
+
+const BOOK_TITLE_INHERITANCE: &[(&str, Option<&str>)] = &[
+    ("title", Some("booktitle")),
+    ("subtitle", Some("booksubtitle")),
+    ("titleaddon", Some("booktitleaddon")),
+    ("shorttitle", None),
+    ("sorttitle", None),
+    ("indextitle", None),
+    ("indexsorttitle", None),
+];
+
+const JOURNAL_TITLE_INHERITANCE: &[(&str, Option<&str>)] = &[
+    ("title", Some("journaltitle")),
+    ("subtitle", Some("journalsubtitle")),
+    ("shorttitle", None),
+    ("sorttitle", None),
+    ("indextitle", None),
+    ("indexsorttitle", None),
+];
+
+const AUTHOR_INHERITANCE: &[(&str, Option<&str>)] =
+    &[("author", Some("author")), ("author", Some("bookauthor"))];
+
+const BIBLATEX_INHERITANCE_RULES: &[BiblatexInheritanceRule] = &[
+    BiblatexInheritanceRule {
+        source_types: &["mvbook", "book"],
+        target_types: &["inbook", "bookinbook", "suppbook"],
+        fields: AUTHOR_INHERITANCE,
+    },
+    BiblatexInheritanceRule {
+        source_types: &["mvbook"],
+        target_types: &["book", "inbook", "bookinbook", "suppbook"],
+        fields: MAIN_TITLE_INHERITANCE,
+    },
+    BiblatexInheritanceRule {
+        source_types: &["mvcollection", "mvreference"],
+        target_types: &[
+            "collection",
+            "reference",
+            "incollection",
+            "inreference",
+            "suppcollection",
+        ],
+        fields: MAIN_TITLE_INHERITANCE,
+    },
+    BiblatexInheritanceRule {
+        source_types: &["mvproceedings"],
+        target_types: &["proceedings", "inproceedings"],
+        fields: MAIN_TITLE_INHERITANCE,
+    },
+    BiblatexInheritanceRule {
+        source_types: &["book"],
+        target_types: &["inbook", "bookinbook", "suppbook"],
+        fields: BOOK_TITLE_INHERITANCE,
+    },
+    BiblatexInheritanceRule {
+        source_types: &["collection", "reference"],
+        target_types: &["incollection", "inreference", "suppcollection"],
+        fields: BOOK_TITLE_INHERITANCE,
+    },
+    BiblatexInheritanceRule {
+        source_types: &["proceedings"],
+        target_types: &["inproceedings"],
+        fields: BOOK_TITLE_INHERITANCE,
+    },
+    BiblatexInheritanceRule {
+        source_types: &["periodical"],
+        target_types: &["article", "suppperiodical"],
+        fields: JOURNAL_TITLE_INHERITANCE,
+    },
+];
+
+fn crossref_parent_key(fields: &[BibliographyField]) -> Option<String> {
+    fields
+        .iter()
+        .find(|field| field.lookup_name == "crossref")
+        .and_then(|field| clean_crossref_key(&field.value))
+}
+
+fn clean_crossref_key(value: &str) -> Option<String> {
+    let mut text = value.trim();
+    loop {
+        let bytes = text.as_bytes();
+        if bytes.len() >= 2
+            && ((bytes[0] == b'{' && bytes[bytes.len() - 1] == b'}')
+                || (bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"'))
+        {
+            text = text[1..text.len() - 1].trim();
+        } else {
+            break;
+        }
+    }
+    (!text.is_empty()).then(|| text.to_string())
 }
 
 fn source_slice(input: &str, span: BibSourceSpan) -> Option<String> {

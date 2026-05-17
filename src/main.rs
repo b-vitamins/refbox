@@ -689,29 +689,35 @@ fn resolve_files(request: ResolveFilesRequest) -> Vec<String> {
     let roots = normalize_existing_dirs(request.roots);
     let extensions = normalize_extensions(request.extensions);
     let recursive = request.recursive.unwrap_or(false);
-    let mut found = BTreeSet::new();
+    let mut found = Vec::new();
+    let mut seen = HashSet::new();
     let mut relative_files = Vec::new();
 
     for file in files {
         let path = PathBuf::from(file);
         if path.is_absolute() {
-            insert_regular_file(&mut found, &path, extensions.as_ref());
+            push_regular_file(&mut found, &mut seen, &path, extensions.as_ref());
         } else {
             relative_files.push(path);
         }
     }
 
     if relative_files.is_empty() {
-        return found.into_iter().collect();
+        return found;
     }
     if roots.is_empty() {
-        return found.into_iter().collect();
+        return found;
     }
 
     for root in roots {
         if recursive {
             for relative in &relative_files {
-                insert_regular_file(&mut found, &root.join(relative), extensions.as_ref());
+                push_regular_file(
+                    &mut found,
+                    &mut seen,
+                    &root.join(relative),
+                    extensions.as_ref(),
+                );
             }
             scan_regular_files(&root, true, |path| {
                 if relative_files
@@ -720,17 +726,22 @@ fn resolve_files(request: ResolveFilesRequest) -> Vec<String> {
                     .any(|relative| path.ends_with(relative))
                     && extension_allowed(&path, extensions.as_ref())
                 {
-                    found.insert(path.display().to_string());
+                    push_unique_path(&mut found, &mut seen, &path);
                 }
             });
         } else {
             for relative in &relative_files {
-                insert_regular_file(&mut found, &root.join(relative), extensions.as_ref());
+                push_regular_file(
+                    &mut found,
+                    &mut seen,
+                    &root.join(relative),
+                    extensions.as_ref(),
+                );
             }
         }
     }
 
-    found.into_iter().collect()
+    found
 }
 
 fn library_files_by_keys(request: LibraryFilesByKeysRequest) -> Vec<String> {
@@ -747,7 +758,8 @@ fn library_files_by_keys(request: LibraryFilesByKeysRequest) -> Vec<String> {
     let additional_separator = request
         .additional_separator
         .and_then(|separator| (!separator.is_empty()).then_some(separator));
-    let mut found = BTreeSet::new();
+    let mut found = Vec::new();
+    let mut seen = HashSet::new();
 
     for root in roots {
         if recursive {
@@ -755,7 +767,7 @@ fn library_files_by_keys(request: LibraryFilesByKeysRequest) -> Vec<String> {
                 if extension_allowed(&path, extensions.as_ref())
                     && keyed_file_matches(&path, &keys, additional_separator.as_deref())
                 {
-                    found.insert(path.display().to_string());
+                    push_unique_path(&mut found, &mut seen, &path);
                 }
             });
         } else {
@@ -763,13 +775,13 @@ fn library_files_by_keys(request: LibraryFilesByKeysRequest) -> Vec<String> {
                 if extension_allowed(&path, extensions.as_ref())
                     && keyed_file_matches(&path, &keys, additional_separator.as_deref())
                 {
-                    found.insert(path.display().to_string());
+                    push_unique_path(&mut found, &mut seen, &path);
                 }
             });
         }
     }
 
-    found.into_iter().collect()
+    found
 }
 
 fn normalize_nonempty_strings(values: Vec<String>) -> Vec<String> {
@@ -810,15 +822,23 @@ fn normalize_extensions(extensions: Option<Vec<String>>) -> Option<HashSet<Strin
     (!extensions.is_empty()).then_some(extensions)
 }
 
-fn insert_regular_file(
-    found: &mut BTreeSet<String>,
+fn push_regular_file(
+    found: &mut Vec<String>,
+    seen: &mut HashSet<String>,
     path: &Path,
     extensions: Option<&HashSet<String>>,
 ) {
     if path.metadata().is_ok_and(|metadata| metadata.is_file())
         && extension_allowed(path, extensions)
     {
-        found.insert(path.display().to_string());
+        push_unique_path(found, seen, path);
+    }
+}
+
+fn push_unique_path(found: &mut Vec<String>, seen: &mut HashSet<String>, path: &Path) {
+    let path = path.display().to_string();
+    if seen.insert(path.clone()) {
+        found.push(path);
     }
 }
 
@@ -863,19 +883,25 @@ fn scan_regular_files(root: &Path, recursive: bool, mut visit: impl FnMut(PathBu
         let Ok(read_dir) = std::fs::read_dir(&dir) else {
             continue;
         };
-        for entry in read_dir.filter_map(|entry| entry.ok()) {
+        let mut entries = read_dir.filter_map(|entry| entry.ok()).collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry.path());
+        let mut subdirs = Vec::new();
+        for entry in entries {
             let path = entry.path();
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
             if recursive && file_type.is_dir() && !file_type.is_symlink() {
-                stack.push(path);
+                subdirs.push(path);
             } else if file_type.is_file()
                 || (file_type.is_symlink()
                     && path.metadata().is_ok_and(|metadata| metadata.is_file()))
             {
                 visit(path);
             }
+        }
+        for subdir in subdirs.into_iter().rev() {
+            stack.push(subdir);
         }
     }
 }
@@ -1356,7 +1382,7 @@ mod tests {
         )));
         assert_eq!(
             keyed_files["files"],
-            json!([keyed_extra.to_string_lossy(), keyed.to_string_lossy()])
+            json!([keyed.to_string_lossy(), keyed_extra.to_string_lossy()])
         );
     }
 

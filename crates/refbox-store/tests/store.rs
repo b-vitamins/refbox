@@ -44,6 +44,53 @@ fn migrations_are_versioned_from_first_schema() {
 }
 
 #[test]
+fn crossref_inherited_fields_are_indexed_and_searchable() {
+    let mut store = RefboxStore::open_in_memory().expect("store should open");
+    let file = parse_bibliography_file(
+        "refs/crossref-fields.bib",
+        r#"@proceedings{conf2024,
+  title = {Conference Title},
+  year = {2024},
+  publisher = {Parent Publisher},
+  doi = {10.1000/parent}
+}
+@inproceedings{paper2024,
+  title = {Paper Title},
+  author = {Doe, Jane},
+  crossref = {conf2024}
+}
+"#,
+    );
+    store.insert_file(&file).expect("file should insert");
+
+    let results = store
+        .search("paper 2024", 5, SearchOptions::default())
+        .expect("search should use inherited date fields");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].key, "paper2024");
+
+    let hydrated = store
+        .hydrate_search_results(results, &["crossref".to_string()], None, true, true, None)
+        .expect("search results should hydrate");
+    let child = &hydrated[0];
+    assert!(
+        child
+            .fields
+            .iter()
+            .any(|field| field.lookup_name == "publisher" && field.value == "Parent Publisher")
+    );
+    assert!(
+        child
+            .fields
+            .iter()
+            .any(|field| field.lookup_name == "doi" && field.value == "10.1000/parent")
+    );
+    assert!(child.resources.iter().any(|resource| {
+        resource.kind == "doi" && resource.inherited_from_key.as_deref() == Some("conf2024")
+    }));
+}
+
+#[test]
 fn inserts_parsed_files_and_queries_records_back() {
     let mut store = RefboxStore::open_in_memory().expect("store should open");
     let file = parse_bibliography_file(

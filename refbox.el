@@ -607,7 +607,9 @@ source with `refbox-register-notes-source'."
   :group 'refbox)
 
 (defcustom refbox-open-entry-function #'refbox-open-entry-in-file
-  "Function used by `refbox-open-entry' to open a bibliography entry."
+  "Function used by `refbox-open-entry' to open a bibliography entry.
+
+Custom functions are called with the selected citation key."
   :type 'function
   :group 'refbox)
 
@@ -2390,6 +2392,11 @@ whose cdr is passed as additional arguments."
           (list trimmed)
         (list unescaped trimmed)))))
 
+(defun refbox-resource--triplet-file-field-variants (value)
+  "Return Citar-shaped triplet path variants for parsed VALUE."
+  (let ((unescaped (refbox-resource--unescape-file-field value)))
+    (list unescaped value)))
+
 (defun refbox-resource-parse-file-field-default (file-field)
   "Parse FILE-FIELD as a semicolon-separated path list."
   (let ((text (refbox-resource--clean-value file-field)))
@@ -2400,21 +2407,17 @@ whose cdr is passed as additional arguments."
 
 (defun refbox-resource-parse-file-field-triplet (file-field)
   "Parse FILE-FIELD entries shaped as title:path:type triplets."
-  (let* ((text (refbox-resource--clean-value file-field))
-         (parse-item
-          (lambda (item)
-            (let ((parts (refbox-resource--split-escaped-string item ?:)))
-              (when (>= (length parts) 3)
-                (refbox-resource--file-field-variants
-                 (string-join (butlast (cdr parts)) ":"))))))
-         split-files)
+  (let ((text (refbox-resource--clean-value file-field))
+        filenames)
     (dolist (sepchar '(?\; ?,))
-      (let* ((items (refbox-resource--split-escaped-string text sepchar))
-             (files (apply #'append (mapcar parse-item items))))
-        (when (and (cdr items) files)
-          (setq split-files (append split-files files)))))
-    (or split-files
-        (funcall parse-item text))))
+      (dolist (item (refbox-resource--split-escaped-string text sepchar))
+        (let ((parts (refbox-resource--split-escaped-string item ?:)))
+          (when (>= (length parts) 3)
+            (dolist (filename
+                     (refbox-resource--triplet-file-field-variants
+                      (string-join (butlast (cdr parts)) ":")))
+              (push filename filenames))))))
+    (nreverse filenames)))
 
 (defun refbox-resource--parse-file-field (value)
   "Return candidate file paths parsed from VALUE."
@@ -2426,8 +2429,7 @@ whose cdr is passed as additional arguments."
      (mapcar (lambda (parser)
                (unless (fboundp parser)
                  (user-error "refbox file parser is not defined: %s" parser))
-               (mapcar #'refbox-resource--clean-value
-                       (or (funcall parser value) nil)))
+               (or (funcall parser value) nil))
              refbox-file-parser-functions)))))
 
 (defun refbox-resource--normalize-extensions (extensions)
@@ -2496,20 +2498,19 @@ whose cdr is passed as additional arguments."
   "Resolve FILES against DIRS while filtering EXTENSIONS."
   (let (found)
     (dolist (file files)
-      (let ((file (refbox-resource--clean-value file)))
-        (cond
-         ((file-name-absolute-p file)
-          (when (and (file-exists-p file)
-                     (refbox-resource--extension-allowed-p file extensions))
-            (push (expand-file-name file) found)))
-         (t
-          (cl-loop
-           for dir in dirs
-           for candidate = (expand-file-name file dir)
-           when (and (file-exists-p candidate)
-                     (refbox-resource--extension-allowed-p candidate extensions))
-           do (push candidate found)
-           and return t)))))
+      (cond
+       ((file-name-absolute-p file)
+        (when (and (file-exists-p file)
+                   (refbox-resource--extension-allowed-p file extensions))
+          (push (expand-file-name file) found)))
+       (t
+        (cl-loop
+         for dir in dirs
+         for candidate = (expand-file-name file dir)
+         when (and (file-exists-p candidate)
+                   (refbox-resource--extension-allowed-p candidate extensions))
+         do (push candidate found)
+         and return t))))
     (nreverse (delete-dups found))))
 
 (defun refbox-resource--resolve-files-in-roots
@@ -2584,18 +2585,21 @@ whose cdr is passed as additional arguments."
                                 (member (downcase extension) extensions))))
                  (push (cons (file-name-base file) file) entries)))))
          (while stack
-           (let ((dir (pop stack)))
+           (let ((dir (pop stack))
+                 subdirs)
              (dolist (file (directory-files
                             dir t directory-files-no-dot-files-regexp))
                (cond
                 ((and (file-directory-p file)
                       (not (file-symlink-p file)))
-                 (push file stack))
+                 (push file subdirs))
                 ((and (file-regular-p file)
                       (or (null extensions)
                           (when-let ((extension (file-name-extension file)))
                             (member (downcase extension) extensions))))
-                 (push (cons (file-name-base file) file) entries))))))
+                 (push (cons (file-name-base file) file) entries))))
+             (dolist (subdir subdirs)
+               (push subdir stack))))
          (nreverse entries))))))
 
 (defun refbox-resource--file-base-matches-key-p (base key additional-sep)
@@ -2748,33 +2752,81 @@ callable."
       (user-error "refbox file source has no callable %s" property))
      (t nil))))
 
+(defun refbox-resource-file-source--file-resource-p (resource)
+  "Return non-nil when RESOURCE declares files."
+  (let ((kind (refbox--resource-kind resource))
+        (lookup (refbox--resource-lookup-name resource)))
+    (or (equal kind "file")
+        (and lookup
+             (member lookup (refbox--file-field-names))))))
+
+(defun refbox-resource-file-source--parse-diagnostics
+    (key field-values parsed-files)
+  "Explain why KEY's FIELD-VALUES did not yield PARSED-FILES."
+  (when (null parsed-files)
+    (if (cl-every #'refbox--blank-string-p field-values)
+        (message "Empty `%s' field: %s" refbox-file-variable key)
+      (message
+       "Could not parse `%s' field of `%s'; check `refbox-file-parser-functions': %s"
+       refbox-file-variable
+       key
+       (car (cl-remove-if #'refbox--blank-string-p field-values))))))
+
+(defun refbox-resource-file-source--resolution-diagnostics
+    (key parsed-files found-files files)
+  "Explain why KEY's PARSED-FILES did not resolve to FILES."
+  (cond
+   ((null parsed-files) nil)
+   ((null found-files)
+    (message
+     (concat "None of the files for `%s' exist; check `refbox-library-paths' "
+             "and `refbox-file-parser-functions': %S")
+     key
+     parsed-files))
+   ((and refbox-library-file-extensions
+         (null files))
+    (message "No files for `%s' with `refbox-library-file-extensions': %S"
+             key
+             found-files))))
+
 (defun refbox-resource-file-source--indexed-items-for-candidate
     (candidate resources)
   "Return files declared by indexed RESOURCES for CANDIDATE."
-  (let* ((extensions refbox-library-file-extensions)
-         (field-files
+  (let* ((field-values
           (cl-loop
            for resource in resources
-           for kind = (refbox--resource-kind resource)
-           for lookup = (refbox--resource-lookup-name resource)
-           when (or (equal kind "file")
-                    (and lookup
-                         (member lookup (refbox--file-field-names))))
-        append (refbox-resource--parse-file-field
-                (refbox--resource-value resource))))
-        (source-dirs (refbox-resource--source-dirs candidate resources)))
-    (delete-dups
-     (append
-      (refbox-resource--resolve-files-in-roots
+           when (refbox-resource-file-source--file-resource-p resource)
+           collect (refbox--resource-value resource)))
+         (field-files
+          (and field-values
+               (delete-dups
+                (apply #'append
+                       (mapcar #'refbox-resource--parse-file-field
+                               field-values)))))
+         (dirs (delete-dups
+                (append
+                 (refbox-resource--library-dirs)
+                 (refbox-resource--source-dirs candidate resources))))
+         (found-files
+          (refbox-resource--find-files-in-dirs field-files dirs nil))
+         (files
+          (if refbox-library-file-extensions
+              (refbox-resource--find-files-in-dirs
+               field-files
+               dirs
+               refbox-library-file-extensions)
+            found-files)))
+    (when (and field-values (null files))
+      (refbox-resource-file-source--parse-diagnostics
+       (refbox--reference-key candidate)
+       field-values
+       field-files)
+      (refbox-resource-file-source--resolution-diagnostics
+       (refbox--reference-key candidate)
        field-files
-       source-dirs
-       nil
-       extensions)
-      (refbox-resource--resolve-files-in-roots
-       field-files
-       refbox-library-paths
-       refbox-library-paths-recursive
-       extensions)))))
+       found-files
+       files))
+    files))
 
 (defun refbox-resource-file-source-indexed-items (keys)
   "Return files declared by indexed resources for KEYS as a hash table."
@@ -2801,11 +2853,7 @@ callable."
              (refbox--file-field-names))
             (cl-some
              (lambda (resource)
-               (let ((kind (refbox--resource-kind resource))
-                     (lookup (refbox--resource-lookup-name resource)))
-                 (or (equal kind "file")
-                     (and lookup
-                          (member lookup (refbox--file-field-names))))))
+               (refbox-resource-file-source--file-resource-p resource))
              resources)))))
 
 (defun refbox-resource-file-source-indexed-has-items ()
@@ -3722,35 +3770,34 @@ EMPTY-MESSAGE, when non-nil, is displayed when CHOICES is empty."
   "Return note resource choices for REFERENCES.
 
 When INCLUDE-CREATE is non-nil, include note creation choices."
-  (refbox--dedupe-resource-choices
-   (cl-loop
-    for reference in references
-    for key = (refbox--reference-key reference)
-    for notes = (and key (refbox-note-source-items reference))
-    for create-label = (and include-create
-                            key
-                            (ignore-errors
-                              (refbox-note-source-create-label reference)))
-    append
-    (append
-     (mapcar (lambda (note)
-               (list :type 'note
+  (let* ((source (refbox-note-source--plist))
+         (category (plist-get source :category))
+         (create-function (plist-get source :create)))
+    (refbox--dedupe-resource-choices
+     (cl-loop
+      for reference in references
+      for key = (refbox--reference-key reference)
+      for notes = (and key (refbox-note-source-items reference))
+      append
+      (append
+       (mapcar (lambda (note)
+                 (list :type 'note
+                       :reference reference
+                       :target note
+                       :category category
+                       :label (refbox--resource-choice-label
+                               'note reference note)))
+               notes)
+       (when (and include-create
+                  key
+                  (functionp create-function)
+                  (or (null notes)
+                      (refbox--command-should-always-create-notes-p)))
+         (list (list :type 'create-note
                      :reference reference
-                     :target note
-                     :category (plist-get (refbox-note-source--plist)
-                                          :category)
+                     :target key
                      :label (refbox--resource-choice-label
-                             'note reference note)))
-             notes)
-     (when (and create-label
-                (or (null notes)
-                    (refbox--command-should-always-create-notes-p)))
-       (list (list :type 'create-note
-                   :reference reference
-                   :target key
-                   :label (refbox--resource-choice-label
-                           'create-note reference
-                           create-label))))))))
+                             'create-note reference key)))))))))
 
 (defun refbox--all-note-choices ()
   "Return note choices from the active note source."
@@ -4177,7 +4224,10 @@ report if the effective limit is invalid."
 (defun refbox-open-entry (reference)
   "Open REFERENCE's bibliography entry using `refbox-open-entry-function'."
   (interactive (list (refbox-select-ref)))
-  (funcall refbox-open-entry-function reference))
+  (if (eq refbox-open-entry-function #'refbox-open-entry-in-file)
+      (refbox-open-entry-in-file reference)
+    (funcall refbox-open-entry-function
+             (and reference (refbox--reference-key reference)))))
 
 (defun refbox-open-entry-in-file (reference)
   "Open REFERENCE's bibliography entry at its indexed source location."

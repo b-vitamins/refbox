@@ -1679,22 +1679,46 @@
         (should (equal (plist-get selected :key) "beta2021"))))))
 
 (ert-deftest refbox-test-resource-file-parsers-handle-escaped-delimiters ()
-  "File field parsers should handle path lists and triplet values."
+  "File field parsers should match Citar's path-list parsing."
+  (should-not (refbox-resource-parse-file-field-default " "))
+  (should (equal (delete-dups (refbox-resource-parse-file-field-default "foo"))
+                 '("foo")))
+  (should (equal (delete-dups (refbox-resource-parse-file-field-default "foo;bar"))
+                 '("foo" "bar")))
+  (should (equal (delete-dups (refbox-resource-parse-file-field-default " foo ; bar ; "))
+                 '("foo" "bar")))
+  (should (equal (delete-dups (refbox-resource-parse-file-field-default "foo:bar;baz"))
+                 '("foo:bar" "baz")))
+  (should (equal (delete-dups (refbox-resource-parse-file-field-default "foo:bar;;baz"))
+                 '("foo:bar" "baz")))
   (should (equal (refbox-resource-parse-file-field-default
                   "foo\\;bar; baz ; ")
                  '("foo;bar" "foo\\;bar" "baz")))
+  (should (equal (delete-dups (refbox-resource-parse-file-field-default "foo;bar\\"))
+                 '("foo" "bar\\"))))
+
+(ert-deftest refbox-test-resource-triplet-file-parser-matches-citar ()
+  "Triplet file parser should preserve Citar's candidate behavior."
+  (should-not (refbox-resource-parse-file-field-triplet "foo.pdf"))
+  (should (equal (delete-dups
+                  (refbox-resource-parse-file-field-triplet
+                   ":foo.pdf:PDF"))
+                 '("foo.pdf")))
+  (should (equal (delete-dups
+                  (refbox-resource-parse-file-field-triplet
+                   ":foo.pdf:PDF,:bar.pdf:PDF"))
+                 '("foo.pdf:PDF,:bar.pdf" "foo.pdf" "bar.pdf")))
   (should (equal (refbox-resource-parse-file-field-triplet
-                  ":foo.pdf:PDF,:bar.pdf:PDF")
-                 '("foo.pdf" "bar.pdf")))
-  (should (equal (refbox-resource-parse-file-field-triplet
-                  ":foo.pdf:PDF;:bar.pdf:PDF")
-                 '("foo.pdf" "bar.pdf")))
+                  ": foo.pdf :PDF, : bar.pdf :PDF")
+                 '(" foo.pdf :PDF, : bar.pdf " " foo.pdf :PDF, : bar.pdf "
+                   " foo.pdf " " foo.pdf " " bar.pdf " " bar.pdf ")))
   (should (equal (refbox-resource-parse-file-field-triplet
                   ":foo,bar.pdf:PDF")
-                 '("foo,bar.pdf")))
+                 '("foo,bar.pdf" "foo,bar.pdf")))
   (should (equal (refbox-resource-parse-file-field-triplet
                   "Title\\: Subtitle:C\\:\\\\title.pdf:PDF")
-                 '("C:\\title.pdf" "C\\:\\\\title.pdf"))))
+                 '("C:\\title.pdf" "C\\:\\\\title.pdf"
+                   "C:\\title.pdf" "C\\:\\\\title.pdf"))))
 
 (ert-deftest refbox-test-reference-files-resolve_unescaped_file_fields ()
   "File lookup should try unescaped variants from bibliography file fields."
@@ -1723,13 +1747,14 @@
                          '("paper:edition.pdf"))))
       (delete-directory root t))))
 
-(ert-deftest refbox-test-reference-files_resolve_field_files_from_all_roots ()
-  "File-field lookup should combine source-relative and library-path matches."
+(ert-deftest refbox-test-reference-files_resolve_field_files_like_citar ()
+  "File-field lookup should use Citar's library-then-bibliography order."
   (let* ((root (make-temp-file "refbox-field-files-" t))
          (refs (expand-file-name "refs" root))
          (library (expand-file-name "library" root))
          (source (expand-file-name "main.bib" refs))
          (paper (expand-file-name "paper.pdf" refs))
+         (library-paper (expand-file-name "paper.pdf" library))
          (supplement (expand-file-name "supplement.pdf" library))
          (candidate
           (list :key "mixed"
@@ -1748,15 +1773,15 @@
           (make-directory refs t)
           (make-directory library t)
           (with-temp-file paper)
+          (with-temp-file library-paper)
           (with-temp-file supplement)
           (let ((refbox-library-paths (list library))
                 (refbox-library-file-extensions '("pdf"))
                 (refbox-file-sources (list (car refbox--default-file-sources))))
-            (should (equal (mapcar #'file-name-nondirectory
-                                   (refbox-reference-files
-                                    candidate
-                                    (refbox--candidate-resources candidate)))
-                           '("paper.pdf" "supplement.pdf")))))
+            (should (equal (refbox-reference-files
+                            candidate
+                            (refbox--candidate-resources candidate))
+                           (list library-paper supplement)))))
       (delete-directory root t))))
 
 (ert-deftest refbox-test-reference-files_combine_fields_and_library_like_citar ()
@@ -1787,16 +1812,6 @@
             (cl-letf (((symbol-function 'refbox-rpc-request)
                        (lambda (method params)
                          (pcase method
-                           ((pred (equal refbox-rpc-method-resolve-files))
-                            (should (equal (append (plist-get params :files) nil)
-                                           '("paper.pdf")))
-                            (should (equal (append (plist-get params :roots) nil)
-                                           (list (file-name-as-directory
-                                                  library))))
-                            (should (eq (plist-get params :recursive) t))
-                            (should (equal (append (plist-get params :extensions) nil)
-                                           '("pdf")))
-                            (list :files nil))
                            ((pred (equal refbox-rpc-method-library-files-by-keys))
                             (should (equal (append (plist-get params :keys) nil)
                                            '("smith2020")))
@@ -1848,6 +1863,32 @@
                        (lambda (&rest _args)
                          (error "unexpected RPC"))))
               (should (refbox-reference-has-files-p candidate)))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-recursive_file_index_preserves_citar_order ()
+  "Recursive file scans should return root files before sorted subdirectories."
+  (let* ((root (make-temp-file "refbox-recursive-order-" t))
+         (dir-a (expand-file-name "a" root))
+         (dir-b (expand-file-name "b" root))
+         (root-file (expand-file-name "alpha.pdf" root))
+         (file-a (expand-file-name "alpha.pdf" dir-a))
+         (file-b (expand-file-name "alpha.pdf" dir-b)))
+    (unwind-protect
+        (progn
+          (make-directory dir-a t)
+          (make-directory dir-b t)
+          (dolist (file (list root-file file-a file-b))
+            (with-temp-file file))
+          (should
+           (equal
+            (refbox-resource--files-for-keys-normalized
+             '("alpha")
+             (list (file-name-as-directory root))
+             t
+             '("pdf")
+             nil
+             t)
+            (list root-file file-a file-b))))
       (delete-directory root t))))
 
 (ert-deftest refbox-test-resource_file_sources_are_extensible ()
@@ -2971,18 +3012,19 @@
     (should-error (refbox-file-open "/tmp/refbox-test.pdf")
                   :type 'user-error)))
 
-(ert-deftest refbox-test-open_without_note_paths_does_not_offer_uncreatable_notes ()
-  "Resource opening should not fail while building unavailable note choices."
+(ert-deftest refbox-test-open_without_note_paths_matches_citar_create_error ()
+  "Create-note opening should surface file-source configuration errors."
   (let ((candidate '(:key "empty2020" :fields nil :resources nil))
         (refbox-notes-paths nil)
-        (refbox-open-resources '(:create-notes)))
+        (refbox-open-resources '(:create-notes))
+        (refbox-open-prompt nil))
     (cl-letf (((symbol-function 'refbox-reference-resources)
                (lambda (_candidate) nil)))
       (should
-       (equal
+       (string-match-p
+        "refbox-notes-paths"
         (error-message-string
-         (should-error (refbox-open candidate) :type 'user-error))
-        "No associated resources: empty2020")))))
+         (should-error (refbox-open candidate) :type 'user-error)))))))
 
 (ert-deftest refbox-test-specific_resource_commands_tolerate_missing_items ()
   "Specific resource commands should match Citar's empty-resource behavior."
@@ -2997,7 +3039,11 @@
       (should-not (refbox-open-files candidate))
       (should-not (refbox-attach-files candidate))
       (should-not (refbox-open-links candidate))
-      (should-not (refbox-open-notes candidate))
+      (should
+       (string-match-p
+        "refbox-notes-paths"
+        (error-message-string
+         (should-error (refbox-open-notes candidate) :type 'user-error))))
       (should-not (refbox-open-note nil))
       (should (member "No associated files for empty2020" messages))
       (should (member "No link found for empty2020" messages)))))
@@ -3018,6 +3064,114 @@
         (should-not (refbox-open-files candidate))
         (should-not (refbox-attach-files candidate))))
     (should-not messages)))
+
+(ert-deftest refbox-test-file_field_missing_path_reports_specific_reason ()
+  "Declared file fields should explain unresolved file resources."
+  (let* ((root (make-temp-file "refbox-missing-file-field-" t))
+         (candidate
+          (list :key "alpha"
+                :source_path (expand-file-name "refs.bib" root)
+                :resources
+                (list (list :kind "file"
+                            :lookup_name "file"
+                            :value "missing.pdf"))))
+         (refbox-file-sources (list (car refbox--default-file-sources)))
+         messages)
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'message)
+                     (lambda (format-string &rest args)
+                       (push (apply #'format format-string args) messages))))
+            (should-not (refbox-open-files candidate)))
+          (should
+           (member
+            "None of the files for `alpha' exist; check `refbox-library-paths' and `refbox-file-parser-functions': (\"missing.pdf\")"
+            messages))
+          (should-not
+           (cl-some (lambda (message)
+                      (string-match-p "No associated files" message))
+                    messages)))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-file_field_extension_filter_reports_specific_reason ()
+  "Declared files rejected by extension filtering should say so."
+  (let* ((root (make-temp-file "refbox-file-extension-" t))
+         (txt (expand-file-name "paper.txt" root))
+         (candidate
+          (list :key "alpha"
+                :source_path (expand-file-name "refs.bib" root)
+                :resources
+                (list (list :kind "file"
+                            :lookup_name "file"
+                            :value "paper.txt"))))
+         (refbox-file-sources (list (car refbox--default-file-sources)))
+         (refbox-library-file-extensions '("pdf"))
+         messages)
+    (unwind-protect
+        (progn
+          (with-temp-file txt)
+          (cl-letf (((symbol-function 'message)
+                     (lambda (format-string &rest args)
+                       (push (apply #'format format-string args) messages))))
+            (should-not (refbox-open-files candidate)))
+          (should
+           (cl-some
+            (lambda (message)
+              (and (string-match-p
+                    "No files for `alpha' with `refbox-library-file-extensions'"
+                    message)
+                   (string-match-p (regexp-quote txt) message)))
+            messages))
+          (should-not
+           (cl-some (lambda (message)
+                      (string-match-p "No associated files" message))
+                    messages)))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-file_field_parse_failures_report_specific_reason ()
+  "Unparseable declared file fields should explain parser failure."
+  (let ((candidate
+         '(:key "alpha"
+           :fields nil
+           :resources ((:kind "file"
+                        :lookup_name "file"
+                        :value "paper.pdf"))))
+        (refbox-file-sources (list (car refbox--default-file-sources)))
+        (refbox-file-parser-functions
+         '(refbox-resource-parse-file-field-triplet))
+        messages)
+    (cl-letf (((symbol-function 'message)
+               (lambda (format-string &rest args)
+                 (push (apply #'format format-string args) messages))))
+      (should-not (refbox-open-files candidate)))
+    (should
+     (member
+      "Could not parse `file' field of `alpha'; check `refbox-file-parser-functions': paper.pdf"
+      messages))
+    (should-not
+     (cl-some (lambda (message)
+                (string-match-p "No associated files" message))
+              messages))))
+
+(ert-deftest refbox-test-file_field_empty_values_report_specific_reason ()
+  "Empty declared file fields should explain the empty field."
+  (let ((candidate
+         '(:key "alpha"
+           :fields nil
+           :resources ((:kind "file"
+                        :lookup_name "file"
+                        :value "   "))))
+        (refbox-file-sources (list (car refbox--default-file-sources)))
+        messages)
+    (cl-letf (((symbol-function 'message)
+               (lambda (format-string &rest args)
+                 (push (apply #'format format-string args) messages))))
+      (should-not (refbox-open-files candidate)))
+    (should (member "Empty `file' field: alpha" messages))
+    (should-not
+     (cl-some (lambda (message)
+                (string-match-p "No associated files" message))
+              messages))))
 
 (ert-deftest refbox-test-link_commands_respect_supplied_empty_resources ()
   "Link commands should not hydrate when candidates carry empty resources."
@@ -3113,6 +3267,16 @@
              :opened)))
       (should (eq (refbox-open-entry "alpha") :opened))
       (should (equal opened "alpha")))))
+
+(ert-deftest refbox-test-open-entry_custom_function_receives_key ()
+  "Custom entry openers should receive Citar-shaped key arguments."
+  (let (opened)
+    (let ((refbox-open-entry-function
+           (lambda (key)
+             (setq opened key)
+             :opened)))
+      (should (eq (refbox-open-entry refbox-test-reference-candidate) :opened))
+      (should (equal opened "smith2020")))))
 
 (ert-deftest refbox-test-open_entry_in_zotero_uses_citation_key_url ()
   "Zotero opening should use the selected citation key."
