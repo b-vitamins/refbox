@@ -648,45 +648,26 @@ impl RefboxStore {
             .collect::<Vec<_>>();
 
         if let Some(fts_query) = &fts_query {
-            if options.ranked
-                && source_paths.is_empty()
+            if source_paths.is_empty()
                 && options.include_configured_sources
                 && keys.is_empty()
                 && resource_kinds.is_empty()
             {
-                let ranking_window = requested_limit.saturating_mul(16).max(1_000);
-                let ranking_window = i64::try_from(ranking_window)
-                    .map_err(|_| StoreError::LimitOutOfRange(ranking_window))?;
-                let mut statement = self.connection.prepare(
-                    "WITH hits AS (
-                         SELECT entry_fts.rowid, rank AS score
-                         FROM entry_fts
-                         JOIN entries e ON e.id = entry_fts.rowid
-                         JOIN files f ON f.id = e.file_id
-                         WHERE entry_fts MATCH ?1
-                         AND f.origin = 'configured'
-                         ORDER BY rank
-                         LIMIT ?2
-                     )
-                     SELECT e.id, f.path, e.entry_key, e.entry_type, hits.score
-                     FROM hits
-                     JOIN entries e ON e.id = hits.rowid
-                     JOIN files f ON f.id = e.file_id
-                     ORDER BY hits.score, e.entry_key, f.source_order, f.path, e.id
-                     LIMIT ?3",
-                )?;
-                let results = statement
-                    .query_map(params![fts_query, ranking_window, limit], |row| {
-                        Ok(SearchResult {
-                            entry_id: row.get(0)?,
-                            file_path: row.get(1)?,
-                            key: row.get(2)?,
-                            entry_type: row.get(3)?,
-                            score: row.get(4)?,
-                        })
-                    })?
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
-                return Ok(results);
+                if let Some(exact_query) =
+                    fts_query_from_user_input_exact(query, options.search_fields)
+                {
+                    if exact_query != *fts_query {
+                        let exact_results = self.search_configured_fts(
+                            &exact_query,
+                            requested_limit,
+                            options.ranked,
+                        )?;
+                        if exact_results.len() >= requested_limit {
+                            return Ok(exact_results);
+                        }
+                    }
+                }
+                return self.search_configured_fts(fts_query, requested_limit, options.ranked);
             }
         }
 
@@ -835,8 +816,6 @@ impl RefboxStore {
         if fts_query.is_some() {
             if options.ranked {
                 sql.push_str(" ORDER BY entry_fts.rank, e.entry_key, f.source_order, f.path, e.id");
-            } else {
-                sql.push_str(" ORDER BY entry_fts.rowid");
             }
         } else {
             sql.push_str(" ORDER BY e.entry_key, f.source_order, f.path, e.id");
@@ -857,6 +836,71 @@ impl RefboxStore {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(results)
+    }
+
+    fn search_configured_fts(
+        &self,
+        fts_query: &str,
+        limit: usize,
+        ranked: bool,
+    ) -> Result<Vec<SearchResult>> {
+        let sql_limit = i64::try_from(limit).map_err(|_| StoreError::LimitOutOfRange(limit))?;
+        if ranked {
+            let ranking_window = limit.saturating_mul(16).max(1_000);
+            let ranking_window = i64::try_from(ranking_window)
+                .map_err(|_| StoreError::LimitOutOfRange(ranking_window))?;
+            let mut statement = self.connection.prepare(
+                "WITH hits AS (
+                     SELECT entry_fts.rowid, entry_fts.rank AS score
+                     FROM entry_fts
+                     JOIN entries e ON e.id = entry_fts.rowid
+                     JOIN files f ON f.id = e.file_id
+                     WHERE entry_fts MATCH ?1
+                     AND f.origin = 'configured'
+                     LIMIT ?2
+                 )
+                 SELECT e.id, f.path, e.entry_key, e.entry_type, hits.score
+                 FROM hits
+                 JOIN entries e ON e.id = hits.rowid
+                 JOIN files f ON f.id = e.file_id
+                 ORDER BY hits.score, e.entry_key, f.source_order, f.path, e.id
+                 LIMIT ?3",
+            )?;
+            return statement
+                .query_map(params![fts_query, ranking_window, sql_limit], |row| {
+                    Ok(SearchResult {
+                        entry_id: row.get(0)?,
+                        file_path: row.get(1)?,
+                        key: row.get(2)?,
+                        entry_type: row.get(3)?,
+                        score: row.get(4)?,
+                    })
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(StoreError::from);
+        }
+
+        let mut statement = self.connection.prepare(
+            "SELECT e.id, f.path, e.entry_key, e.entry_type, entry_fts.rank AS score
+             FROM entry_fts
+             JOIN entries e ON e.id = entry_fts.rowid
+             JOIN files f ON f.id = e.file_id
+             WHERE entry_fts MATCH ?1
+             AND f.origin = 'configured'
+             LIMIT ?2",
+        )?;
+        statement
+            .query_map(params![fts_query, sql_limit], |row| {
+                Ok(SearchResult {
+                    entry_id: row.get(0)?,
+                    file_path: row.get(1)?,
+                    key: row.get(2)?,
+                    entry_type: row.get(3)?,
+                    score: row.get(4)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
     }
 
     pub fn hydrate_search_results(
@@ -2075,10 +2119,28 @@ fn refresh_duplicate_groups_for_keys(connection: &Connection, keys: &[String]) -
 }
 
 fn fts_query_from_user_input(query: &str, search_fields: &[String]) -> Option<String> {
+    fts_query_from_user_input_with_mode(query, search_fields, true)
+}
+
+fn fts_query_from_user_input_exact(query: &str, search_fields: &[String]) -> Option<String> {
+    fts_query_from_user_input_with_mode(query, search_fields, false)
+}
+
+fn fts_query_from_user_input_with_mode(
+    query: &str,
+    search_fields: &[String],
+    prefix: bool,
+) -> Option<String> {
     let tokens = query
         .split(|ch: char| !ch.is_alphanumeric())
         .filter(|token| !token.is_empty())
-        .map(|token| format!("{token}*"))
+        .map(|token| {
+            if prefix {
+                format!("{token}*")
+            } else {
+                token.to_string()
+            }
+        })
         .collect::<Vec<_>>();
     if tokens.is_empty() {
         None

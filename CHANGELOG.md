@@ -20,6 +20,7 @@ The format follows Keep a Changelog, and this project follows SemVer.
 - Renamed `refbox-search-tag-aliases` to `refbox-search-tag-shortcuts` as the single public configuration point for terse search tags.
 
 ### Fixed
+- Bounded ranked FTS searches by preselecting a small match window before ranking and preferring exact-token matches before prefix fallback, avoiding multi-second broad searches on million-entry corpora.
 - Resolved bibliography `file` fields against both source-relative directories and configured library paths instead of stopping after the first non-empty root set.
 - Treated single string values for bibliography, library, notes, extension, and discovery-glob options as one configured item instead of iterating them character by character.
 - Autoloaded mode-local citation inspection helpers and Org citation processors so callers see the same public surface as Citar without preloading feature files.

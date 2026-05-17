@@ -561,6 +561,77 @@ fn fts_queries_are_bounded_and_deterministic_for_ties() {
 }
 
 #[test]
+fn ranked_fts_queries_rank_within_bounded_window() {
+    let mut store = RefboxStore::open_in_memory().expect("store should open");
+    let file = parse_bibliography_file(
+        "refs/search.bib",
+        r#"@article{beta,
+  title = {Shared Signal}
+}
+
+@article{alpha,
+  title = {Shared Shared Shared Signal}
+}
+
+@article{gamma,
+  title = {Shared Signal}
+}"#,
+    );
+
+    store.insert_file(&file).expect("file should insert");
+
+    let results = store
+        .search("shared", 2, SearchOptions::default())
+        .expect("search should work");
+    assert_eq!(
+        results
+            .iter()
+            .map(|result| result.key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["alpha", "beta"]
+    );
+}
+
+#[test]
+fn fts_queries_fall_back_to_prefix_when_exact_tokens_do_not_fill_limit() {
+    let mut store = RefboxStore::open_in_memory().expect("store should open");
+    let file = parse_bibliography_file(
+        "refs/search.bib",
+        r#"@article{exact,
+  title = {Refboxscale Exact Token}
+}
+
+@article{prefix,
+  title = {Refboxscaled Prefix Token}
+}"#,
+    );
+
+    store.insert_file(&file).expect("file should insert");
+
+    let exact_page = store
+        .search("refboxscale", 1, SearchOptions::default())
+        .expect("exact search should work");
+    assert_eq!(
+        exact_page
+            .iter()
+            .map(|result| result.key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["exact"]
+    );
+
+    let prefix_page = store
+        .search("refboxscale", 2, SearchOptions::default())
+        .expect("prefix fallback should work");
+    assert_eq!(
+        prefix_page
+            .iter()
+            .map(|result| result.key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["exact", "prefix"]
+    );
+}
+
+#[test]
 fn unranked_fts_queries_use_fast_index_order_for_typeahead() {
     let mut store = RefboxStore::open_in_memory().expect("store should open");
     let file = parse_bibliography_file(
