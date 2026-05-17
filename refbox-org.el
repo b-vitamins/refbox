@@ -199,11 +199,23 @@ When MULTIPLE is non-nil, return a list of keys.  Otherwise return one key."
                     styles))))))
     (delete-dups (nreverse styles))))
 
+(defun refbox-org--style-candidate (style)
+  "Return STYLE as a propertized completion candidate."
+  (propertize
+   style
+   'face
+   (if (and (string-match-p "/" style)
+            (< 1 (length style)))
+       'refbox
+     'refbox-highlight)))
+
 (defun refbox-org-style-candidates ()
   "Return Org citation style completion candidates."
-  (or refbox-org-citation-styles
-      (sort (refbox-org--flat-styles refbox-org-style-targets)
-            #'string-lessp)))
+  (mapcar
+   #'refbox-org--style-candidate
+   (or refbox-org-citation-styles
+       (sort (refbox-org--flat-styles refbox-org-style-targets)
+             #'string-lessp))))
 
 (defun refbox-org--style-group (style transform)
   "Return group metadata for STYLE.
@@ -252,7 +264,6 @@ When TRANSFORM is non-nil, return the displayed candidate."
                  refbox-org-default-style))
          (style (string-trim style)))
     (cond
-     ((string-empty-p style) nil)
      ((string= style "/") "")
      (t style))))
 

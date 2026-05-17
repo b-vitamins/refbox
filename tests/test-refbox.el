@@ -10,6 +10,7 @@
 (require 'cl-lib)
 (require 'refbox)
 
+(defvar embark-default-action-overrides)
 (defvar org-cite-csl--fallback-locales-dir)
 (defvar pdf-tools-enabled-modes)
 (defvar truncate-string-ellipsis)
@@ -1536,20 +1537,12 @@
 (ert-deftest refbox-test-entry-field-accessors-return_entry_alists ()
   "Entry lookup helpers should expose field values for extension code."
   (let (calls)
-    (cl-letf (((symbol-function 'refbox-rpc-request)
-               (lambda (method params)
-                 (push (list method params) calls)
-                 (cond
-                  ((equal method refbox-rpc-method-entry-by-key)
-                   (should (equal params (list :key "smith2020")))
-                   '(:key "smith2020"
-                     :source_path "refs/main.bib"
-                     :entry_type "article"))
-                  ((equal method refbox-rpc-method-search-entries)
-                   (should (equal (plist-get params :source_paths)
-                                  (vector (expand-file-name "refs/main.bib"))))
-                   (list :entries (list refbox-test-reference-candidate)))))))
+    (cl-letf (((symbol-function 'refbox-entries-by-keys)
+               (lambda (keys limit-per-key)
+                 (push (list keys limit-per-key) calls)
+                 (list refbox-test-reference-candidate))))
       (let ((entry (refbox-get-entry "smith2020")))
+        (should (equal calls '((("smith2020") 2))))
         (should (equal (cdr (assoc-string "title" entry t))
                        "{Alpha Reference Title}"))
         (should (equal (refbox-get-value "author" entry) "{Smith, Jane}"))
@@ -1563,6 +1556,35 @@
                         entry
                         '(refbox-template-clean))
                        "Alpha Reference Title"))))))
+
+(ert-deftest refbox-test-get_entry_missing_key_matches_citar ()
+  "Missing public entry lookups should return nil like Citar."
+  (cl-letf (((symbol-function 'refbox-entries-by-keys)
+             (lambda (keys limit-per-key)
+               (should (equal keys '("missing2020")))
+               (should (equal limit-per-key 2))
+               nil))
+            ((symbol-function 'refbox-entry-by-key)
+             (lambda (&rest _args)
+               (error "missing get-entry should not use scalar lookup"))))
+    (should-not (refbox-get-entry "missing2020"))
+    (should-not (refbox-get-value "title" "missing2020"))
+    (should-not (refbox-get-field-with-value '("title") "missing2020"))))
+
+(ert-deftest refbox-test-get_entry_preserves_ambiguous_key_errors ()
+  "Public entry lookup should not silently choose between duplicate keys."
+  (let (fallback-key)
+    (cl-letf (((symbol-function 'refbox-entries-by-keys)
+               (lambda (_keys _limit-per-key)
+                 '((:key "dup2020" :source_path "/tmp/a.bib")
+                   (:key "dup2020" :source_path "/tmp/b.bib"))))
+              ((symbol-function 'refbox-entry-by-key)
+               (lambda (key)
+                 (setq fallback-key key)
+                 (user-error "entry key matches multiple indexed entries: %s"
+                             key))))
+      (should-error (refbox-get-entry "dup2020") :type 'user-error)
+      (should (equal fallback-key "dup2020")))))
 
 (ert-deftest refbox-test-read-reference_accepts_candidate_predicates ()
   "Reference selection should support filtering by candidate metadata."
@@ -1629,20 +1651,23 @@
                          '("paper:edition.pdf"))))
       (delete-directory root t))))
 
-(ert-deftest refbox-test-reference-files-resolve-fields-before-library-fallback ()
-  "File lookup should use resolved file fields before library fallback."
+(ert-deftest refbox-test-reference-files_combine_fields_and_library_like_citar ()
+  "File lookup should combine field and library-path resources."
   (let* ((root (make-temp-file "refbox-resources-" t))
          (refs (expand-file-name "refs" root))
          (library (expand-file-name "library" root))
          (subdir (expand-file-name "nested" library))
+         (paper (expand-file-name "paper.pdf" refs))
+         (library-paper (expand-file-name "smith2020.pdf" library))
+         (library-extra (expand-file-name "smith2020-extra.pdf" subdir))
          (candidate (copy-tree refbox-test-reference-candidate)))
     (unwind-protect
         (progn
           (make-directory refs t)
           (make-directory subdir t)
-          (dolist (file (list (expand-file-name "paper.pdf" refs)
-                              (expand-file-name "smith2020.pdf" library)
-                              (expand-file-name "smith2020-extra.pdf" subdir)
+          (dolist (file (list paper
+                              library-paper
+                              library-extra
                               (expand-file-name "smith2020.html" library)))
             (with-temp-file file))
           (setq candidate (plist-put candidate :source_path
@@ -1652,14 +1677,27 @@
                 (refbox-library-file-extensions '("pdf"))
                 (refbox-file-additional-files-separator "-"))
             (cl-letf (((symbol-function 'refbox-rpc-request)
-                       (lambda (&rest _args)
-                         (error "unexpected RPC"))))
+                       (lambda (method params)
+                         (should (eq method
+                                     refbox-rpc-method-library-files-by-keys))
+                         (should (equal (append (plist-get params :keys) nil)
+                                        '("smith2020")))
+                         (should (equal (append (plist-get params :roots) nil)
+                                        (list (file-name-as-directory
+                                               library))))
+                         (should (eq (plist-get params :recursive) t))
+                         (should (equal (append (plist-get params :extensions) nil)
+                                        '("pdf")))
+                         (should (equal (plist-get params :additional_separator)
+                                        "-"))
+                         (list :files (list library-paper library-extra)))))
               (should
                (equal (mapcar #'file-name-nondirectory
                               (refbox-reference-files
                                candidate
                                (refbox--candidate-resources candidate)))
-                      '("paper.pdf"))))))
+                      '("paper.pdf" "smith2020.pdf"
+                        "smith2020-extra.pdf"))))))
       (delete-directory root t))))
 
 (ert-deftest refbox-test-resource_file_sources_are_extensible ()
@@ -2236,6 +2274,217 @@
                    '("Library Files" "Links" "Slipbox Notes"
                      "Create Slipbox Notes")))))
 
+(ert-deftest refbox-test-resource_choice_metadata_matches_citar_categories ()
+  "Resource completion metadata should use Citar-style resource categories."
+  (cl-labels
+      ((label (choice)
+         (propertize (plist-get choice :label)
+                     'refbox-resource-choice choice))
+       (metadata-category (choices)
+         (let* ((labels (mapcar #'label choices))
+                (metadata (funcall
+                           (refbox--resource-choice-completion-table labels)
+                           "" nil 'metadata)))
+           (cdr (assq 'category (cdr metadata)))))
+       (candidate (text candidates)
+         (cl-find text candidates
+                  :key #'substring-no-properties
+                  :test #'equal)))
+    (let ((file-choice '(:type file
+                         :target "/tmp/paper.pdf"
+                         :label "/tmp/paper.pdf"))
+          (link-choice '(:type link
+                         :target "https://example.test/paper"
+                         :label "https://example.test/paper"))
+          (note-choice '(:type note
+                         :target "/tmp/note.org"
+                         :category file
+                         :label "/tmp/note.org"))
+          (create-choice '(:type create-note
+                           :target "alpha"
+                           :label "alpha")))
+      (should (eq (metadata-category (list file-choice)) 'file))
+      (should (eq (metadata-category (list link-choice)) 'url))
+      (should (eq (metadata-category (list note-choice)) 'file))
+      (should (eq (metadata-category (list create-choice)) 'refbox-resource))
+      (let* ((labels (mapcar #'label
+                             (list file-choice link-choice note-choice
+                                   create-choice)))
+             (table (refbox--resource-choice-completion-table labels))
+             (metadata (funcall table "" nil 'metadata))
+             (candidates (all-completions "" table))
+             (file-target (get-text-property
+                           0 'multi-category
+                           (candidate "/tmp/paper.pdf" candidates)))
+             (link-target (get-text-property
+                           0 'multi-category
+                           (candidate "https://example.test/paper"
+                                      candidates)))
+             (note-target (get-text-property
+                           0 'multi-category
+                           (candidate "/tmp/note.org" candidates)))
+             (create-target (get-text-property
+                             0 'multi-category
+                             (candidate "alpha" candidates))))
+        (should (eq (cdr (assq 'category (cdr metadata))) 'multi-category))
+        (should (eq (car file-target) 'file))
+        (should (eq (car link-target) 'url))
+        (should (eq (car note-target) 'file))
+        (should (eq (car create-target) 'refbox-resource))
+        (should (eq (plist-get
+                     (get-text-property
+                      0 'refbox-resource-choice (cdr create-target))
+                     :type)
+                    'create-note))))))
+
+(ert-deftest refbox-test-resource_choice_display_matches_citar ()
+  "Resource completion candidates should keep Citar's resource-string shape."
+  (let* ((root (make-temp-file "refbox-resource-display-" t))
+         (file (expand-file-name "paper.pdf" root))
+         (candidate (list :key "alpha"
+                          :resources
+                          (list (list :kind "file" :value file)
+                                (list :kind "url"
+                                      :value "https://example.test/a")))))
+    (unwind-protect
+        (let ((refbox-notes-source 'mock)
+              (refbox-notes-sources
+               `((mock :name "Slipbox Notes"
+                       :items ,(lambda (_key _reference)
+                                 '("note:alpha"))
+                       :hasitems ,#'ignore
+                       :open ,#'ignore
+                       :transform ,(lambda (item)
+                                     (concat "shown:" item))))))
+          (with-temp-file file)
+          (cl-letf (((symbol-function 'refbox-reference-resources)
+                     (lambda (reference)
+                       (plist-get reference :resources))))
+            (let* ((file-choice (car (refbox--file-choices (list candidate))))
+                   (link-choice (car (refbox--link-choices (list candidate))))
+                   (note-choice (car (refbox--note-choices (list candidate))))
+                   (labels (mapcar (lambda (choice)
+                                     (propertize
+                                      (plist-get choice :label)
+                                      'refbox-resource-choice choice))
+                                   (list file-choice link-choice note-choice)))
+                   (metadata (funcall
+                              (refbox--resource-choice-completion-table labels)
+                              "" nil 'metadata))
+                   (group-function (cdr (assq 'group-function
+                                               (cdr metadata)))))
+              (should (equal (plist-get file-choice :label) file))
+              (should (equal (plist-get link-choice :label)
+                             "https://example.test/a"))
+              (should (equal (plist-get note-choice :label) "note:alpha"))
+              (should (equal (funcall group-function (nth 0 labels) t)
+                             "paper.pdf"))
+              (should (equal (funcall group-function (nth 1 labels) t)
+                             "https://example.test/a"))
+              (should (equal (funcall group-function (nth 2 labels) t)
+                             "shown:note:alpha")))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-resource_choices_deduplicate_targets_like_citar ()
+  "Repeated resource targets should only appear once in resource selection."
+  (let* ((root (make-temp-file "refbox-resource-dedup-" t))
+         (file (expand-file-name "paper.pdf" root))
+         (first (list :key "alpha"
+                      :resources (list (list :kind "file" :value file))))
+         (second (list :key "beta"
+                       :resources (list (list :kind "file" :value file)))))
+    (unwind-protect
+        (progn
+          (with-temp-file file)
+          (cl-letf (((symbol-function 'refbox-reference-resources)
+                     (lambda (reference)
+                       (plist-get reference :resources))))
+            (let ((choices (refbox--file-choices (list first second))))
+              (should (= (length choices) 1))
+              (should (equal (plist-get (car choices) :target) file)))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-create_note_choices_use_reference_display ()
+  "Create-note choices should use reference rows, not synthetic labels."
+  (let* ((candidate (copy-tree refbox-test-reference-candidate))
+         (refbox-notes-source 'mock)
+         (refbox-notes-sources
+          '((mock :name "Slipbox Notes"
+                  :items (lambda (_key _reference) nil)
+                  :hasitems ignore
+                  :open ignore
+                  :create ignore
+                  :create-label (lambda (key _reference)
+                                  (format "new:%s" key)))))
+         (choice (car (refbox--note-choices
+                       (list candidate) t)))
+         (label (plist-get choice :label)))
+    (should (eq (plist-get choice :type) 'create-note))
+    (should (get-text-property 0 'invisible label))
+    (should (string-match-p "Alpha Reference Title" label))
+    (should-not (string-match-p "new:smith2020" label))))
+
+(ert-deftest refbox-test-resource_open_prompt_uses_this_command_like_citar ()
+  "Single-resource prompting should follow `this-command'."
+  (let* ((root (make-temp-file "refbox-resource-this-command-" t))
+         (file (expand-file-name "paper.pdf" root))
+         (candidate (list :key "alpha"
+                          :resources (list (list :kind "file"
+                                                  :value file))))
+         opened
+         prompted)
+    (unwind-protect
+        (progn
+          (with-temp-file file)
+          (let ((refbox-open-prompt '(refbox-open))
+                (refbox-open-resources '(:files)))
+            (cl-letf (((symbol-function 'refbox-reference-resources)
+                       (lambda (reference)
+                         (plist-get reference :resources)))
+                      ((symbol-function 'refbox-file-open)
+                       (lambda (target)
+                         (push target opened)))
+                      ((symbol-function 'completing-read)
+                       (lambda (_prompt collection &rest _args)
+                         (setq prompted t)
+                         (car (all-completions "" collection)))))
+              (let ((this-command nil))
+                (refbox-open candidate))
+              (should (equal opened (list file)))
+              (should-not prompted)
+              (setq opened nil
+                    prompted nil)
+              (let ((this-command 'refbox-open))
+                (refbox-open candidate))
+              (should (equal opened (list file)))
+              (should prompted))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-open_always_create_notes_uses_this_command_like_citar ()
+  "Create-note forcing should follow `this-command'."
+  (let* ((candidate (copy-tree refbox-test-reference-candidate))
+         (refbox-open-always-create-notes '(refbox-open-notes))
+         (refbox-notes-source 'mock)
+         (refbox-notes-sources
+          '((mock :name "Slipbox Notes"
+                  :items (lambda (_key _reference)
+                           '("note:smith2020"))
+                  :hasitems ignore
+                  :open ignore
+                  :create ignore
+                  :create-label (lambda (key _reference)
+                                  (format "new:%s" key))))))
+    (let ((this-command nil))
+      (should (equal (mapcar (lambda (choice)
+                               (plist-get choice :type))
+                             (refbox--note-choices (list candidate) t))
+                     '(note))))
+    (let ((this-command 'refbox-open-notes))
+      (should (equal (mapcar (lambda (choice)
+                               (plist-get choice :type))
+                             (refbox--note-choices (list candidate) t))
+                     '(note create-note))))))
+
 (ert-deftest refbox-test-resource_selection_prompt_matches_citar ()
   "Resource commands should use Citar's resource selection prompt."
   (let* ((root (make-temp-file "refbox-resource-prompt-" t))
@@ -2263,6 +2512,50 @@
             (refbox-open-files candidate)
             (should (equal opened (list file-a)))))
       (delete-directory root t))))
+
+(ert-deftest refbox-test-resource_prompts_bind_embark_default_actions_like_citar ()
+  "Resource prompts should expose prompt-local Embark default actions."
+  (let ((candidate '(:key "alpha"))
+        (file "/tmp/refbox-paper.pdf")
+        captured
+        target
+        opened)
+    (cl-letf (((symbol-function 'refbox-reference-files)
+               (lambda (_reference) (list file)))
+              ((symbol-function 'refbox--current-local-bibliography-source-paths)
+               (lambda () nil))
+              ((symbol-function 'refbox-file-open)
+               (lambda (opened-file)
+                 (setq opened opened-file)
+                 :opened))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _args)
+                 (setq captured embark-default-action-overrides)
+                 (setq target (car (all-completions "" collection)))
+                 target)))
+      (let ((this-command 'refbox-open)
+            (refbox-open-prompt t)
+            (refbox-open-resources '(:files)))
+        (should (eq (refbox-open candidate) :opened))
+        (should (equal opened file))
+        (setq opened nil)
+        (should (eq (funcall (cdr (assq t captured)) target) :opened))
+        (should (equal opened file))
+        (setq opened nil)
+        (should (eq (funcall (cdr (assq 'file captured)) file) :opened))
+        (should (equal opened file)))
+      (setq captured nil
+            target nil
+            opened nil)
+      (let ((this-command 'refbox-open-files)
+            (refbox-open-prompt t))
+        (should (eq (refbox-open-files candidate) :opened))
+        (setq opened nil)
+        (should (eq (funcall (cdr (assoc (cons 'file 'refbox-open-files)
+                                         captured))
+                             target)
+                    :opened))
+        (should (equal opened file))))))
 
 (ert-deftest refbox-test-resource_note_choices_support_annotations ()
   "Note-source annotations should participate in resource completion."
@@ -2337,6 +2630,15 @@
           (should (member (cons 'find-file (expand-file-name "smith2020.org" root))
                           opened)))
       (delete-directory root t))))
+
+(ert-deftest refbox-test-resource_openers_return_opener_results ()
+  "Resource opener helpers should return configured opener results like Citar."
+  (should (eq (refbox--open-target (lambda (_target) :opened) "/tmp/refbox")
+              :opened))
+  (let ((refbox-file-open-functions
+         `(("pdf" . ,(lambda (_file) :pdf-opened)))))
+    (should (eq (refbox-file-open "/tmp/refbox-test.pdf")
+                :pdf-opened))))
 
 (ert-deftest refbox-test-file_openers_default_html_to_external_opener ()
   "HTML resources should use the external file opener by default."
@@ -2595,7 +2897,7 @@
                  0)))
       (should (equal (refbox-file-open-external
                       "zotero://select/items/@smith2020")
-                     "zotero://select/items/@smith2020"))
+                     0))
       (should (equal (car (last called))
                      '("zotero://select/items/@smith2020"))))))
 
@@ -2966,6 +3268,54 @@
             (should (equal (buffer-string) "new"))))
       (delete-directory root t))))
 
+(ert-deftest refbox-test-add-buffer-to-library_handles_current_file_like_citar ()
+  "Buffer-backed saves should preserve Citar's current-file branches."
+  (let* ((root (make-temp-file "refbox-library-current-file-" t))
+         (library (expand-file-name "library" root))
+         (destination (expand-file-name "alpha.pdf" library))
+         buffer)
+    (unwind-protect
+        (let ((refbox-library-paths (list library)))
+          (make-directory library t)
+          (with-temp-file destination
+            (insert "old"))
+          (setq buffer (find-file-noselect destination))
+          (with-current-buffer buffer
+            (should-not (buffer-modified-p))
+            (let (messages)
+              (cl-letf (((symbol-function 'message)
+                         (lambda (format-string &rest args)
+                           (push (apply #'format format-string args)
+                                 messages)))
+                        ((symbol-function 'yes-or-no-p)
+                         (lambda (&rest _args)
+                           (error "unmodified current file should not ask"))))
+                (should (equal (refbox-add-buffer-to-library
+                                "alpha" "pdf" 1)
+                               destination))
+                (should (equal messages
+                               '("alpha.pdf exists and the current buffer is visiting it."))))))
+          (with-current-buffer buffer
+            (goto-char (point-max))
+            (insert " new")
+            (let (prompt)
+              (cl-letf (((symbol-function 'yes-or-no-p)
+                         (lambda (question)
+                           (setq prompt question)
+                           t)))
+                (should (equal (refbox-add-buffer-to-library
+                                "alpha" "pdf" 1)
+                               destination))
+                (should (equal prompt
+                               "alpha.pdf exists and the current buffer is visiting it.  Save anyway? "))
+                (should-not (buffer-modified-p)))))
+          (with-temp-buffer
+            (insert-file-contents destination)
+            (should (equal (buffer-string) "old new\n"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory root t))))
+
 (ert-deftest refbox-test-csl-style-metadata-and-selection ()
   "CSL style selection should present metadata-backed choices."
   (let* ((root (make-temp-file "refbox-csl-" t))
@@ -3294,6 +3644,21 @@
         (should (= (length calls) 3))
         (should (equal (nth 1 (car (last calls))) "alpha"))))))
 
+(ert-deftest refbox-test-read-references_prompt_counts_match_citar ()
+  "Multiple selection prompts should show selected and total counts."
+  (let ((remaining (list refbox-test-reference-candidate nil))
+        prompts)
+    (cl-letf (((symbol-function 'refbox--reference-count)
+               (lambda (&rest _args) 12))
+              ((symbol-function 'refbox--read-reference-from-state)
+               (lambda (&rest args)
+                 (push (car args) prompts)
+                 (pop remaining))))
+      (refbox-read-references "References: " nil 5)
+      (should (equal (nreverse prompts)
+                     '("References:  (0/12): "
+                       "References:  (1/12): "))))))
+
 (ert-deftest refbox-test-read-references_ret_accepts_current_and_exits ()
   "RET in the multi-selector should accept one candidate and finish."
   (let (calls)
@@ -3318,6 +3683,21 @@
                (lambda (&rest _args)
                  (pop remaining))))
       (should-not (refbox-read-references "References: " nil 5)))))
+
+(ert-deftest refbox-test-read-references_restores_history_on_toggle ()
+  "Toggling an already selected reference should restore read history."
+  (let ((remaining (list refbox-test-reference-candidate
+                         refbox-test-reference-candidate
+                         nil))
+        (refbox-history '("before")))
+    (cl-letf (((symbol-function 'refbox--read-reference-from-state)
+               (lambda (&rest _args)
+                 (let ((candidate (pop remaining)))
+                   (when candidate
+                     (push (plist-get candidate :key) refbox-history))
+                   candidate))))
+      (should-not (refbox-read-references "References: " nil 5))
+      (should (equal refbox-history '("smith2020" "before"))))))
 
 (ert-deftest refbox-test-select-references_dispatches_to_single_or_multiple_readers ()
   "Selection helpers should expose both multiple and single-reference reads."

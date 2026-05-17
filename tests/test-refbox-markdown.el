@@ -168,6 +168,12 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
 	        (refbox-markdown-insert-edit)
 	        (should (equal (buffer-string) "[compare @alpha, chap. 3]"))))))
 
+(ert-deftest refbox-markdown-test-affixes_preserve_user_spacing_like_citar ()
+  "Markdown affixes should not be trimmed before insertion."
+  (should (equal (refbox-markdown-format-citation
+                  '("alpha") " compare " " chap. 3 ")
+                 "[ compare  @alpha,  chap. 3 ]")))
+
 (ert-deftest refbox-markdown-test-nil_citation_insert_does_not_prompt ()
   "Programmatic nil Markdown insertion should match Citar's no-op."
   (refbox-markdown-test-with-buffer "Alpha |omega"

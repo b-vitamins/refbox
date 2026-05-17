@@ -43,6 +43,7 @@
 (defvar completion-category-defaults)
 (defvar citeproc--date-vars)
 (defvar citeproc--name-vars)
+(defvar embark-default-action-overrides)
 (defvar org-cite-csl--fallback-locales-dir)
 (defvar truncate-string-ellipsis)
 
@@ -519,8 +520,7 @@ When nil, associated file lookup does not filter by extension."
 (defconst refbox--default-file-sources
   '((indexed-fields
      :items refbox-resource-file-source-indexed-items
-     :hasitems refbox-resource-file-source-indexed-has-items
-     :terminal t)
+     :hasitems refbox-resource-file-source-indexed-has-items)
     (library-paths
      :items refbox-resource-file-source-library-items
      :hasitems refbox-resource-file-source-library-has-items))
@@ -536,9 +536,7 @@ and optional `:hasitems'.  Both functions receive CANDIDATE and
 RESOURCES, where RESOURCES are the indexed resources already
 loaded for CANDIDATE.  `:items' returns existing file names;
 `:hasitems' should return non-nil when the source can report a
-file association more cheaply than materializing all items.  When
-`:terminal' is non-nil, later sources are skipped after that
-source returns at least one file."
+file association more cheaply than materializing all items."
   :type 'alist
   :group 'refbox)
 
@@ -2129,9 +2127,25 @@ LIMIT-PER-KEY bounds duplicate-key expansion for each requested key."
                         params)))
         (refbox--listify (plist-get response :entries))))))
 
+(defun refbox--get-entry-candidate (reference)
+  "Return REFERENCE as an indexed candidate, or nil when it is absent."
+  (cond
+   ((and (listp reference) (plist-member reference :key))
+    reference)
+   ((stringp reference)
+    (or (when-let ((context-map (refbox--context-reference-map
+                                 (list reference))))
+          (gethash reference context-map))
+        (let ((candidates (refbox-entries-by-keys (list reference) 2)))
+          (pcase (length candidates)
+            (0 nil)
+            (1 (car candidates))
+            (_ (refbox-entry-by-key reference))))))))
+
 (defun refbox-get-entry (reference)
-  "Return REFERENCE as a bibliography entry alist."
-  (refbox-reference-entry-alist (refbox--reference-candidate reference)))
+  "Return REFERENCE as a bibliography entry alist, or nil if absent."
+  (when-let ((candidate (refbox--get-entry-candidate reference)))
+    (refbox-reference-entry-alist candidate)))
 
 (defun refbox-get-entries (limit)
   "Return a hash table of indexed bibliography entries.
@@ -2882,20 +2896,15 @@ callable."
 (defun refbox-resource-file-source-items (candidate resources)
   "Return file items from `refbox-file-sources'."
   (delete-dups
-   (let (files stop)
+   (let (files)
      (dolist (source refbox-file-sources)
-       (unless stop
-         (let ((items
-                (refbox--listify
-                 (funcall
-                  (refbox-resource-file-source--function source :items t)
-                  candidate
-                  resources))))
-           (setq files (append files items))
-           (when (and items
-                      (plist-get (refbox-resource-file-source--plist source)
-                                 :terminal))
-             (setq stop t)))))
+       (let ((items
+              (refbox--listify
+               (funcall
+                (refbox-resource-file-source--function source :items t)
+                candidate
+                resources))))
+         (setq files (append files items))))
      files)))
 
 (defun refbox-resource-file-source-has-items-p (candidate resources)
@@ -3234,39 +3243,42 @@ signal a user error; when it is explicitly nil, return nil."
   (let ((key (and reference (refbox--reference-key reference))))
     (funcall (refbox-note-source--function :create) key reference)))
 
-(defun refbox--command-should-prompt-p (command)
-  "Return non-nil when COMMAND should prompt for a single resource."
+(defun refbox--command-should-prompt-p ()
+  "Return non-nil when `this-command' should prompt for a single resource."
   (or (eq refbox-open-prompt t)
       (and (listp refbox-open-prompt)
-           (memq command refbox-open-prompt))))
+           (memq this-command refbox-open-prompt))))
 
-(defun refbox--command-should-always-create-notes-p (command)
-  "Return non-nil when COMMAND should always offer note creation."
+(defun refbox--command-should-always-create-notes-p ()
+  "Return non-nil when `this-command' should always offer note creation."
   (or (eq refbox-open-always-create-notes t)
       (and (listp refbox-open-always-create-notes)
-           (memq command refbox-open-always-create-notes))))
+           (memq this-command refbox-open-always-create-notes))))
 
-(defun refbox--read-resource-choice (prompt choices &optional command)
+(defun refbox--read-resource-choice (prompt choices)
   "Read one resource choice from CHOICES using PROMPT.
 
-When COMMAND is provided, `refbox-open-prompt' controls whether a
-single choice is accepted without prompting."
+`refbox-open-prompt' controls whether a single choice is accepted
+without prompting."
   (cond
    ((null choices)
     (user-error "No resources found"))
    ((and (null (cdr choices))
-         (not (and command (refbox--command-should-prompt-p command))))
+         (not (refbox--command-should-prompt-p)))
     (car choices))
    (t
     (let ((table (make-hash-table :test 'equal))
           labels)
       (dolist (choice choices)
         (let ((label (plist-get choice :label))
+              (key nil)
               (counter 2))
-          (while (gethash label table)
+          (setq key (substring-no-properties label))
+          (while (gethash key table)
             (setq label (format "%s <%d>" (plist-get choice :label) counter)
+                  key (substring-no-properties label)
                   counter (1+ counter)))
-          (puthash label choice table)
+          (puthash key choice table)
           (push (propertize label 'refbox-resource-choice choice)
                 labels)))
       (gethash
@@ -3278,13 +3290,12 @@ single choice is accepted without prompting."
          t))
        table)))))
 
-(defun refbox--read-resource-choice-or-nil
-    (prompt choices command &optional empty-message)
+(defun refbox--read-resource-choice-or-nil (prompt choices &optional empty-message)
   "Read one resource choice from CHOICES, or return nil.
 
 EMPTY-MESSAGE, when non-nil, is displayed when CHOICES is empty."
   (if choices
-      (refbox--read-resource-choice prompt choices command)
+      (refbox--read-resource-choice prompt choices)
     (when empty-message
       (message "%s" empty-message))
     nil))
@@ -3308,40 +3319,130 @@ EMPTY-MESSAGE, when non-nil, is displayed when CHOICES is empty."
              (or (plist-get (refbox-note-source--plist) :name) "Notes")))
     (_ nil)))
 
+(defun refbox--resource-choice-display (choice label)
+  "Return Citar-style display text for resource CHOICE with LABEL."
+  (pcase (plist-get choice :type)
+    ('file (file-name-nondirectory (plist-get choice :target)))
+    ('link (plist-get choice :target))
+    ('note (refbox-note-source--display (plist-get choice :target)))
+    ('create-note label)
+    (_ label)))
+
+(defun refbox--resource-choice-category (choice)
+  "Return the completion category for resource CHOICE."
+  (pcase (plist-get choice :type)
+    ('file 'file)
+    ('link 'url)
+    ('note (or (plist-get choice :category) 'refbox-resource))
+    ('create-note 'refbox-resource)
+    (_ 'refbox-resource)))
+
+(defun refbox--resource-choice-completion-category (labels)
+  "Return the metadata category for resource choice LABELS."
+  (if (not labels)
+      'refbox-resource
+    (let ((types (delete-dups
+                  (delq nil
+                        (mapcar
+                         (lambda (label)
+                           (plist-get
+                            (get-text-property 0 'refbox-resource-choice label)
+                            :type))
+                         labels)))))
+      (if (cdr types)
+          'multi-category
+        (refbox--resource-choice-category
+         (get-text-property 0 'refbox-resource-choice (car labels)))))))
+
+(defun refbox--resource-choice-apply-multi-category (labels)
+  "Apply Embark-style multi-category properties to LABELS."
+  (mapcar
+   (lambda (label)
+     (let* ((choice (get-text-property 0 'refbox-resource-choice label))
+            (category (refbox--resource-choice-category choice)))
+       (if (not category)
+           label
+         (let ((candidate (copy-sequence label)))
+           (put-text-property
+            0
+            (length candidate)
+            'multi-category
+            (cons category candidate)
+            candidate)
+           candidate))))
+   labels))
+
 (defun refbox--resource-choice-completion-table (labels)
   "Return a completion table for resource choice LABELS."
-  (lambda (string predicate action)
-    (if (eq action 'metadata)
-        '(metadata
-          (category . refbox-resource)
-          (annotation-function . refbox--resource-choice-annotation)
-          (group-function
-           . (lambda (candidate transform)
-               (if transform
-                   candidate
+  (let* ((category (refbox--resource-choice-completion-category labels))
+         (labels (if (eq category 'multi-category)
+                     (refbox--resource-choice-apply-multi-category labels)
+                   labels)))
+    (lambda (string predicate action)
+      (if (eq action 'metadata)
+          `(metadata
+            (category . ,category)
+            (annotation-function . refbox--resource-choice-annotation)
+            (group-function
+             . (lambda (candidate transform)
                  (when-let ((choice (get-text-property
                                      0 'refbox-resource-choice candidate)))
-                   (refbox--resource-choice-group choice))))))
-      (complete-with-action action labels string predicate))))
+                   (if transform
+                       (refbox--resource-choice-display choice candidate)
+                     (refbox--resource-choice-group choice))))))
+        (complete-with-action action labels string predicate)))))
 
 (defun refbox--resource-choice-annotation (label)
   "Return annotation text for resource choice LABEL."
   (when-let ((choice (get-text-property 0 'refbox-resource-choice label)))
     (pcase (plist-get choice :type)
-      ('file
-       (let ((directory (file-name-directory (plist-get choice :target))))
-         (when directory
-           (concat " "
-                   (propertize (abbreviate-file-name directory)
-                               'face 'completions-annotations)))))
       ('note
        (refbox-note-source--annotation (plist-get choice :target)))
       (_ nil))))
 
 (defun refbox--open-target (function target)
-  "Open TARGET with FUNCTION and return TARGET."
-  (funcall function target)
-  target)
+  "Open TARGET with FUNCTION and return its result."
+  (funcall function target))
+
+(defun refbox--resource-default-action-overrides (&rest overrides)
+  "Return prompt-local Embark default action OVERRIDES."
+  (append overrides (bound-and-true-p embark-default-action-overrides)))
+
+(defun refbox--resource-choice-from-target (target)
+  "Return the resource choice carried by completion TARGET, if any."
+  (and (stringp target)
+       (get-text-property 0 'refbox-resource-choice target)))
+
+(defun refbox--open-resource-target (target)
+  "Open resource completion TARGET through its Refbox choice."
+  (if-let ((choice (refbox--resource-choice-from-target target)))
+      (refbox--open-resource-choice choice)
+    (user-error "No refbox resource choice at target")))
+
+(defun refbox--open-file-resource-target (target)
+  "Open file TARGET, preferring any attached Refbox resource choice."
+  (if-let ((choice (refbox--resource-choice-from-target target)))
+      (refbox--open-resource-choice choice)
+    (refbox-file-open (substring-no-properties target))))
+
+(defun refbox--attach-file-resource-target (target)
+  "Attach file TARGET, preferring any attached Refbox resource choice."
+  (let ((file (if-let ((choice (refbox--resource-choice-from-target target)))
+                  (plist-get choice :target)
+                (substring-no-properties target))))
+    (unless (fboundp 'mml-attach-file)
+      (require 'mml nil t))
+    (unless (fboundp 'mml-attach-file)
+      (user-error "MML attachment support is not available"))
+    (mml-attach-file file)
+    file))
+
+(defun refbox--open-url-resource-target (target)
+  "Open URL TARGET, preferring any attached Refbox resource choice."
+  (if-let ((choice (refbox--resource-choice-from-target target)))
+      (refbox--open-resource-choice choice)
+    (refbox--open-target refbox-link-open-function
+                         (substring-no-properties target))))
 
 (defun refbox-file-open (file)
   "Open FILE using the configured resource opener."
@@ -3445,83 +3546,119 @@ EMPTY-MESSAGE, when non-nil, is displayed when CHOICES is empty."
      nil
      0
      nil
-     file))
-  file)
+     file)))
 
 (defun refbox--reference-choice-key (reference)
   "Return a display key for REFERENCE."
   (refbox--reference-key reference))
 
+(defun refbox--prepend-hidden-candidate-key (key candidate)
+  "Prepend invisible KEY to CANDIDATE for key-addressable completion."
+  (let* ((quoted (if (or (string-empty-p key)
+                         (= ?\" (aref key 0))
+                         (seq-contains-p key ?\s #'=))
+                     (prin1-to-string key)
+                   key))
+         (prefix (propertize
+                  (concat quoted
+                          (when (and candidate
+                                     (not (string-empty-p candidate)))
+                            " "))
+                  'invisible t)))
+    (concat prefix candidate)))
+
+(defun refbox--create-note-choice-label (reference)
+  "Return a reference-shaped completion label for a create-note choice."
+  (let* ((key (refbox--reference-choice-key reference))
+         (width (max 0 (- (frame-width) 2)))
+         (label (concat
+                 (refbox-reference-format-main reference width t)
+                 (refbox-reference-format-suffix reference))))
+    (if (refbox--blank-string-p key)
+        label
+      (refbox--prepend-hidden-candidate-key key label))))
+
 (defun refbox--resource-choice-label (type reference target)
-  "Return display label for resource TYPE, REFERENCE, and TARGET."
-  (let ((key (and reference (refbox--reference-choice-key reference)))
-        (display (if (string= type "file")
-                     (file-name-nondirectory target)
-                   target)))
-    (if key
-        (format "%-7s %-24s %s" type key display)
-      (format "%-7s %s" type display))))
+  "Return the completion label for resource TYPE, REFERENCE, and TARGET."
+  (pcase type
+    ('file (format "%s" target))
+    ('link (format "%s" target))
+    ('note (format "%s" target))
+    ('create-note (refbox--create-note-choice-label reference))
+    (_ (format "%s" target))))
+
+(defun refbox--dedupe-resource-choices (choices)
+  "Return CHOICES with duplicate resource targets removed."
+  (let ((seen (make-hash-table :test 'equal))
+        deduped)
+    (dolist (choice choices (nreverse deduped))
+      (let ((key (list (plist-get choice :type)
+                       (plist-get choice :target))))
+        (unless (gethash key seen)
+          (puthash key t seen)
+          (push choice deduped))))))
 
 (defun refbox--file-choices (references)
   "Return file resource choices for REFERENCES."
-  (cl-loop
-   for reference in references
-   append
-   (mapcar (lambda (file)
-             (list :type 'file
-                   :reference reference
-                   :target file
-                   :label (refbox--resource-choice-label
-                           "file" reference file)))
-           (refbox-reference-files reference))))
+  (refbox--dedupe-resource-choices
+   (cl-loop
+    for reference in references
+    append
+    (mapcar (lambda (file)
+              (list :type 'file
+                    :reference reference
+                    :target file
+                    :label (refbox--resource-choice-label
+                            'file reference file)))
+            (refbox-reference-files reference)))))
 
 (defun refbox--link-choices (references)
   "Return link resource choices for REFERENCES."
-  (cl-loop
-   for reference in references
-   append
-   (mapcar (lambda (link)
-             (list :type 'link
-                   :reference reference
-                   :target link
-                   :label (refbox--resource-choice-label
-                           "link" reference link)))
-           (refbox-reference-links reference))))
+  (refbox--dedupe-resource-choices
+   (cl-loop
+    for reference in references
+    append
+    (mapcar (lambda (link)
+              (list :type 'link
+                    :reference reference
+                    :target link
+                    :label (refbox--resource-choice-label
+                            'link reference link)))
+            (refbox-reference-links reference)))))
 
-(defun refbox--note-choices (references &optional include-create command)
+(defun refbox--note-choices (references &optional include-create)
   "Return note resource choices for REFERENCES.
 
-When INCLUDE-CREATE is non-nil, include note creation choices.
-COMMAND controls `refbox-open-always-create-notes'."
-  (cl-loop
-   for reference in references
-   for key = (refbox--reference-key reference)
-   for notes = (and key (refbox-note-source-items reference))
-   for create-label = (and include-create
-                           key
-                           (ignore-errors
-                             (refbox-note-source-create-label reference)))
-   append
-   (append
-    (mapcar (lambda (note)
-              (list :type 'note
-                    :reference reference
-                    :target note
-                    :category (plist-get (refbox-note-source--plist)
-                                         :category)
-                    :label (refbox--resource-choice-label
-                            "note" reference
-                            (refbox-note-source--display note))))
-            notes)
-    (when (and create-label
-               (or (null notes)
-                   (refbox--command-should-always-create-notes-p command)))
-      (list (list :type 'create-note
-                  :reference reference
-                  :target key
-                  :label (refbox--resource-choice-label
-                          "create" reference
-                          create-label)))))))
+When INCLUDE-CREATE is non-nil, include note creation choices."
+  (refbox--dedupe-resource-choices
+   (cl-loop
+    for reference in references
+    for key = (refbox--reference-key reference)
+    for notes = (and key (refbox-note-source-items reference))
+    for create-label = (and include-create
+                            key
+                            (ignore-errors
+                              (refbox-note-source-create-label reference)))
+    append
+    (append
+     (mapcar (lambda (note)
+               (list :type 'note
+                     :reference reference
+                     :target note
+                     :category (plist-get (refbox-note-source--plist)
+                                          :category)
+                     :label (refbox--resource-choice-label
+                             'note reference note)))
+             notes)
+     (when (and create-label
+                (or (null notes)
+                    (refbox--command-should-always-create-notes-p)))
+       (list (list :type 'create-note
+                   :reference reference
+                   :target key
+                   :label (refbox--resource-choice-label
+                           'create-note reference
+                           create-label))))))))
 
 (defun refbox--all-note-choices ()
   "Return note choices from the active note source."
@@ -3531,9 +3668,9 @@ COMMAND controls `refbox-open-always-create-notes'."
            :target note
            :category (plist-get (refbox-note-source--plist) :category)
            :label (refbox--resource-choice-label
-                   "note"
+                   'note
                    nil
-                   (refbox-note-source--display note))))
+                   note)))
    (delete-dups (refbox-note-source-all-items))))
 
 (defun refbox--open-resource-choice (choice)
@@ -3553,12 +3690,15 @@ COMMAND controls `refbox-open-always-create-notes'."
   (interactive (list (refbox-select-refs)))
   (let* ((references (and references
                           (refbox--contextual-reference-list references)))
-         (choices (refbox--file-choices references)))
+         (choices (refbox--file-choices references))
+         (embark-default-action-overrides
+          (refbox--resource-default-action-overrides
+           (cons (cons 'file this-command)
+                 #'refbox--open-file-resource-target))))
     (when-let ((choice
                 (refbox--read-resource-choice-or-nil
                  "Select resource: "
                  choices
-                 'refbox-open-files
                  (format "No associated files for %s"
                          (refbox--reference-message-subject references)))))
       (refbox--open-resource-choice choice))))
@@ -3570,21 +3710,18 @@ COMMAND controls `refbox-open-always-create-notes'."
   (let* ((references (and references
                           (refbox--contextual-reference-list references)))
          (choices (refbox--file-choices references))
+         (embark-default-action-overrides
+          (refbox--resource-default-action-overrides
+           (cons (cons 'file this-command)
+                 #'refbox--attach-file-resource-target)))
          (choice
-         (refbox--read-resource-choice-or-nil
+          (refbox--read-resource-choice-or-nil
            "Select resource: "
            choices
-           'refbox-attach-files
            (format "No associated files for %s"
                    (refbox--reference-message-subject references)))))
     (when choice
-      (let ((file (plist-get choice :target)))
-        (unless (fboundp 'mml-attach-file)
-          (require 'mml nil t))
-        (unless (fboundp 'mml-attach-file)
-          (user-error "MML attachment support is not available"))
-        (mml-attach-file file)
-        file))))
+      (refbox--attach-file-resource-target (plist-get choice :target)))))
 
 ;;;###autoload
 (defun refbox-open-links (references)
@@ -3592,12 +3729,15 @@ COMMAND controls `refbox-open-always-create-notes'."
   (interactive (list (refbox-select-refs)))
   (let* ((references (and references
                           (refbox--contextual-reference-list references)))
-         (choices (refbox--link-choices references)))
+         (choices (refbox--link-choices references))
+         (embark-default-action-overrides
+          (refbox--resource-default-action-overrides
+           (cons (cons 'url this-command)
+                 #'refbox--open-url-resource-target))))
     (when-let ((choice
                 (refbox--read-resource-choice-or-nil
                  "Select resource: "
                  choices
-                 'refbox-open-links
                  (format "No link found for %s"
                          (refbox--reference-message-subject references)))))
       (refbox--open-resource-choice choice))))
@@ -3611,13 +3751,14 @@ COMMAND controls `refbox-open-always-create-notes'."
          (choices
           (refbox--note-choices
            references
-           t
-           'refbox-open-notes)))
+           t))
+         (embark-default-action-overrides
+          (refbox--resource-default-action-overrides
+           (cons t #'refbox--open-resource-target))))
     (when-let ((choice
                 (refbox--read-resource-choice-or-nil
                  "Select resource: "
-                 choices
-                 'refbox-open-notes)))
+                 choices)))
       (refbox--open-resource-choice choice))))
 
 ;;;###autoload
@@ -3628,8 +3769,7 @@ COMMAND controls `refbox-open-always-create-notes'."
     (when-let ((choice
                 (refbox--read-resource-choice-or-nil
                  "Select resource: "
-                 (refbox--all-note-choices)
-                 'refbox-open-note)))
+                 (refbox--all-note-choices))))
       (plist-get choice :target))))
   (when note
     (refbox-note-source-open note)))
@@ -3668,13 +3808,17 @@ non-nil, is a bibliography entry alist used as candidate metadata."
                      (memq :create-notes refbox-open-resources))
              (refbox--note-choices
               references
-              (memq :create-notes refbox-open-resources)
-              'refbox-open)))))
+              (memq :create-notes refbox-open-resources)))))
+         (embark-default-action-overrides
+          (refbox--resource-default-action-overrides
+           (cons 'file #'refbox--open-file-resource-target)
+           (cons 'url #'refbox--open-url-resource-target)
+           (cons t #'refbox--open-resource-target))))
     (unless choices
       (user-error "No associated resources: %s"
                   (refbox--reference-message-subject references)))
     (refbox--open-resource-choice
-     (refbox--read-resource-choice "Select resource: " choices 'refbox-open))))
+     (refbox--read-resource-choice "Select resource: " choices))))
 
 (defun refbox--reference-key (reference)
   "Return the key represented by REFERENCE."
@@ -4706,11 +4850,35 @@ STYLE, when non-nil, overrides `refbox-citeproc-csl-style'."
      ((not overwrite)
       (user-error "Library file already exists: %s" destination)))))
 
+(defun refbox-library--write-buffer (buffer destination overwrite)
+  "Write BUFFER to DESTINATION.
+
+When DESTINATION is BUFFER's visited file, follow Citar's
+buffer-source behavior: unchanged buffers report that no copy is
+needed, while modified buffers save the visited file after any
+required overwrite confirmation."
+  (with-current-buffer buffer
+    (if (and buffer-file-name
+             (file-equal-p destination buffer-file-name))
+        (if (not (buffer-modified-p))
+            (message "%s exists and the current buffer is visiting it."
+                     (file-name-nondirectory buffer-file-name))
+          (unless overwrite
+            (signal 'file-already-exists
+                    (list "File already exists" destination)))
+          (when (or (not (integerp overwrite))
+                    (yes-or-no-p
+                     (format
+                      "%s exists and the current buffer is visiting it.  Save anyway? "
+                      (file-name-nondirectory buffer-file-name))))
+            (save-buffer)))
+      (refbox-library--check-destination destination overwrite)
+      (write-region nil nil destination nil 'silent))))
+
 (defun refbox-add-buffer-to-library (reference extension &optional overwrite)
   "Save current buffer contents as REFERENCE's library file with EXTENSION."
   (let ((destination (refbox-library-destination-file reference extension)))
-    (refbox-library--check-destination destination overwrite)
-    (write-region (point-min) (point-max) destination nil 'silent)
+    (refbox-library--write-buffer (current-buffer) destination overwrite)
     destination))
 
 (defun refbox-add-file-to-library-from-file (reference file &optional overwrite)
@@ -4751,9 +4919,7 @@ asks before replacing an existing file."
                   (file-name-extension (buffer-file-name buffer)))
      :write-file
      (lambda (destination overwrite)
-       (with-current-buffer buffer
-         (refbox-library--check-destination destination overwrite)
-         (write-region (point-min) (point-max) destination nil 'silent))))))
+       (refbox-library--write-buffer buffer destination overwrite)))))
 
 (defun refbox-add-file-source-file (_reference)
   "Return an add-file source plist for an existing file."
@@ -5123,6 +5289,26 @@ selection can still resolve to the candidate it came from."
     (define-key keymap exit-key #'refbox--multiple-exit)
     (use-local-map keymap)))
 
+(defun refbox--reference-count (&optional source-paths)
+  "Return the indexed reference count when it is cheap and exact.
+
+When SOURCE-PATHS restricts selection, return nil rather than
+materializing local candidates in Emacs just to compute a prompt
+decoration."
+  (unless source-paths
+    (condition-case nil
+        (let* ((response (refbox-rpc-request refbox-rpc-method-status))
+               (counts (plist-get response :counts)))
+          (plist-get counts :entry_count))
+      (error nil))))
+
+(defun refbox--multiple-selection-prompt (prompt selected total)
+  "Return Citar-style multi-selection PROMPT for SELECTED and TOTAL."
+  (format "%s (%s/%s): "
+          prompt
+          (hash-table-count selected)
+          (or total "?")))
+
 (defun refbox--read-reference-from-state
     (prompt preset allow-empty predicate state &optional table)
   "Read one reference using completion STATE and TABLE."
@@ -5468,22 +5654,25 @@ SOURCE-PATHS restricts searches to those bibliography source files."
                (refbox--contextual-source-args
                 source-paths
                 include-configured-sources)))
-    (let* ((prompt (or prompt "Reference: "))
+    (refbox--sync-current-bibliography-buffer-if-needed)
+    (let* ((prompt (or prompt "References: "))
            (state (refbox--completion-state
                    limit
                    source-paths
                    include-configured-sources))
+           (total (refbox--reference-count source-paths))
            (selected (make-hash-table :test 'equal))
            (selected-order nil)
            (next-preset preset)
            done
            candidate)
       (while (not done)
-        (let ((refbox--multiple-exit-requested nil))
+        (let ((initial-history refbox-history)
+              (refbox--multiple-exit-requested nil))
           (setq candidate
                 (minibuffer-with-setup-hook #'refbox--setup-multiple-keymap
                   (refbox--read-reference-from-state
-                   prompt
+                   (refbox--multiple-selection-prompt prompt selected total)
                    next-preset
                    t
                    predicate
@@ -5494,6 +5683,7 @@ SOURCE-PATHS restricts searches to those bibliography source files."
                 (if (gethash identity selected)
                     (progn
                       (remhash identity selected)
+                      (setq refbox-history initial-history)
                       (setq selected-order (delete identity selected-order)))
                   (puthash identity candidate selected)
                   (push identity selected-order))

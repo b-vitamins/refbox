@@ -180,6 +180,18 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
 	        (should-not prompted)
 	        (should (equal (buffer-string) "\\nocite{alpha}"))))))
 
+(ert-deftest refbox-latex-test-command_config_uses_citar_alist_shape ()
+  "LaTeX command configuration should use Citar's alist representation."
+  (let ((refbox-latex-cite-commands
+         '((("textcite" "parencite") . (["Prenote"] ["Postnote"] t))
+           (("nocite") . nil))))
+    (should (equal (refbox-latex--command-names)
+                   '("textcite" "parencite" "nocite")))
+    (should (equal (refbox-latex--command-entry "parencite")
+                   '(("textcite" "parencite")
+                     . (["Prenote"] ["Postnote"] t))))
+    (should-not (refbox-latex--command-entry "cite"))))
+
 (ert-deftest refbox-latex-test-command_specs_place_keys_at_placeholder ()
   "Citation command specs should place keys at the configured `t' slot."
   (refbox-latex-test-with-buffer "|"

@@ -91,20 +91,13 @@ arguments and `t' marks the citation-key argument."
 
 (defun refbox-latex--command-names ()
   "Return configured LaTeX citation command names."
-  (if (and (listp refbox-latex-cite-commands)
-           (cl-every #'stringp refbox-latex-cite-commands))
-      refbox-latex-cite-commands
-    (seq-mapcat #'car refbox-latex-cite-commands)))
+  (seq-mapcat #'car refbox-latex-cite-commands))
 
 (defun refbox-latex--command-entry (command)
   "Return configured citation command entry for COMMAND."
-  (if (and (listp refbox-latex-cite-commands)
-           (cl-every #'stringp refbox-latex-cite-commands))
-      (and (member command refbox-latex-cite-commands)
-           (cons (list command) nil))
-    (seq-find (lambda (entry)
-                (member command (car entry)))
-              refbox-latex-cite-commands)))
+  (seq-find (lambda (entry)
+              (member command (car entry)))
+            refbox-latex-cite-commands))
 
 (defun refbox-latex--command-regexp ()
   "Return a regexp matching configured LaTeX citation commands."

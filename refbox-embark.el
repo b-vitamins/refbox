@@ -57,6 +57,7 @@
 (defvar embark-general-map)
 (defvar embark-keymap-alist)
 (defvar embark-multitarget-actions)
+(defvar embark-target-injection-hooks)
 
 (defgroup refbox-embark nil
   "Embark integration for refbox."
@@ -151,6 +152,10 @@
     refbox-embark-open-notes
     refbox-embark-copy-references)
   "Embark multi-target actions installed by `refbox-embark-mode'.")
+
+(defvar refbox-embark--target-injection-hooks
+  '((refbox-embark-insert-edit embark--ignore-target))
+  "Embark target injection hooks installed by `refbox-embark-mode'.")
 
 (defun refbox-embark--target-string (reference)
   "Return an Embark target string for REFERENCE."
@@ -478,7 +483,14 @@
           (refbox-embark--with-general-map (symbol-value map))))
   (when (boundp 'embark-multitarget-actions)
     (dolist (action refbox-embark--multitarget-actions)
-      (add-to-list 'embark-multitarget-actions action))))
+      (add-to-list 'embark-multitarget-actions action)))
+  (when (boundp 'embark-target-injection-hooks)
+    (pcase-dolist (`(,action . ,hooks)
+                   refbox-embark--target-injection-hooks)
+      (dolist (hook hooks)
+        (cl-pushnew hook
+                    (alist-get action embark-target-injection-hooks)
+                    :test #'eq)))))
 
 (defun refbox-embark--disable ()
   "Remove refbox target finders and keymaps from Embark."
@@ -498,7 +510,15 @@
   (when (boundp 'embark-multitarget-actions)
     (dolist (action refbox-embark--multitarget-actions)
       (setq embark-multitarget-actions
-            (remq action embark-multitarget-actions)))))
+            (remq action embark-multitarget-actions))))
+  (when (boundp 'embark-target-injection-hooks)
+    (pcase-dolist (`(,action . ,hooks)
+                   refbox-embark--target-injection-hooks)
+      (when-let ((entry (assq action embark-target-injection-hooks)))
+        (setcdr entry (cl-set-difference (cdr entry) hooks :test #'eq))
+        (unless (cdr entry)
+          (setq embark-target-injection-hooks
+                (remq entry embark-target-injection-hooks)))))))
 
 ;;;###autoload
 (defun refbox-embark-setup ()

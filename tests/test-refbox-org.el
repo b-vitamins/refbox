@@ -155,8 +155,24 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                  (car (all-completions "" collection)))))
       (should (equal (refbox-org-select-style) "author")))))
 
+(ert-deftest refbox-org-test-empty_style_selection_matches_citar ()
+  "Empty style completion should return the empty string."
+  (let ((refbox-org-citation-styles '("/" "text")))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (&rest _args) "")))
+      (should (equal (refbox-org-select-style) "")))))
+
 (ert-deftest refbox-org-test-style_completion_metadata_is_rich ()
   "Style completion metadata should expose familiar groups and previews."
+  (let ((refbox-org-citation-styles '("/" "author" "author/c")))
+    (pcase-let ((`(,default ,author ,variant)
+                 (refbox-org-style-candidates)))
+      (should (eq (get-text-property 0 'face default)
+                  'refbox-highlight))
+      (should (eq (get-text-property 0 'face author)
+                  'refbox-highlight))
+      (should (eq (get-text-property 0 'face variant)
+                  'refbox))))
   (should (equal (refbox-org--style-group "author/c" nil)
                  "Author-Only"))
   (should (equal (refbox-org--style-group "text/f" nil)

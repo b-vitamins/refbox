@@ -79,6 +79,20 @@ The format follows Keep a Changelog, and this project follows SemVer.
 - Matched Citar's file-backed note creation contract by requiring a note formatter for newly created notes.
 - Matched Citar's note-source contract by requiring `:hasitems` instead of materializing note items for note predicates.
 - Matched Citar's resource selection prompt text across file, link, note, attach, and generic open commands.
+- Kept LaTeX citation command configuration on Citar's alist-shaped command-spec path instead of accepting a second ad hoc shape.
+- Matched Citar's multi-reference selection prompt by showing selected and indexed-total counts without materializing candidates in Emacs.
+- Matched Citar's resource opener return contract by returning the configured file/link opener result instead of the target path.
+- Matched Citar's public entry accessor behavior by returning nil for unknown keys while preserving duplicate-key ambiguity errors.
+- Matched Citar's Embark citation-edit behavior by ignoring injected targets for the citation edit action.
+- Matched Citar's multi-reference toggle behavior by restoring selection history when a chosen reference is deselected.
+- Matched Citar's resource selection display by offering raw file/link/note strings, Citar-style group transforms, target deduplication, and reference-shaped create-note rows.
+- Matched Citar's command-state resource prompting by using `this-command` for single-resource prompts and forced create-note offers.
+- Matched Citar's Markdown citation affix insertion by preserving user-supplied spacing instead of trimming prefix and suffix text.
+- Matched Citar's Org style completion by preserving empty style selections and applying style/variant faces to completion candidates.
+- Matched Citar's buffer-backed add-file behavior when the destination is the current buffer's visited file.
+- Matched Citar's resource completion metadata by exposing file, URL, note-source, and mixed-resource categories.
+- Matched Citar's prompt-local Embark default actions for resource selection prompts.
+- Matched Citar's file resource aggregation by combining file-field resources with same-key library-path resources.
 
 ## [0.4.8] - 2026-05-17
 

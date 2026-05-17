@@ -13,7 +13,10 @@
 (require 'refbox-latex)
 (require 'refbox-markdown)
 
+(declare-function embark--ignore-target "embark" (&rest _args))
+
 (defvar embark-general-map)
+(defvar embark-target-injection-hooks)
 
 (defun refbox-embark-test-candidate (key source-path)
   "Return a search candidate for KEY from SOURCE-PATH."
@@ -192,7 +195,8 @@
                               (define-key map (kbd "g") #'ignore)
                               map))
         (embark-keymap-alist nil)
-        (embark-multitarget-actions nil))
+        (embark-multitarget-actions nil)
+        (embark-target-injection-hooks nil))
     (refbox-embark-setup)
     (should (memq #'refbox-embark-target-reference-candidate
                   embark-target-finders))
@@ -261,7 +265,10 @@
     (should (memq #'refbox-embark-run-default-action
                   embark-multitarget-actions))
     (should (memq #'refbox-embark-copy-references
-                  embark-multitarget-actions))))
+                  embark-multitarget-actions))
+    (should (memq #'embark--ignore-target
+                  (alist-get 'refbox-embark-insert-edit
+                             embark-target-injection-hooks)))))
 
 (ert-deftest refbox-embark-test-mode_can_disable_registered_surface ()
   "The global mode should be reversible."
@@ -271,6 +278,7 @@
         (embark-transformer-alist nil)
         (embark-keymap-alist nil)
         (embark-multitarget-actions nil)
+        (embark-target-injection-hooks nil)
         refbox-embark-mode)
     (refbox-embark-mode 1)
     (should (memq #'refbox-embark-target-reference-candidate
@@ -281,6 +289,9 @@
     (should (assq 'refbox-reference embark-keymap-alist))
     (should (memq #'refbox-embark-copy-references
                   embark-multitarget-actions))
+    (should (memq #'embark--ignore-target
+                  (alist-get 'refbox-embark-insert-edit
+                             embark-target-injection-hooks)))
     (refbox-embark-mode -1)
     (should-not (memq #'refbox-embark-target-reference-candidate
                       embark-target-finders))
@@ -291,7 +302,9 @@
     (should-not (assq 'refbox-reference embark-transformer-alist))
     (should-not (assq 'refbox-reference embark-keymap-alist))
     (should-not (memq #'refbox-embark-copy-references
-                      embark-multitarget-actions))))
+                      embark-multitarget-actions))
+    (should-not (assq 'refbox-embark-insert-edit
+                      embark-target-injection-hooks))))
 
 (ert-deftest refbox-embark-test-selected_candidate_collector_uses_group_metadata ()
   "The selected-candidate collector should expose multi-select choices."

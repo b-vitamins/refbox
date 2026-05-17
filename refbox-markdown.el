@@ -111,12 +111,12 @@ Captures the actual key in group 1.")
   (let ((body (string-join (mapcar (lambda (key) (concat "@" key)) keys)
                            refbox-markdown-key-separator)))
     (concat "["
-            (if (and prefix (not (string-empty-p (string-trim prefix))))
-                (concat (string-trim prefix) " ")
+            (if (and prefix (not (string-empty-p prefix)))
+                (concat prefix " ")
               "")
             body
-            (if (and suffix (not (string-empty-p (string-trim suffix))))
-                (concat ", " (string-trim suffix))
+            (if (and suffix (not (string-empty-p suffix)))
+                (concat ", " suffix)
               "")
             "]")))
 
