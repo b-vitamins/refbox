@@ -356,7 +356,10 @@
               ((symbol-function 'refbox-read-references)
                (lambda (&rest _args)
                  (list (list :key "alpha")
-                       (list :key "beta")))))
+                       (list :key "beta"))))
+              ((symbol-function 'refbox-select-refs)
+               (lambda (&rest _args)
+                 '("theta" "iota"))))
       (let ((refbox-major-mode-functions
              '(((refbox-test-mode) .
                 ((insert-keys . refbox-test-insert-keys)
@@ -372,6 +375,9 @@
           (refbox-insert-citation '("gamma" "delta") 'style)
           (should (equal (buffer-string) "gamma|delta/style"))
           (erase-buffer)
+          (call-interactively #'refbox-insert-citation)
+          (should (equal (buffer-string) "theta|iota/nil"))
+          (erase-buffer)
           (refbox-insert-edit 'arg)
           (should (equal (buffer-string) "edit/arg"))
           (let ((refbox-default-action
@@ -380,25 +386,53 @@
             (refbox-dwim)
             (should (equal default-action-refs '("alpha" "beta")))))))))
 
-(ert-deftest refbox-test-dwim_boolean_fallback_prompts_for_references ()
-  "A non-nil at-point fallback should prompt before the default action."
-  (let (default-action-refs)
+(ert-deftest refbox-test-insert-edit_without_adapter_matches_citar_message ()
+  "Generic citation edit should not fall back to citation insertion."
+  (let ((refbox-major-mode-functions
+         '(((refbox-test-mode) .
+            ((insert-citation . ignore)))))
+        messages)
+    (cl-letf (((symbol-function 'message)
+               (lambda (format-string &rest args)
+                 (let ((text (apply #'format format-string args)))
+                   (push text messages)
+                   text))))
+      (with-temp-buffer
+        (refbox-test-mode)
+        (should (equal (refbox-insert-edit)
+                       "Citation editing is not supported for refbox-test-mode"))
+        (should (equal (buffer-string) ""))
+        (should (equal messages
+                       '("Citation editing is not supported for refbox-test-mode")))))))
+
+(ert-deftest refbox-test-dwim_without_citation_matches_citar_error ()
+  "DWIM should not prompt when no citation is at point."
+  (let (default-action-refs prompted)
     (cl-letf (((symbol-function 'refbox-key-at-point)
                (lambda () nil))
               ((symbol-function 'refbox-citation-at-point)
                (lambda () nil))
               ((symbol-function 'refbox-read-references)
                (lambda (&rest _args)
+                 (setq prompted t)
                  (list (list :key "alpha")))))
-      (let ((refbox-at-point-fallback t)
-            (refbox-default-action
+      (let ((refbox-default-action
              (lambda (references)
                (setq default-action-refs references))))
-        (refbox-dwim)
-        (should (equal (mapcar (lambda (reference)
-                                 (plist-get reference :key))
-                               default-action-refs)
-                       '("alpha")))))))
+        (should-error (refbox-dwim) :type 'user-error)
+        (should-not prompted)
+        (should-not default-action-refs)))))
+
+(ert-deftest refbox-test-run-default-action_matches_citar_contract ()
+  "Default action dispatch should pass REFERENCES through unchanged."
+  (let (calls)
+    (let ((refbox-default-action
+           (lambda (references)
+             (push references calls))))
+      (refbox-run-default-action nil)
+      (should (equal calls '(nil)))
+      (refbox-run-default-action '("alpha"))
+      (should (equal calls '(("alpha") nil))))))
 
 (defconst refbox-test-reference-candidate
   '(:key "smith2020"
@@ -1805,7 +1839,26 @@
                 (refbox-file-note-extensions '("org" "md")))
             (should (equal (refbox-note-filename "smith2020") existing))
             (should (equal (refbox-note-filename "doe/2021")
-                           (expand-file-name "doe_2021.org" root)))))
+                           (expand-file-name "doe/2021.org" root)))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-file_note_keys_use_regexp_additional_separator ()
+  "File-backed note key enumeration should use Citar-style regexp separators."
+  (let* ((root (make-temp-file "refbox-note-keys-" t))
+         (file (expand-file-name "alpha extra.org" root)))
+    (unwind-protect
+        (progn
+          (with-temp-file file)
+          (let ((refbox-notes-paths (list root))
+                (refbox-file-note-extensions '("org"))
+                (refbox-file-additional-files-separator "[[:space:]]"))
+            (should (equal (sort (refbox-note-source-file-keys)
+                                 #'string-lessp)
+                           '("alpha" "alpha extra")))
+            (should (equal (sort (refbox-search--key-filter-for-post-tag
+                                  "has:notes")
+                                 #'string-lessp)
+                           '("alpha" "alpha extra")))))
       (delete-directory root t))))
 
 (ert-deftest refbox-test-create_note_accepts_key_and_entry ()
@@ -2279,7 +2332,11 @@
         (refbox-open-resources '(:create-notes)))
     (cl-letf (((symbol-function 'refbox-reference-resources)
                (lambda (_candidate) nil)))
-      (should-error (refbox-open candidate) :type 'user-error))))
+      (should
+       (equal
+        (error-message-string
+         (should-error (refbox-open candidate) :type 'user-error))
+        "No associated resources: empty2020")))))
 
 (ert-deftest refbox-test-specific_resource_commands_tolerate_missing_items ()
   "Specific resource commands should match Citar's empty-resource behavior."
@@ -2384,14 +2441,28 @@
       (should (eq (refbox-open-entry "alpha") :opened))
       (should (equal opened "alpha")))))
 
-(ert-deftest refbox-test-open_in_zotero_uses_citation_key_url ()
+(ert-deftest refbox-test-open_entry_in_zotero_uses_citation_key_url ()
   "Zotero opening should use the selected citation key."
   (let (opened)
     (let ((refbox-zotero-open-function
            (lambda (url)
              (push url opened))))
-      (refbox-open-in-zotero refbox-test-reference-candidate)
+      (refbox-open-entry-in-zotero refbox-test-reference-candidate)
       (should (equal opened
+                     '("zotero://select/items/@smith2020"))))))
+
+(ert-deftest refbox-test-file_open_external_preserves_url_targets ()
+  "External opening should pass URL targets through unchanged."
+  (let (called)
+    (cl-letf (((symbol-function 'call-process)
+               (lambda (program infile destination display &rest args)
+                 (setq called
+                       (list program infile destination display args))
+                 0)))
+      (should (equal (refbox-file-open-external
+                      "zotero://select/items/@smith2020")
+                     "zotero://select/items/@smith2020"))
+      (should (equal (car (last called))
                      '("zotero://select/items/@smith2020"))))))
 
 (ert-deftest refbox-test-raw-entry-insertion-preserves-indexed-text ()
@@ -2419,7 +2490,8 @@
           (refbox-insert-bibtex '("alpha"))))
       (should (string-match-p "title = {Alpha}" (buffer-string)))
       (should (string-match-p "doi = {10.1000/alpha}" (buffer-string)))
-      (should-not (string-match-p "file = " (buffer-string))))))
+      (should-not (string-match-p "file = " (buffer-string)))
+      (should (string-suffix-p "\n\n" (buffer-string))))))
 
 (ert-deftest refbox-test-export-bibliography-removes-configured_fields ()
   "Local bibliography export should remove configured no-export fields."
@@ -2437,10 +2509,11 @@
             (insert-file-contents output)
             (should (string-match-p "title = {Alpha}" (buffer-string)))
             (should (string-match-p "doi = {10.1000/alpha}" (buffer-string)))
-            (should-not (string-match-p "file = " (buffer-string)))))
+            (should-not (string-match-p "file = " (buffer-string)))
+            (should (string-suffix-p "\n\n" (buffer-string)))))
       (delete-directory root t))))
 
-(ert-deftest refbox-test-export-local-bibliography_uses_buffer_directory ()
+(ert-deftest refbox-test-export-local-bib-file_uses_buffer_directory ()
   "Local bibliography export should use the conventional local-bib name."
   (let* ((root (make-temp-file "refbox-local-export-" t))
          (output (expand-file-name "local-bib.bib" root))
@@ -2455,21 +2528,55 @@
                       ((symbol-function 'refbox-rpc-request)
                        (lambda (_method _params)
                          (list :raw raw))))
-              (should (equal (refbox-export-local-bibliography) output))))
+              (should (equal (refbox-export-local-bib-file) output))))
           (with-temp-buffer
             (insert-file-contents output)
             (should (string-match-p "@article{alpha" (buffer-string)))))
       (delete-directory root t))))
 
-(ert-deftest refbox-test-export-local-bib-file_uses_local_bibliography_export ()
-  "The local bib-file command should use the same export path."
-  (let (exported)
-    (cl-letf (((symbol-function 'refbox-export-local-bibliography)
-               (lambda (&optional file)
-                 (setq exported file)
-                 :exported)))
-      (should (eq (refbox-export-local-bib-file "paper-local.bib") :exported))
-      (should (equal exported "paper-local.bib")))))
+(ert-deftest refbox-test-export-local-bib-file_prefers_configured_extension ()
+  "Local bibliography export should mirror Citar's global extension choice."
+  (let* ((root (make-temp-file "refbox-local-export-ext-" t))
+         (output (expand-file-name "local-bib.biblatex" root))
+         (raw "@article{alpha,\n  title = {Alpha}\n}"))
+    (unwind-protect
+        (let ((refbox-bibliography '("main.biblatex"))
+              (refbox-bibliography-extensions '("bib"))
+              (refbox-major-mode-functions
+               '((text-mode
+                  . ((local-bib-files . refbox-test-local-bib-files))))))
+          (with-temp-buffer
+            (text-mode)
+            (setq buffer-file-name (expand-file-name "paper.txt" root))
+            (cl-letf (((symbol-function 'refbox-test-local-bib-files)
+                       (lambda (&optional _buffer)
+                         (list (expand-file-name "paper.json" root))))
+                      ((symbol-function 'refbox-current-buffer-citation-keys)
+                       (lambda (&optional _buffer)
+                         '("alpha")))
+                      ((symbol-function 'refbox-rpc-request)
+                       (lambda (_method _params)
+                         (list :raw raw))))
+              (should (equal (refbox-export-local-bib-file) output)))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-export-local-bib-file_accepts_explicit_file ()
+  "An explicit local bibliography export path should be honored."
+  (let* ((root (make-temp-file "refbox-local-export-explicit-" t))
+         (output (expand-file-name "paper-local.bib" root))
+         (raw "@article{alpha,\n  title = {Alpha}\n}"))
+    (unwind-protect
+        (cl-letf (((symbol-function 'refbox-current-buffer-citation-keys)
+                   (lambda (&optional _buffer)
+                     '("alpha")))
+                  ((symbol-function 'refbox-rpc-request)
+                   (lambda (_method _params)
+                     (list :raw raw))))
+          (should (equal (refbox-export-local-bib-file output) output))
+          (with-temp-buffer
+            (insert-file-contents output)
+            (should (string-match-p "@article{alpha" (buffer-string)))))
+      (delete-directory root t))))
 
 (ert-deftest refbox-test-add-file-to-library_sources ()
   "Library add helpers should cover buffer, file, and URL-style sources."
@@ -2696,6 +2803,19 @@
     (should (equal (refbox-format-reference (list candidate))
                    "Smith (2020) Alpha Reference"))))
 
+(ert-deftest refbox-test-format-reference_concatenates_previews_like_citar ()
+  "Template reference formatting should not add separators outside the template."
+  (let ((refbox-templates
+         '((preview . "${=key=}")))
+        (candidates
+         (list
+          '(:key "alpha" :entry_type "article" :fields nil :resources nil)
+          '(:key "beta" :entry_type "article" :fields nil :resources nil))))
+    (should (equal (refbox-format-references candidates)
+                   '("alpha" "beta")))
+    (should (equal (refbox-format-reference candidates)
+                   "alphabeta"))))
+
 (ert-deftest refbox-test-citeproc-format-reference-uses-citeproc-and-selected-csl_configuration ()
   "CSL reference formatting should use citeproc on selected reference payloads."
   (let* ((root (make-temp-file "refbox-format-" t))
@@ -2742,10 +2862,10 @@
                          (setq uncited (list keys processor))))
                       ((symbol-function 'citeproc-render-bib)
                        (lambda (_processor _format)
-                         '(("Formatted Alpha")))))
+                         (cons "Formatted Alpha" '((entry-spacing . 1))))))
               (should (equal (refbox-citeproc--format-references
                               (list candidate))
-                             '("Formatted Alpha")))
+                             "Formatted Alpha"))
               (should (equal (refbox-citeproc-format-reference
                               (list candidate))
                              "Formatted Alpha"))))
@@ -2772,8 +2892,18 @@
         (should (equal (buffer-string)
                        "Alpha Reference\n\nBeta Reference")))
       (should (equal (refbox-copy-reference '("alpha" "beta"))
-                     "Alpha Reference\n\nBeta Reference"))
+                     "Copied:\nAlpha Reference\n\nBeta Reference"))
       (should (equal (current-kill 0) "Alpha Reference\n\nBeta Reference"))))
+
+(ert-deftest refbox-test-copy-reference_matches_citar_empty_output ()
+  "Empty formatted references should not replace the kill ring."
+  (let ((kill-ring '("previous"))
+        (kill-ring-yank-pointer nil)
+        (refbox-format-reference-function
+         (lambda (_references) "")))
+    (should (equal (refbox-copy-reference '("missing"))
+                   "Key not found."))
+    (should (equal (current-kill 0) "previous"))))
 
 (ert-deftest refbox-test-reference_commands_select_before_custom_formatter ()
   "Interactive reference formatting should pass selected keys to formatters."
@@ -2791,7 +2921,7 @@
           (should (equal (buffer-string) "Alpha Reference")))
         (setq formatter-input nil)
         (should (equal (call-interactively #'refbox-copy-reference)
-                       "Alpha Reference"))
+                       "Copied:\nAlpha Reference"))
         (should (equal formatter-input '("alpha" "beta")))))))
 
 (ert-deftest refbox-test-formatting_configuration_errors_are_actionable ()
@@ -2933,6 +3063,54 @@
                                 (equal key "smith2020")))
                      '("smith2020")))
       (should filter-seen))))
+
+(ert-deftest refbox-test-selection_commands_are_quiet_like_citar ()
+  "Interactive selection helpers should not emit extra echo messages."
+  (let (messages)
+    (cl-letf (((symbol-function 'refbox-read-references)
+               (lambda (&rest _args)
+                 (list refbox-test-reference-candidate)))
+              ((symbol-function 'refbox--read-reference)
+               (lambda (&rest _args)
+                 refbox-test-reference-candidate))
+              ((symbol-function 'message)
+               (lambda (format-string &rest args)
+                 (push (apply #'format format-string args) messages))))
+      (should (equal (call-interactively #'refbox-select-references)
+                     (list refbox-test-reference-candidate)))
+      (should (eq (call-interactively #'refbox-read-reference)
+                  refbox-test-reference-candidate))
+      (should-not messages))))
+
+(ert-deftest refbox-test-action_keymaps_match_citar_defaults ()
+  "Default reference action maps should use Citar's visible bindings."
+  (dolist (binding '(("a" . refbox-add-file-to-library)
+                     ("b" . refbox-insert-bibtex)
+                     ("c" . refbox-insert-citation)
+                     ("e" . refbox-open-entry)
+                     ("f" . refbox-open-files)
+                     ("k" . refbox-insert-keys)
+                     ("l" . refbox-open-links)
+                     ("n" . refbox-open-notes)
+                     ("o" . refbox-open)
+                     ("r" . refbox-copy-reference)
+                     ("R" . refbox-insert-reference)
+                     ("RET" . refbox-run-default-action)))
+    (should (eq (lookup-key refbox-map (kbd (car binding)))
+                (cdr binding))))
+  (dolist (key '("A" "N"))
+    (should-not (lookup-key refbox-map (kbd key))))
+  (dolist (binding '(("i" . refbox-insert-edit)
+                     ("o" . refbox-open)
+                     ("e" . refbox-open-entry)
+                     ("l" . refbox-open-links)
+                     ("n" . refbox-open-notes)
+                     ("f" . refbox-open-files)
+                     ("r" . refbox-copy-reference)
+                     ("RET" . refbox-run-default-action)))
+    (should (eq (lookup-key refbox-citation-map (kbd (car binding)))
+                (cdr binding))))
+  (should-not (lookup-key refbox-citation-map (kbd "b"))))
 
 (ert-deftest refbox-test-insert-preset_allows_freeform_searches ()
   "Preset insertion should not require the input to match configured presets."

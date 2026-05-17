@@ -43,6 +43,19 @@ The format follows Keep a Changelog, and this project follows SemVer.
 - Initialized new Org note files with Citar's title/body/print-bibliography layout and side-effecting formatter contract.
 - Exposed Org property-drawer `@key` references as Embark key targets.
 - Stopped mutating completion category defaults while loading the package.
+- Made local bibliography export use the single `refbox-export-local-bib-file` path and derive `local-bib.<ext>` from the first configured bibliography, matching Citar.
+- Used citekeys verbatim for generated note filenames and treated additional-file separators as regexps when enumerating file-backed note keys.
+- Matched Citar's formatted-reference copy behavior by copying only non-empty output and echoing the copied text.
+- Matched Citar's BibTeX insertion/export spacing by writing a blank line after the final exported entry.
+- Matched Citar's generic citation insertion contract by selecting references before dispatching to mode adapters.
+- Matched Citar's empty `refbox-open` error shape by including the selected reference keys in the no-resource message.
+- Matched Citar's generic citation-edit fallback by reporting unsupported editing instead of silently inserting a new citation.
+- Collapsed Zotero opening to the `refbox-open-entry-in-zotero` entry opener and preserved URL targets in the external opener.
+- Matched Citar's template reference formatter by concatenating preview output without an extra separator.
+- Matched Citar's DWIM/default-action contract by erroring when no citation is at point and passing default-action references through unchanged.
+- Removed extra interactive selection echo messages from reference readers and selectors.
+- Matched Citar's citeproc formatter contract by returning citeproc's formatted bibliography string directly.
+- Trimmed the default reference and citation action keymaps to Citar's visible bindings.
 
 ## [0.4.8] - 2026-05-17
 

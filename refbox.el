@@ -148,17 +148,6 @@ completion candidate plist or a citation key string."
   :type 'function
   :group 'refbox)
 
-(defcustom refbox-at-point-fallback 'prompt
-  "Fallback used by `refbox-dwim' when no citation key is at point.
-
-When the value is `prompt' or t, `refbox-dwim' prompts for
-references and runs `refbox-default-action'.  When nil, it signals
-a user error instead."
-  :type '(choice (const :tag "Prompt" prompt)
-                 (const :tag "Prompt (t)" t)
-                 (const :tag "Error" nil))
-  :group 'refbox)
-
 (defcustom refbox-autosync-sync-on-enable t
   "Whether `refbox-autosync-mode' performs a full sync when enabled.
 
@@ -689,7 +678,7 @@ returns note keys that can be expanded through `:items'.  `:open',
   :type 'function
   :group 'refbox)
 
-(defcustom refbox-zotero-open-function #'browse-url
+(defcustom refbox-zotero-open-function #'refbox-file-open-external
   "Function used to open Zotero select URLs."
   :type 'function
   :group 'refbox)
@@ -770,7 +759,6 @@ candidate and exits the selector.")
 (defvar refbox-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "a") #'refbox-add-file-to-library)
-    (define-key map (kbd "A") #'refbox-attach-files)
     (define-key map (kbd "b") #'refbox-insert-bibtex)
     (define-key map (kbd "c") #'refbox-insert-citation)
     (define-key map (kbd "e") #'refbox-open-entry)
@@ -778,11 +766,9 @@ candidate and exits the selector.")
     (define-key map (kbd "k") #'refbox-insert-keys)
     (define-key map (kbd "l") #'refbox-open-links)
     (define-key map (kbd "n") #'refbox-open-notes)
-    (define-key map (kbd "N") #'refbox-open-note)
     (define-key map (kbd "o") #'refbox-open)
     (define-key map (kbd "r") #'refbox-copy-reference)
     (define-key map (kbd "R") #'refbox-insert-reference)
-    (define-key map (kbd "z") #'refbox-open-in-zotero)
     (define-key map (kbd "RET") #'refbox-run-default-action)
     map)
   "Keymap for refbox reference actions.")
@@ -795,7 +781,6 @@ candidate and exits the selector.")
     (define-key map (kbd "l") #'refbox-open-links)
     (define-key map (kbd "n") #'refbox-open-notes)
     (define-key map (kbd "f") #'refbox-open-files)
-    (define-key map (kbd "b") #'refbox-insert-bibtex)
     (define-key map (kbd "r") #'refbox-copy-reference)
     (define-key map (kbd "RET") #'refbox-run-default-action)
     map)
@@ -1917,7 +1902,7 @@ direct function transform."
                                    refbox-file-additional-files-separator)))
                     (car (split-string
                           base
-                          (regexp-quote refbox-file-additional-files-separator)
+                          refbox-file-additional-files-separator
                           t))))))))
 
 (defun refbox-note-source-key-list ()
@@ -2998,10 +2983,6 @@ callable."
        collect file))
     (refbox-note--directories))))
 
-(defun refbox-note--filename-key (key)
-  "Return KEY transformed for a single file name."
-  (replace-regexp-in-string "[/\\]" "_" key))
-
 (defun refbox-note-filename (key)
   "Return the existing or default note filename for KEY."
   (when (refbox--blank-string-p key)
@@ -3013,7 +2994,7 @@ callable."
   (or (car (refbox-note-files key))
       (expand-file-name
        (format "%s.%s"
-               (refbox-note--filename-key key)
+               key
                (string-remove-prefix "." (car refbox-file-note-extensions)))
        (car refbox-notes-paths))))
 
@@ -3456,19 +3437,18 @@ EMPTY-MESSAGE, when non-nil, is displayed when CHOICES is empty."
 
 (defun refbox-file-open-external (file)
   "Open FILE using the platform's external file opener."
-  (let ((file (expand-file-name file)))
-    (if (and (eq system-type 'windows-nt)
-             (fboundp 'w32-shell-execute))
-        (w32-shell-execute "open" file)
-      (call-process
-       (pcase system-type
-         ('darwin "open")
-         ('cygwin "cygstart")
-         (_ "xdg-open"))
-       nil
-       0
-       nil
-       file)))
+  (if (and (eq system-type 'windows-nt)
+           (fboundp 'w32-shell-execute))
+      (w32-shell-execute "open" file)
+    (call-process
+     (pcase system-type
+       ('darwin "open")
+       ('cygwin "cygstart")
+       (_ "xdg-open"))
+     nil
+     0
+     nil
+     file))
   file)
 
 (defun refbox--reference-choice-key (reference)
@@ -3688,6 +3668,9 @@ non-nil, is a bibliography entry alist used as candidate metadata."
               references
               (memq :create-notes refbox-open-resources)
               'refbox-open)))))
+    (unless choices
+      (user-error "No associated resources: %s"
+                  (refbox--reference-message-subject references)))
     (refbox--open-resource-choice
      (refbox--read-resource-choice "Resource: " choices 'refbox-open))))
 
@@ -3969,16 +3952,9 @@ report if the effective limit is invalid."
   "Return a Zotero select URL for REFERENCE."
   (format "zotero://select/items/@%s" (refbox--reference-key reference)))
 
-;;;###autoload
-(defun refbox-open-in-zotero (&optional reference)
-  "Open REFERENCE in Zotero using its citation key."
-  (interactive)
-  (let ((reference (or reference (refbox-read-reference))))
-    (funcall refbox-zotero-open-function (refbox-zotero-url reference))))
-
 (defun refbox-open-entry-in-zotero (&optional reference)
   "Open REFERENCE in Zotero using its citation key."
-  (refbox-open-in-zotero reference))
+  (funcall refbox-zotero-open-function (refbox-zotero-url reference)))
 
 (defun refbox-raw-entry (reference)
   "Return raw bibliography entry text for REFERENCE."
@@ -4185,6 +4161,18 @@ key-shaped daemon requests for raw/source/resource commands."
               (goto-char (refbox--raw-entry-field-end)))))
       (string-trim-right (buffer-string)))))
 
+(defun refbox--bibtex-export-text (references)
+  "Return Citar-style BibTeX export text for REFERENCES."
+  (concat
+   (string-join
+    (mapcar (lambda (reference)
+              (refbox-raw-entry-remove-fields
+               (refbox-raw-entry reference)
+               refbox-bibtex-no-export-fields))
+            references)
+    "\n\n")
+   "\n\n"))
+
 ;;;###autoload
 (defun refbox-insert-bibtex (&optional references)
   "Insert BibTeX entries for REFERENCES.
@@ -4195,14 +4183,7 @@ insertion."
   (let ((references (refbox--contextual-reference-list references)))
     (unless references
       (user-error "No references selected"))
-    (insert
-     (string-join
-      (mapcar (lambda (reference)
-                (refbox-raw-entry-remove-fields
-                 (refbox-raw-entry reference)
-                 refbox-bibtex-no-export-fields))
-              references)
-      "\n\n"))))
+    (insert (refbox--bibtex-export-text references))))
 
 (defun refbox--generic-citation-keys ()
   "Return unique @KEY-style citation keys in the current buffer."
@@ -4329,7 +4310,10 @@ insertion."
 
 REFERENCES, when non-nil, supplies reference keys or candidates.  ARG is
 passed to the adapter command."
-  (interactive (list nil current-prefix-arg))
+  (interactive
+   (if (refbox--get-major-mode-function 'insert-citation)
+       (list (refbox-select-refs) current-prefix-arg)
+     (user-error "Citation insertion is not supported for %s" major-mode)))
   (unless (refbox--get-major-mode-function 'insert-citation)
     (user-error "Citation insertion is not supported for %s" major-mode))
   (refbox--major-mode-function
@@ -4339,37 +4323,33 @@ passed to the adapter command."
         (refbox--references-keys (refbox--reference-list references)))
    arg))
 
+(defun refbox--citation-edit-unsupported (&rest _)
+  "Report unsupported citation editing for the current major mode."
+  (message "Citation editing is not supported for %s" major-mode))
+
 ;;;###autoload
 (defun refbox-insert-edit (&optional arg)
   "Edit the citation at point using the current major-mode adapter."
   (interactive "P")
-  (if (refbox--get-major-mode-function 'insert-edit)
-      (refbox--major-mode-function 'insert-edit #'ignore arg)
-    (refbox-insert-citation nil arg)))
+  (refbox--major-mode-function
+   'insert-edit
+   #'refbox--citation-edit-unsupported
+   arg))
 
 ;;;###autoload
-(defun refbox-run-default-action (&optional references)
+(defun refbox-run-default-action (references)
   "Run `refbox-default-action' on REFERENCES."
-  (interactive)
-  (let ((references (refbox--reference-list references)))
-    (unless references
-      (user-error "No references selected"))
-    (funcall refbox-default-action references)))
+  (funcall refbox-default-action references))
 
 ;;;###autoload
 (defun refbox-dwim ()
   "Run the default action on citation keys at point."
   (interactive)
-  (let ((references (or (when-let ((key (refbox-key-at-point)))
-                          (list key))
-                        (refbox-citation-at-point))))
-    (cond
-     (references
-      (refbox-run-default-action references))
-     ((memq refbox-at-point-fallback '(prompt t))
-      (refbox-run-default-action nil))
-     (t
-      (user-error "No citation keys found")))))
+  (if-let ((references (or (refbox-key-at-point)
+                           (refbox-citation-at-point))))
+      (refbox-run-default-action
+       (if (listp references) references (list references)))
+    (user-error "No citation keys found")))
 
 ;;;###autoload
 (defun refbox-at-point ()
@@ -4386,23 +4366,13 @@ passed to the adapter command."
     (unless keys
       (user-error "Current buffer contains no citation keys"))
     (with-temp-file file
-      (insert
-       (string-join
-        (mapcar (lambda (key)
-                  (refbox-raw-entry-remove-fields
-                   (refbox-raw-entry key)
-                   refbox-bibtex-no-export-fields))
-                keys)
-        "\n\n"))
-      (insert "\n"))
+      (insert (refbox--bibtex-export-text keys)))
     file))
 
 (defun refbox--local-bibliography-extension ()
   "Return the preferred extension for a generated local bibliography."
   (let ((extension
-         (or (when-let ((file (car (refbox-local-bibliography-files))))
-               (file-name-extension file))
-             (when-let ((file (car refbox-bibliography)))
+         (or (when-let ((file (car refbox-bibliography)))
                (file-name-extension file))
              (car refbox-bibliography-extensions)
              "bib")))
@@ -4411,7 +4381,7 @@ passed to the adapter command."
       (string-remove-prefix "." extension))))
 
 ;;;###autoload
-(defun refbox-export-local-bibliography (&optional file)
+(defun refbox-export-local-bib-file (&optional file)
   "Export the current buffer's citations to a local bibliography FILE."
   (interactive)
   (let ((file (or file
@@ -4422,12 +4392,6 @@ passed to the adapter command."
                             (file-name-directory buffer-file-name))
                        default-directory)))))
     (refbox-export-bibliography file)))
-
-;;;###autoload
-(defun refbox-export-local-bib-file (&optional file)
-  "Export the current buffer's citations to a local bibliography file."
-  (interactive)
-  (refbox-export-local-bibliography file))
 
 (defun refbox-csl--directories (dirs)
   "Return existing CSL DIRS."
@@ -4668,7 +4632,7 @@ STYLE, when non-nil, overrides `refbox-citeproc-csl-style'."
   "Return CSL-formatted reference text for REFERENCES.
 
 STYLE, when non-nil, overrides `refbox-citeproc-csl-style'."
-  (string-join (refbox-citeproc--format-references references style) "\n\n"))
+  (refbox-citeproc--format-references references style))
 
 (defun refbox-format-references (references)
   "Return template-formatted reference strings for REFERENCES."
@@ -4677,7 +4641,7 @@ STYLE, when non-nil, overrides `refbox-citeproc-csl-style'."
 
 (defun refbox-format-reference (references)
   "Return formatted reference text for REFERENCES."
-  (string-join (refbox-format-references references) "\n\n"))
+  (string-join (refbox-format-references references) ""))
 
 (defun refbox--format-reference-text (references)
   "Return formatted reference text for REFERENCES using configured formatter."
@@ -4695,11 +4659,11 @@ STYLE, when non-nil, overrides `refbox-citeproc-csl-style'."
   "Copy formatted references for REFERENCES to the kill ring."
   (interactive (list (refbox-select-refs)))
   (let ((text (refbox--format-reference-text references)))
-    (kill-new text)
-    (when (called-interactively-p 'interactive)
-      (message "refbox: copied formatted reference%s"
-               (if (string-match-p "\n\n" text) "s" "")))
-    text))
+    (if (not (equal "" text))
+        (progn
+          (kill-new text)
+          (message "Copied:\n%s" text))
+      (message "Key not found."))))
 
 (defun refbox-library--safe-key (key)
   "Return KEY made safe for a single file name."
@@ -5427,15 +5391,6 @@ each candidate and should return non-nil for selectable references."
               "References: " preset limit filter source-paths include-configured-sources)
            (refbox-read-reference
             "Reference: " preset limit filter source-paths include-configured-sources))))
-    (when (called-interactively-p 'interactive)
-      (let ((count (cond
-                    ((null selected) 0)
-                    ((and (listp selected) (plist-member selected :key)) 1)
-                    ((listp selected) (length selected))
-                    (t 1))))
-        (message "refbox: selected %d reference%s"
-                 count
-                 (if (= count 1) "" "s"))))
     selected))
 
 ;;;###autoload
@@ -5492,17 +5447,14 @@ called with each candidate and should return non-nil for
 selectable references.  SOURCE-PATHS restricts searches to those
 bibliography source files."
   (interactive)
-  (let ((candidate (refbox--read-reference
-                    (or prompt "Reference: ")
-                    preset
-                    limit
-                    nil
-                    predicate
-                    source-paths
-                    include-configured-sources)))
-    (when (called-interactively-p 'interactive)
-      (message "refbox: %s" (refbox-reference-field candidate "key")))
-    candidate))
+  (refbox--read-reference
+   (or prompt "Reference: ")
+   preset
+   limit
+   nil
+   predicate
+   source-paths
+   include-configured-sources))
 
 ;;;###autoload
 (defun refbox-read-references
@@ -5558,10 +5510,6 @@ SOURCE-PATHS restricts searches to those bibliography source files."
                   (mapcar (lambda (identity)
                             (gethash identity selected))
                           (nreverse selected-order))))
-      (when (called-interactively-p 'interactive)
-        (message "refbox: selected %d reference%s"
-                 (length selected)
-                 (if (= (length selected) 1) "" "s")))
       selected)))
 
 ;;;###autoload

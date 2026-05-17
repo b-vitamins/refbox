@@ -469,27 +469,38 @@ impl RefboxStore {
             .optional()?)
     }
 
-    pub fn diagnostics(&self) -> Result<Vec<StoredDiagnostic>> {
+    pub fn diagnostics(&self, limit: usize) -> Result<Vec<StoredDiagnostic>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let limit = i64::try_from(limit).map_err(|_| StoreError::LimitOutOfRange(limit))?;
         let mut statement = self.connection.prepare(
             "SELECT d.id, f.path, d.entry_id, d.severity, d.code, d.message, d.target_kind,
                     d.source_path, d.source_start_byte, d.source_start_line, d.source_start_column,
                     d.source_end_byte, d.source_end_line, d.source_end_column
              FROM diagnostics d
              JOIN files f ON f.id = d.file_id
-             ORDER BY d.id",
+             ORDER BY d.id
+             LIMIT ?1",
         )?;
         let diagnostics = statement
-            .query_map([], stored_diagnostic_from_row)?
+            .query_map(params![limit], stored_diagnostic_from_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(diagnostics)
     }
 
-    pub fn duplicate_groups(&self) -> Result<Vec<StoredDuplicateGroup>> {
+    pub fn duplicate_groups(&self, limit: usize) -> Result<Vec<StoredDuplicateGroup>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let limit = i64::try_from(limit).map_err(|_| StoreError::LimitOutOfRange(limit))?;
         let mut statement = self
             .connection
-            .prepare("SELECT id, entry_key FROM duplicate_groups ORDER BY entry_key")?;
+            .prepare("SELECT id, entry_key FROM duplicate_groups ORDER BY entry_key LIMIT ?1")?;
         let groups = statement
-            .query_map([], |row| {
+            .query_map(params![limit], |row| {
                 Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;

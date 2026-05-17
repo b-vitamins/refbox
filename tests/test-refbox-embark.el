@@ -254,6 +254,8 @@
                 #'refbox-embark-insert-raw-entry))
     (should (eq (lookup-key refbox-embark-map (kbd "C"))
                 #'refbox-embark-copy-references))
+    (should-not (lookup-key refbox-embark-map (kbd "z")))
+    (should-not (lookup-key refbox-embark-citation-map (kbd "z")))
     (should (memq #'refbox-embark-insert-citation
                   embark-multitarget-actions))
     (should (memq #'refbox-embark-run-default-action

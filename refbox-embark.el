@@ -85,7 +85,6 @@
     (define-key map (kbd "R") #'refbox-embark-insert-reference)
     (define-key map (kbd "s") #'refbox-embark-open-source)
     (define-key map (kbd "C") #'refbox-embark-copy-references)
-    (define-key map (kbd "z") #'refbox-embark-open-in-zotero)
     (define-key map (kbd "RET") #'refbox-embark-run-default-action)
     map)
   "Embark actions for refbox reference targets.")
@@ -105,7 +104,6 @@
     (define-key map (kbd "r") #'refbox-embark-copy-reference)
     (define-key map (kbd "s") #'refbox-embark-open-source)
     (define-key map (kbd "C") #'refbox-embark-copy-references)
-    (define-key map (kbd "z") #'refbox-embark-open-in-zotero)
     (define-key map (kbd "RET") #'refbox-embark-run-default-action)
     map)
   "Embark actions for refbox citation targets.")
@@ -451,11 +449,6 @@
   "Attach a file resource for TARGET."
   (interactive "sReference: ")
   (refbox-attach-files (refbox-embark-reference target)))
-
-(defun refbox-embark-open-in-zotero (target)
-  "Open TARGET in Zotero."
-  (interactive "sReference: ")
-  (refbox-open-in-zotero (refbox-embark-reference target)))
 
 (defun refbox-embark-run-default-action (target)
   "Run the configured default action for TARGET."

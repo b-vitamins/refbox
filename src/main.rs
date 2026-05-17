@@ -503,10 +503,9 @@ impl Daemon {
                 let limit = clamp_limit(request.limit);
                 let diagnostics = self
                     .store
-                    .diagnostics()
+                    .diagnostics(limit)
                     .map_err(store_error)?
                     .into_iter()
-                    .take(limit)
                     .map(|diagnostic| DiagnosticItem {
                         file_path: diagnostic.file_path,
                         entry_id: diagnostic.entry_id,
@@ -524,10 +523,9 @@ impl Daemon {
                 let limit = clamp_limit(request.limit);
                 let groups = self
                     .store
-                    .duplicate_groups()
+                    .duplicate_groups(limit)
                     .map_err(store_error)?
                     .into_iter()
-                    .take(limit)
                     .map(|group| DuplicateGroupItem {
                         key: group.key,
                         entries: group

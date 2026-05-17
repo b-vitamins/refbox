@@ -232,7 +232,7 @@ fn diagnostics_and_source_locations_are_queryable() {
 
     store.insert_file(&file).expect("file should insert");
 
-    let diagnostics = store.diagnostics().expect("diagnostics should query");
+    let diagnostics = store.diagnostics(100).expect("diagnostics should query");
     assert!(
         diagnostics
             .iter()
@@ -289,7 +289,7 @@ fn duplicate_keys_from_different_files_are_preserved() {
     assert_eq!(entries[1].file_path, "refs/b.bib");
 
     let duplicate_groups = store
-        .duplicate_groups()
+        .duplicate_groups(100)
         .expect("duplicate groups should query");
     assert_eq!(duplicate_groups.len(), 1);
     assert_eq!(duplicate_groups[0].key, "dup2020");
@@ -306,7 +306,7 @@ fn duplicate_keys_from_different_files_are_preserved() {
         .expect("replacement file should insert");
     assert!(
         store
-            .duplicate_groups()
+            .duplicate_groups(100)
             .expect("duplicate groups should query")
             .is_empty()
     );
@@ -347,11 +347,79 @@ fn duplicate_keys_from_same_file_are_preserved() {
     );
 
     let duplicate_groups = store
-        .duplicate_groups()
+        .duplicate_groups(100)
         .expect("duplicate groups should query");
     assert_eq!(duplicate_groups.len(), 1);
     assert_eq!(duplicate_groups[0].key, "dup2020");
     assert_eq!(duplicate_groups[0].entries.len(), 2);
+}
+
+#[test]
+fn diagnostics_and_duplicate_groups_are_limited_in_store_queries() {
+    let mut store = RefboxStore::open_in_memory().expect("store should open");
+    for index in 0..3 {
+        let malformed = parse_bibliography_file(
+            format!("refs/broken-{index}.bib"),
+            r#"@article{broken,
+  title = {Missing close
+}"#,
+        );
+        store
+            .insert_file(&malformed)
+            .expect("malformed file should insert");
+    }
+
+    assert!(
+        store
+            .diagnostics(0)
+            .expect("zero diagnostic limit should query")
+            .is_empty()
+    );
+    assert_eq!(
+        store
+            .diagnostics(2)
+            .expect("diagnostics should query with limit")
+            .len(),
+        2
+    );
+
+    for key in ["alpha2020", "beta2020", "gamma2020"] {
+        for suffix in ["a", "b"] {
+            let file = parse_bibliography_file(
+                format!("refs/{key}-{suffix}.bib"),
+                &format!(
+                    r#"@article{{{key},
+  title = {{{key} {suffix}}}
+}}"#
+                ),
+            );
+            store
+                .insert_file(&file)
+                .expect("duplicate-key file should insert");
+        }
+    }
+
+    assert!(
+        store
+            .duplicate_groups(0)
+            .expect("zero duplicate-group limit should query")
+            .is_empty()
+    );
+    let duplicate_groups = store
+        .duplicate_groups(2)
+        .expect("duplicate groups should query with limit");
+    assert_eq!(
+        duplicate_groups
+            .iter()
+            .map(|group| group.key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["alpha2020", "beta2020"]
+    );
+    assert!(
+        duplicate_groups
+            .iter()
+            .all(|group| group.entries.len() == 2)
+    );
 }
 
 #[test]
