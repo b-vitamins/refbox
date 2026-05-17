@@ -19,6 +19,14 @@
   "The package entry feature should load cleanly."
   (should (featurep 'refbox)))
 
+(defun refbox-test-key-table (keys function)
+  "Return a key-indexed item table for KEYS using FUNCTION."
+  (let ((table (make-hash-table :test 'equal)))
+    (dolist (key keys table)
+      (let ((items (funcall function key)))
+        (when items
+          (puthash key items table))))))
+
 (ert-deftest refbox-test-package-load-has-no-process-side-effects ()
   "Loading the package should not start a daemon connection."
   (should-not (refbox-rpc-live-p))
@@ -1284,9 +1292,10 @@
                                 (lambda (reference)
                                   (refbox-reference-field reference "key"))
                                 references)))
-             :hasitems ,(lambda (_key _reference)
-                          (setq hasitems (1+ hasitems))
-                          nil)))))
+             :hasitems ,(lambda ()
+                          (lambda (_key)
+                            (setq hasitems (1+ hasitems))
+                            nil))))))
     (cl-letf (((symbol-function 'refbox-rpc-request)
                (lambda (method _params)
                  (should (equal method refbox-rpc-method-search-entries))
@@ -1852,17 +1861,21 @@
         (progn
           (with-temp-file external)
           (let ((refbox-file-sources
-                 `((:items ,(lambda (reference resources)
-                              (setq seen-items (list reference resources))
-                              (list external))
-                    :hasitems ,(lambda (reference resources)
-                                 (setq seen-has (list reference resources))
-                                 t)))))
+                 `((:items ,(lambda (keys)
+                              (setq seen-items keys)
+                              (refbox-test-key-table
+                               keys
+                               (lambda (_key)
+                                 (list external))))
+                    :hasitems ,(lambda ()
+                                 (lambda (key)
+                                   (push key seen-has)
+                                   t))))))
             (should (equal (refbox-reference-files candidate nil)
                            (list external)))
             (should (refbox-reference-has-files-p candidate)))
-          (should (equal seen-items (list candidate nil)))
-          (should (equal seen-has (list candidate nil))))
+          (should (equal seen-items '("alpha")))
+          (should (equal (nreverse seen-has) '("alpha"))))
       (delete-directory root t))))
 
 (ert-deftest refbox-test-resource_file_sources_fallback_to_items_for_has_files ()
@@ -1870,11 +1883,14 @@
   (let ((candidate '(:key "alpha" :resources nil))
         called)
     (let ((refbox-file-sources
-           `((:items ,(lambda (reference resources)
-                        (setq called (list reference resources))
-                        '("/tmp/external.pdf"))))))
+           `((:items ,(lambda (keys)
+                        (setq called keys)
+                        (refbox-test-key-table
+                         keys
+                         (lambda (_key)
+                           '("/tmp/external.pdf"))))))))
       (should (refbox-reference-has-files-p candidate)))
-    (should (equal called (list candidate nil)))))
+    (should (equal called '("alpha")))))
 
 (ert-deftest refbox-test-resource_file_sources_reject_invalid_items ()
   "Broken file sources should fail at the source boundary."
@@ -1922,8 +1938,11 @@
           (let ((refbox-notes-source 'mock)
                 (refbox-notes-sources
                  `((mock
-                    :items ,(lambda (key _reference)
-                              (list (format "note:%s" key)))
+                    :items ,(lambda (keys)
+                              (refbox-test-key-table
+                               keys
+                               (lambda (key)
+                                 (list (format "note:%s" key)))))
                     :hasitems ,#'ignore
                     :open ,#'ignore))))
             (cl-letf (((symbol-function 'refbox-entries-by-keys)
@@ -1955,10 +1974,11 @@
          (refbox-notes-source 'mock)
          (refbox-notes-sources
           `((mock
-             :items ,(lambda (_key _reference)
-                       nil)
-             :hasitems ,(lambda (key _reference)
-                          (equal key "smith2020"))
+             :items ,(lambda (_keys)
+                       (make-hash-table :test 'equal))
+             :hasitems ,(lambda ()
+                          (lambda (key)
+                            (equal key "smith2020")))
              :open ,#'ignore))))
     (cl-letf (((symbol-function 'refbox-entries-by-keys)
                (lambda (keys limit)
@@ -1980,24 +2000,25 @@
       (should (funcall (refbox-is-cited) candidate)))))
 
 (ert-deftest refbox-test-note_predicate_hydrates_key_references ()
-  "Note predicates should pass hydrated references to source predicates."
+  "Note predicates should check cross-reference keys from hydrated references."
   (let* ((candidate (plist-put (copy-tree refbox-test-reference-candidate)
                                :fields
                                (append
                                 (plist-get refbox-test-reference-candidate
                                            :fields)
-                                '((:raw_name "note-flag"
-                                   :lookup_name "note-flag"
-                                   :value "yes")))))
+                                '((:raw_name "crossref"
+                                   :lookup_name "crossref"
+                                   :value "parent2020")))))
          (seen nil)
          (refbox-notes-source 'mock)
          (refbox-notes-sources
           `((mock
-             :items ,#'ignore
-             :hasitems ,(lambda (key reference)
-                          (setq seen (list key reference))
-                          (equal (refbox-reference-field reference "note-flag")
-                                 "yes"))
+             :items ,(lambda (_keys)
+                       (make-hash-table :test 'equal))
+             :hasitems ,(lambda ()
+                          (lambda (key)
+                            (push key seen)
+                            (equal key "parent2020")))
              :open ,#'ignore))))
     (cl-letf (((symbol-function 'refbox-entries-by-keys)
                (lambda (keys limit)
@@ -2008,8 +2029,7 @@
                (lambda (_key)
                  (error "note predicate should use batched hydration"))))
       (should (funcall (refbox-has-notes) "smith2020"))
-      (should (equal (car seen) "smith2020"))
-      (should (equal (cadr seen) candidate)))))
+      (should (equal (nreverse seen) '("smith2020" "parent2020"))))))
 
 (ert-deftest refbox-test-local_resource_lookup_uses_crossref_parent_keys ()
   "File lookup should include parent keys declared by cross-reference fields."
@@ -2091,23 +2111,25 @@
               :items ,#'ignore
               :hasitems ,#'ignore
               :open ,#'ignore
-              :create ,(lambda (key reference)
-                         (setq seen (list key reference)))))))
+              :create ,(lambda (key entry)
+                         (setq seen (list key entry)))))))
       (refbox-create-note
        "alpha"
        '(("title" . "Alpha Reference")
          ("author" . "Smith, Jane")
          ("=type=" . "article"))))
     (should (equal (car seen) "alpha"))
-    (should (equal (refbox-reference-field (cadr seen) "title")
+    (should (equal (refbox-get-value "title" (cadr seen))
                    "Alpha Reference"))
-    (should (equal (refbox-reference-field (cadr seen) "entry_type")
+    (should (equal (refbox-get-value "=type=" (cadr seen))
                    "article"))))
 
 (ert-deftest refbox-test-default_org_note_format_matches_citar_layout ()
   "The default Org note template should include a bibliography section."
   (with-temp-buffer
-    (refbox-org-format-note-default "smith2020" refbox-test-reference-candidate)
+    (refbox-org-format-note-default
+     "smith2020"
+     (refbox-reference-entry-alist refbox-test-reference-candidate))
     (should (equal (buffer-string)
                    "#+title: Notes on Smith, Alpha Reference Title\n\n\n\n#+print_bibliography:"))
     (should (looking-at "\n\n#\\+print_bibliography:"))))
@@ -2121,9 +2143,11 @@
               (refbox-file-note-extensions '("org"))
               (refbox-open-note-function #'find-file)
               (refbox-note-format-function
-               (lambda (key reference)
-                 (insert "note:" key ":" (refbox--reference-key reference)))))
-          (should (equal (refbox-note-source-file-create "alpha" '(:key "alpha"))
+               (lambda (key entry)
+                 (insert "note:" key ":" (refbox-get-value "=key=" entry)))))
+          (should (equal (refbox-note-source-file-create
+                          "alpha"
+                          '(("=key=" . "alpha")))
                          file))
           (should (equal (buffer-string) "note:alpha:alpha")))
       (when-let ((buffer (find-buffer-visiting file)))
@@ -2143,9 +2167,9 @@
                (lambda (_file)
                  (error "creation should use find-file directly")))
               (refbox-note-format-function
-               (lambda (key _reference)
+               (lambda (key _entry)
                  (insert "created:" key))))
-          (should (equal (refbox-note-source-file-create "alpha" '(:key "alpha"))
+          (should (equal (refbox-note-source-file-create "alpha" nil)
                          file))
           (should (equal (buffer-string) "created:alpha")))
       (when-let ((buffer (find-buffer-visiting file)))
@@ -2162,7 +2186,7 @@
         (let ((refbox-notes-paths (list root))
               (refbox-file-note-extensions '("org"))
               (refbox-note-format-function nil))
-          (should-error (refbox-note-source-file-create "alpha" '(:key "alpha"))
+          (should-error (refbox-note-source-file-create "alpha" nil)
                         :type 'user-error))
       (when-let ((buffer (find-buffer-visiting file)))
         (with-current-buffer buffer
@@ -2183,13 +2207,14 @@
           (with-temp-file note)
           (let ((refbox-notes-paths (list root))
                 (refbox-file-note-extensions '("org")))
-            (should (equal (refbox-note-source-file-items
-                            "child2021"
-                            candidate)
+            (should (equal (refbox-note-source-items candidate)
                            (list note)))
-            (should (refbox-note-source-file-has-items
-                     "child2021"
-                     candidate))))
+            (should (refbox-note-source-has-items-p candidate))
+            (let ((table (refbox-note-source-file-items '("parent2020"))))
+              (should (equal (gethash "parent2020" table)
+                             (list note))))
+            (should (funcall (refbox-note-source-file-has-items)
+                             "parent2020"))))
       (delete-directory root t))))
 
 (ert-deftest refbox-test-note_sources_are_swappable ()
@@ -2198,16 +2223,21 @@
     (let ((refbox-notes-source 'mock)
           (refbox-notes-sources
            `((mock
-              :items ,(lambda (key _reference)
-                        (list (format "note:%s" key)))
+              :items ,(lambda (keys)
+                        (refbox-test-key-table
+                         keys
+                         (lambda (key)
+                           (list (format "note:%s" key)))))
               :all-items ,(lambda ()
                             '("note:all" "note:orphan"))
-              :hasitems ,(lambda (key _reference)
-                           (equal key "smith2020"))
+              :hasitems ,(lambda ()
+                           (lambda (key)
+                             (equal key "smith2020")))
               :open ,(lambda (item)
                        (push item opened))
-              :create ,(lambda (key _reference)
-                         (push key created)
+              :create ,(lambda (key entry)
+                         (push (list key (refbox-get-value "=key=" entry))
+                               created)
                          (format "created:%s" key))
               :create-label ,(lambda (key _reference)
                                (format "new:%s" key))
@@ -2218,7 +2248,7 @@
       (should (equal (refbox-create-note refbox-test-reference-candidate)
                      "created:smith2020"))
       (refbox-open-notes refbox-test-reference-candidate)
-      (should (equal created '("smith2020")))
+      (should (equal created '(("smith2020" "smith2020"))))
       (should (equal opened '("note:smith2020")))
 	      (cl-letf (((symbol-function 'completing-read)
 	                 (lambda (_prompt collection &rest _args)
@@ -2232,8 +2262,11 @@
         (refbox-notes-sources
          `((mock
             :keys ,(lambda () '("alpha" "beta"))
-            :items ,(lambda (key _reference)
-                      (list (format "note:%s" key)))
+            :items ,(lambda (keys)
+                      (refbox-test-key-table
+                       keys
+                       (lambda (key)
+                         (list (format "note:%s" key)))))
             :hasitems ,#'ignore
             :open ,#'ignore))))
     (should (equal (sort (refbox-note-source-all-items)
@@ -2267,10 +2300,14 @@
     (let ((refbox-notes-source 'mock)
           (refbox-notes-sources
            `((mock
-              :items ,(lambda (key _reference)
-                        (list (format "note:%s" key)))
-              :hasitems ,(lambda (key _reference)
-                           (equal key "smith2020"))
+              :items ,(lambda (keys)
+                        (refbox-test-key-table
+                         keys
+                         (lambda (key)
+                           (list (format "note:%s" key)))))
+              :hasitems ,(lambda ()
+                           (lambda (key)
+                             (equal key "smith2020")))
               :open ,(lambda (item)
                        (push item opened))
               :create ,#'ignore))))
@@ -2512,8 +2549,11 @@
         (let ((refbox-notes-source 'mock)
               (refbox-notes-sources
                `((mock :name "Slipbox Notes"
-                       :items ,(lambda (_key _reference)
-                                 '("note:alpha"))
+                       :items ,(lambda (keys)
+                                 (refbox-test-key-table
+                                  keys
+                                  (lambda (_key)
+                                    '("note:alpha"))))
                        :hasitems ,#'ignore
                        :open ,#'ignore
                        :transform ,(lambda (item)
@@ -2572,7 +2612,8 @@
          (refbox-notes-source 'mock)
          (refbox-notes-sources
           '((mock :name "Slipbox Notes"
-                  :items (lambda (_key _reference) nil)
+                  :items (lambda (_keys)
+                           (make-hash-table :test 'equal))
                   :hasitems ignore
                   :open ignore
                   :create ignore
@@ -2629,8 +2670,11 @@
          (refbox-notes-source 'mock)
          (refbox-notes-sources
           '((mock :name "Slipbox Notes"
-                  :items (lambda (_key _reference)
-                           '("note:smith2020"))
+                  :items (lambda (keys)
+                           (refbox-test-key-table
+                            keys
+                            (lambda (_key)
+                              '("note:smith2020"))))
                   :hasitems ignore
                   :open ignore
                   :create ignore
@@ -2744,7 +2788,11 @@
   (let* ((refbox-notes-source 'mock)
          (refbox-notes-sources
           '((mock :category file
-                  :items (lambda (_key _reference) '("/tmp/note.org"))
+                  :items (lambda (keys)
+                           (refbox-test-key-table
+                            keys
+                            (lambda (_key)
+                              '("/tmp/note.org"))))
                   :hasitems ignore
                   :open ignore)))
          (choice (car (refbox--note-choices (list '(:key "alpha"))))))
@@ -2953,6 +3001,33 @@
       (should-not (refbox-open-note nil))
       (should (member "No associated files for empty2020" messages))
       (should (member "No link found for empty2020" messages)))))
+
+(ert-deftest refbox-test-file_commands_suppress_generic_message_when_source_has_items ()
+  "File commands should let file sources explain item lookup failures."
+  (let ((candidate '(:key "alpha" :fields nil :resources nil))
+        messages)
+    (let ((refbox-file-sources
+           `((:items ,(lambda (keys)
+                        (refbox-test-key-table keys #'ignore))
+              :hasitems ,(lambda ()
+                           (lambda (key)
+                             (equal key "alpha")))))))
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format-string &rest args)
+                   (push (apply #'format format-string args) messages))))
+        (should-not (refbox-open-files candidate))
+        (should-not (refbox-attach-files candidate))))
+    (should-not messages)))
+
+(ert-deftest refbox-test-link_commands_respect_supplied_empty_resources ()
+  "Link commands should not hydrate when candidates carry empty resources."
+  (let ((candidate '(:key "alpha" :fields nil :resources nil))
+        messages)
+    (cl-letf (((symbol-function 'message)
+               (lambda (format-string &rest args)
+                 (push (apply #'format format-string args) messages))))
+      (should-not (refbox-open-links candidate)))
+    (should (equal messages '("No link found for alpha")))))
 
 (ert-deftest refbox-test-file_openers_support_extension_overrides_and_attachments ()
   "File resources should support extension-specific openers and MIME attach."
@@ -3300,8 +3375,8 @@
         (let ((refbox-library-paths (list library))
               (refbox-add-file-sources
                `((?c "custom" "Use a test source"
-                  ,(lambda (reference)
-                     (setq called reference)
+                  ,(lambda (key)
+                     (setq called key)
                      (list :extension "pdf"
                            :write-file
                            (lambda (destination _overwrite)
@@ -3310,7 +3385,7 @@
           (cl-letf (((symbol-function 'read-multiple-choice)
                      (lambda (_prompt choices)
                        (car choices))))
-            (should (equal (refbox-add-file-to-library "alpha")
+            (should (equal (refbox-add-file-to-library '(:key "alpha"))
                            (expand-file-name "alpha.pdf" library))))
           (with-temp-buffer
             (insert-file-contents (expand-file-name "alpha.pdf" library))
@@ -3353,20 +3428,20 @@
 (ert-deftest refbox-test-add-file-to-library_uses_configured_writer ()
   "The interactive add-file command should dispatch through the configured writer."
   (let (called)
-	  (let ((refbox-add-file-sources
-	         `((?c "custom" "Use a test source"
-	            ,(lambda (_reference)
-	               (list :extension "pdf"
-	                     :write-file #'ignore)))))
-	        (refbox-library-paths (list temporary-file-directory))
-	        (refbox-add-file-function
-	         (lambda (reference source)
-	           (setq called (list reference source))
-	           "custom-destination")))
+    (let ((refbox-add-file-sources
+           `((?c "custom" "Use a test source"
+              ,(lambda (_key)
+                 (list :extension "pdf"
+                       :write-file #'ignore)))))
+          (refbox-library-paths (list temporary-file-directory))
+          (refbox-add-file-function
+           (lambda (key source)
+             (setq called (list key source))
+             "custom-destination")))
       (cl-letf (((symbol-function 'read-multiple-choice)
                  (lambda (_prompt choices)
                    (car choices))))
-        (should (equal (refbox-add-file-to-library "alpha")
+        (should (equal (refbox-add-file-to-library '(:key "alpha"))
                        "custom-destination"))))
     (should (equal (car called) "alpha"))
     (should (equal (plist-get (cadr called) :extension) "pdf"))))

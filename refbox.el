@@ -467,11 +467,9 @@ When nil, associated file lookup does not filter by extension."
   "Sources used to discover files associated with references.
 
 Each source is a plist recognizing `:items' and optional
-`:hasitems'.  Both functions receive CANDIDATE and RESOURCES,
-where RESOURCES are the indexed resources already loaded for
-CANDIDATE.  `:items' returns existing file names; `:hasitems'
-should return non-nil when the source can report a file
-association more cheaply than materializing all items."
+`:hasitems'.  `:items' receives a list of keys and returns a hash
+table mapping keys to existing file names.  `:hasitems' receives no
+arguments and returns a predicate for individual keys."
   :type '(repeat (plist :value-type function :options (:items :hasitems)))
   :group 'refbox)
 
@@ -488,8 +486,8 @@ association more cheaply than materializing all items."
   "Sources offered by `refbox-add-file-to-library'.
 
 Each source is a list containing a shortcut character, short name,
-description, and function.  The function receives REFERENCE and returns
-a source plist with `:write-file' and optional `:extension'.
+description, and function.  The function receives a key and returns a
+source plist with `:write-file' and optional `:extension'.
 `:write-file' is a function of DESTINATION and OVERWRITE with the same
 overwrite convention as `copy-file'."
   :type '(repeat :tag "Sources for `refbox-add-file-to-library'"
@@ -502,7 +500,7 @@ overwrite convention as `copy-file'."
 (defcustom refbox-add-file-function #'refbox-save-file-to-library
   "Function used by `refbox-add-file-to-library' to store a source.
 
-The function receives REFERENCE and a source plist returned by one of
+The function receives a key and a source plist returned by one of
 `refbox-add-file-sources'.  It should write the source and return the
 destination file name."
   :type 'function
@@ -590,12 +588,14 @@ Each entry is (SOURCE . PLIST).  Recognized plist keys are
 `:items', `:all-items', `:keys', `:hasitems', `:preload',
 `:open', `:create', `:create-label', `:transform', and
 `:annotate'.  `:category', when non-nil, is the completion category
-for note items.  `:items' and `:hasitems' functions receive KEY and
-REFERENCE.  `:all-items' receives no arguments and returns note items
-directly openable by `:open'.  `:keys' receives no arguments and
-returns note keys that can be expanded through `:items'.  `:open',
-`:transform', and `:annotate' receive a note item.  `:create' and
-`:create-label' receive KEY and REFERENCE.
+for note items.  `:items' receives a list of keys and returns a hash
+table mapping keys to note items.  `:hasitems' receives no arguments
+and returns a predicate for individual keys.  `:all-items' receives no
+arguments and returns note items directly openable by `:open'.  `:keys'
+receives no arguments and returns note keys that can be expanded through
+`:items'.  `:open', `:transform', and `:annotate' receive a note item.
+`:create' receives KEY and an entry alist.  `:create-label' receives
+KEY and REFERENCE.
 `:items', `:hasitems', and `:open' are required when registering a note
 source with `refbox-register-notes-source'."
   :type 'alist
@@ -819,6 +819,11 @@ candidate and exits the selector.")
   "Return CANDIDATE resources as a list."
   (when (listp candidate)
     (refbox--listify (refbox--candidate-value candidate :resources))))
+
+(defun refbox--candidate-resources-supplied-p (candidate)
+  "Return non-nil when CANDIDATE carries explicit resources."
+  (and (listp candidate)
+       (plist-member candidate :resources)))
 
 (defun refbox--candidate-resource-kinds (candidate)
   "Return CANDIDATE resource kinds as strings."
@@ -2743,8 +2748,9 @@ callable."
       (user-error "refbox file source has no callable %s" property))
      (t nil))))
 
-(defun refbox-resource-file-source-indexed-items (candidate resources)
-  "Return files declared by indexed resources for CANDIDATE."
+(defun refbox-resource-file-source--indexed-items-for-candidate
+    (candidate resources)
+  "Return files declared by indexed RESOURCES for CANDIDATE."
   (let* ((extensions refbox-library-file-extensions)
          (field-files
           (cl-loop
@@ -2770,7 +2776,23 @@ callable."
        refbox-library-paths-recursive
        extensions)))))
 
-(defun refbox-resource-file-source-indexed-has-items (candidate resources)
+(defun refbox-resource-file-source-indexed-items (keys)
+  "Return files declared by indexed resources for KEYS as a hash table."
+  (let ((table (make-hash-table :test 'equal)))
+    (dolist (candidate (refbox--resolved-reference-list keys) table)
+      (let* ((key (refbox--reference-key candidate))
+             (resources (refbox--candidate-resources candidate))
+             (items (and key
+                         (refbox-resource-file-source--indexed-items-for-candidate
+                          candidate
+                          resources))))
+        (when items
+          (puthash key
+                   (delete-dups (append (gethash key table) items))
+                   table))))))
+
+(defun refbox-resource-file-source--indexed-has-items-for-candidate
+    (candidate resources)
   "Return non-nil when CANDIDATE has indexed file declarations."
   (or (refbox-reference-has-resource-kind-p candidate "file")
       (unless (refbox--candidate-resource-kinds-supplied-p candidate)
@@ -2786,7 +2808,17 @@ callable."
                           (member lookup (refbox--file-field-names))))))
              resources)))))
 
-(defun refbox-resource-file-source-library-items (candidate resources)
+(defun refbox-resource-file-source-indexed-has-items ()
+  "Return a predicate checking indexed file declarations by key."
+  (lambda (key)
+    (let* ((candidate (refbox--reference-candidate key))
+           (resources (refbox--candidate-resources candidate)))
+      (refbox-resource-file-source--indexed-has-items-for-candidate
+       candidate
+       resources))))
+
+(defun refbox-resource-file-source--library-items-for-candidate
+    (candidate resources)
   "Return library-path files associated with CANDIDATE."
   (refbox-resource--files-for-keys-in-roots
    (refbox-reference-related-keys candidate resources)
@@ -2795,7 +2827,30 @@ callable."
    refbox-library-file-extensions
    refbox-file-additional-files-separator))
 
-(defun refbox-resource-file-source-library-has-items (candidate resources)
+(defun refbox-resource-file-source-library-items (keys)
+  "Return library-path files associated with KEYS as a hash table."
+  (let* ((keys (delete-dups (refbox--listify keys)))
+         (files (refbox-resource--files-for-keys-in-roots
+                 keys
+                 refbox-library-paths
+                 refbox-library-paths-recursive
+                 refbox-library-file-extensions
+                 refbox-file-additional-files-separator))
+         (table (make-hash-table :test 'equal)))
+    (dolist (key keys table)
+      (let ((items
+             (cl-remove-if-not
+              (lambda (file)
+                (refbox-resource--file-base-matches-key-p
+                 (file-name-base file)
+                 key
+                 refbox-file-additional-files-separator))
+              files)))
+        (when items
+          (puthash key items table))))))
+
+(defun refbox-resource-file-source--library-has-items-for-candidate
+    (candidate resources)
   "Return non-nil when CANDIDATE has files in configured library paths."
   (and refbox-library-paths
        (refbox-resource--cheap-file-lookup-available-p
@@ -2812,37 +2867,105 @@ callable."
           refbox-library-file-extensions
           refbox-file-additional-files-separator)))))
 
+(defun refbox-resource-file-source-library-has-items ()
+  "Return a predicate checking configured library paths by key."
+  (lambda (key)
+    (not
+     (null
+      (refbox-resource--files-for-keys-cheap
+       (list key)
+       refbox-library-paths
+       refbox-library-paths-recursive
+       refbox-library-file-extensions
+       refbox-file-additional-files-separator)))))
+
+(defun refbox-resource-file-source--items-from-table
+    (keys source)
+  "Return SOURCE items for KEYS using the key-table source contract."
+  (let ((table
+         (funcall
+          (refbox-resource-file-source--function source :items t)
+          keys)))
+    (unless (hash-table-p table)
+      (user-error "refbox file source :items did not return a hash table"))
+    (delete-dups
+     (apply #'append
+            (mapcar (lambda (key)
+                      (refbox--listify (gethash key table)))
+                    keys)))))
+
+(defun refbox-resource-file-source--default-items
+    (source candidate resources)
+  "Return handled SOURCE items from CANDIDATE for built-in sources."
+  (pcase (plist-get source :items)
+    ('refbox-resource-file-source-indexed-items
+     (cons
+      t
+      (refbox-resource-file-source--indexed-items-for-candidate
+       candidate
+       resources)))
+    ('refbox-resource-file-source-library-items
+     (cons
+      t
+      (refbox-resource-file-source--library-items-for-candidate
+       candidate
+       resources)))))
+
+(defun refbox-resource-file-source--default-has-items-p
+    (source candidate resources)
+  "Return handled SOURCE predicate result for built-in sources."
+  (pcase (plist-get source :hasitems)
+    ('refbox-resource-file-source-indexed-has-items
+     (cons
+      t
+      (refbox-resource-file-source--indexed-has-items-for-candidate
+       candidate
+       resources)))
+    ('refbox-resource-file-source-library-has-items
+     (cons
+      t
+      (refbox-resource-file-source--library-has-items-for-candidate
+       candidate
+       resources)))))
+
 (defun refbox-resource-file-source-items (candidate resources)
   "Return file items from `refbox-file-sources'."
-  (delete-dups
-   (let (files)
-     (dolist (source refbox-file-sources)
-       (let ((items
-              (refbox--listify
-               (funcall
-                (refbox-resource-file-source--function source :items t)
-                candidate
-                resources))))
-         (setq files (append files items))))
-     files)))
+  (let ((keys (refbox-reference-related-keys candidate resources))
+        files)
+    (dolist (source refbox-file-sources (delete-dups files))
+      (setq files
+            (append files
+                    (if-let ((handled
+                              (refbox-resource-file-source--default-items
+                               source
+                               candidate
+                               resources)))
+                        (cdr handled)
+                      (refbox-resource-file-source--items-from-table
+                       keys
+                       source)))))))
 
 (defun refbox-resource-file-source-has-items-p (candidate resources)
   "Return non-nil when any file source has items for CANDIDATE."
-  (if (equal refbox-file-sources refbox--default-file-sources)
-      (or (refbox-resource-file-source-indexed-has-items candidate resources)
-          (refbox-resource-file-source-library-has-items candidate resources))
+  (let ((keys (refbox-reference-related-keys candidate resources)))
     (cl-some
      (lambda (source)
-       (if-let ((hasitems
-                 (refbox-resource-file-source--function source :hasitems)))
-           (funcall hasitems candidate resources)
-         (not
-          (null
-           (refbox--listify
-            (funcall
-             (refbox-resource-file-source--function source :items t)
-             candidate
-             resources))))))
+       (let ((handled (refbox-resource-file-source--default-has-items-p
+                       source
+                       candidate
+                       resources)))
+         (if handled
+             (cdr handled)
+           (if-let ((hasitems
+                     (refbox-resource-file-source--function source :hasitems)))
+               (let ((predicate (funcall hasitems)))
+                 (and (functionp predicate)
+                      (cl-some predicate keys)))
+             (not
+              (null
+               (refbox-resource-file-source--items-from-table
+                keys
+                source)))))))
      refbox-file-sources)))
 
 (cl-defun refbox-reference-files
@@ -2865,11 +2988,14 @@ callable."
     (when (and template (not (string-empty-p value)))
       (format template value))))
 
-(defun refbox-reference-links (candidate &optional resources)
+(cl-defun refbox-reference-links
+    (candidate &optional (resources nil resources-supplied-p))
   "Return link URLs for CANDIDATE."
   (delete-dups
    (cl-loop
-    for resource in (or resources (refbox-reference-resources candidate))
+    for resource in (if resources-supplied-p
+                        resources
+                      (refbox-reference-resources candidate))
     for url = (refbox-resource-link-url resource)
     when url
     collect url)))
@@ -2929,9 +3055,10 @@ callable."
          (car notes-paths)))))
 
 ;;;###autoload
-(defun refbox-org-format-note-default (key candidate)
-  "Insert default Org note content for KEY and CANDIDATE."
-  (let ((title (string-trim (refbox-reference-format-note candidate))))
+(defun refbox-org-format-note-default (key entry)
+  "Insert default Org note content for KEY and ENTRY."
+  (let* ((candidate (refbox--entry-candidate key entry))
+         (title (string-trim (refbox-reference-format-note candidate))))
     (when (fboundp 'refbox-org-roam-make-preamble)
       (ignore-errors (refbox-org-roam-make-preamble key)))
     (insert "#+title: "
@@ -3026,17 +3153,20 @@ callable."
   (when-let ((annotate (plist-get (refbox-note-source--plist) :annotate)))
     (funcall annotate item)))
 
-(defun refbox-note-source-file-items (key reference)
-  "Return file-backed note items for KEY."
-  (when refbox-notes-paths
-    (refbox-note-files-for-keys
-     (if (and (listp reference) (plist-member reference :key))
-         (refbox-reference-related-keys reference)
-       (list key)))))
+(defun refbox-note-source-file-items (keys)
+  "Return file-backed note items for KEYS as a hash table."
+  (let ((table (make-hash-table :test 'equal)))
+    (when refbox-notes-paths
+      (dolist (key (delete-dups (refbox--listify keys)))
+        (let ((items (refbox-note-files key)))
+          (when items
+            (puthash key items table)))))
+    table))
 
-(defun refbox-note-source-file-has-items (key reference)
-  "Return non-nil when KEY has file-backed notes."
-  (not (null (refbox-note-source-file-items key reference))))
+(defun refbox-note-source-file-has-items ()
+  "Return a predicate checking for file-backed notes by key."
+  (lambda (key)
+    (not (null (refbox-note-files key)))))
 
 (defun refbox-note-source-file-open (item)
   "Open file-backed note ITEM."
@@ -3046,8 +3176,8 @@ callable."
   "Return the file-backed create target label for KEY."
   (refbox-note-filename key))
 
-(defun refbox-note-source-file-create (key reference)
-  "Create or open a file-backed note for KEY and REFERENCE."
+(defun refbox-note-source-file-create (key entry)
+  "Create or open a file-backed note for KEY and ENTRY."
   (let* ((file (refbox-note-filename key))
          (exists (file-exists-p file)))
     (make-directory (file-name-directory file) t)
@@ -3058,15 +3188,22 @@ callable."
       (when (and buffer-file-name
                  (equal (file-truename buffer-file-name)
                         (file-truename file)))
-        (funcall refbox-note-format-function key reference)))
+        (funcall refbox-note-format-function key entry)))
     file))
 
 (defun refbox-note-source-items (reference)
   "Return active note source items for REFERENCE."
-  (let ((key (refbox--reference-key reference)))
-    (unless (refbox--blank-string-p key)
-      (refbox--listify
-       (funcall (refbox-note-source--function :items) key reference)))))
+  (let ((keys (refbox-reference-related-keys reference)))
+    (unless (null keys)
+      (let ((table (funcall (refbox-note-source--function :items) keys)))
+        (unless (hash-table-p table)
+          (user-error "refbox note source %s :items did not return a hash table"
+                      refbox-notes-source))
+        (delete-dups
+         (apply #'append
+                (mapcar (lambda (key)
+                          (refbox--listify (gethash key table)))
+                        keys)))))))
 
 (defun refbox--resource-table (candidates items-function)
   "Return a hash table of resource ITEMS-FUNCTION values for CANDIDATES."
@@ -3129,23 +3266,32 @@ signal a user error; when it is explicitly nil, return nil."
     (if-let ((all-items (plist-get plist :all-items)))
         (refbox--listify (funcall all-items))
       (let ((keys (refbox-note-source-key-list)))
-        (if (eq keys 'unknown)
-            (user-error
-             "Note source `%s' must provide `:all-items' or `:keys' for global note listing"
-             refbox-notes-source)
-          (delete-dups
-           (apply #'append
-                  (mapcar (lambda (key)
-                            (refbox-note-source-items (list :key key)))
-                          keys))))))))
+        (cond
+         ((eq keys 'unknown)
+          (user-error
+           "Note source `%s' must provide `:all-items' or `:keys' for global note listing"
+           refbox-notes-source))
+         ((null keys)
+          nil)
+         (t
+          (let ((table (funcall (refbox-note-source--function :items)
+                                keys)))
+            (unless (hash-table-p table)
+              (user-error
+               "refbox note source %s :items did not return a hash table"
+               refbox-notes-source))
+            (delete-dups
+             (apply #'append
+                    (mapcar (lambda (key)
+                              (refbox--listify (gethash key table)))
+                            keys))))))))))
 
 (defun refbox-note-source-has-items-p (reference)
   "Return non-nil when REFERENCE has active note source items."
-  (let ((key (refbox--reference-key reference)))
-    (and (not (refbox--blank-string-p key))
-         (funcall (refbox-note-source--function :hasitems)
-                  key
-                  reference))))
+  (let ((keys (refbox-reference-related-keys reference))
+        (predicate (funcall (refbox-note-source--function :hasitems))))
+    (and (functionp predicate)
+         (cl-some predicate keys))))
 
 (defun refbox-note-source-preload (references)
   "Preload active note source metadata for REFERENCES when supported."
@@ -3167,7 +3313,9 @@ signal a user error; when it is explicitly nil, return nil."
 (defun refbox-note-source-create (reference)
   "Create or open a note for REFERENCE using the active source."
   (let ((key (and reference (refbox--reference-key reference))))
-    (funcall (refbox-note-source--function :create) key reference)))
+    (funcall (refbox-note-source--function :create)
+             key
+             (and reference (refbox--entry-alist reference)))))
 
 (defun refbox--command-should-prompt-p ()
   "Return non-nil when `this-command' should prompt for a single resource."
@@ -3233,6 +3381,12 @@ EMPTY-MESSAGE, when non-nil, is displayed when CHOICES is empty."
      ((null keys) "selected references")
      ((null (cdr keys)) (car keys))
      (t (string-join keys ", ")))))
+
+(defun refbox--missing-files-message (references)
+  "Return the generic missing-files message for REFERENCES, when appropriate."
+  (unless (seq-some #'refbox-reference-has-files-p references)
+    (format "No associated files for %s"
+            (refbox--reference-message-subject references))))
 
 (defun refbox--resource-choice-group (choice)
   "Return the completion group label for resource CHOICE."
@@ -3529,6 +3683,10 @@ EMPTY-MESSAGE, when non-nil, is displayed when CHOICES is empty."
   (refbox--dedupe-resource-choices
    (cl-loop
     for reference in references
+    for resources-supplied-p = (refbox--candidate-resources-supplied-p
+                                reference)
+    for resources = (and resources-supplied-p
+                         (refbox--candidate-resources reference))
     append
     (mapcar (lambda (file)
               (list :type 'file
@@ -3536,13 +3694,19 @@ EMPTY-MESSAGE, when non-nil, is displayed when CHOICES is empty."
                     :target file
                     :label (refbox--resource-choice-label
                             'file reference file)))
-            (refbox-reference-files reference)))))
+            (if resources-supplied-p
+                (refbox-reference-files reference resources)
+              (refbox-reference-files reference))))))
 
 (defun refbox--link-choices (references)
   "Return link resource choices for REFERENCES."
   (refbox--dedupe-resource-choices
    (cl-loop
     for reference in references
+    for resources-supplied-p = (refbox--candidate-resources-supplied-p
+                                reference)
+    for resources = (and resources-supplied-p
+                         (refbox--candidate-resources reference))
     append
     (mapcar (lambda (link)
               (list :type 'link
@@ -3550,7 +3714,9 @@ EMPTY-MESSAGE, when non-nil, is displayed when CHOICES is empty."
                     :target link
                     :label (refbox--resource-choice-label
                             'link reference link)))
-            (refbox-reference-links reference)))))
+            (if resources-supplied-p
+                (refbox-reference-links reference resources)
+              (refbox-reference-links reference))))))
 
 (defun refbox--note-choices (references &optional include-create)
   "Return note resource choices for REFERENCES.
@@ -3625,8 +3791,7 @@ When INCLUDE-CREATE is non-nil, include note creation choices."
                 (refbox--read-resource-choice-or-nil
                  "Select resource: "
                  choices
-                 (format "No associated files for %s"
-                         (refbox--reference-message-subject references)))))
+                 (refbox--missing-files-message references))))
       (refbox--open-resource-choice choice))))
 
 ;;;###autoload
@@ -3644,8 +3809,7 @@ When INCLUDE-CREATE is non-nil, include note creation choices."
           (refbox--read-resource-choice-or-nil
            "Select resource: "
            choices
-           (format "No associated files for %s"
-                   (refbox--reference-message-subject references)))))
+           (refbox--missing-files-message references))))
     (when choice
       (refbox--attach-file-resource-target (plist-get choice :target)))))
 
@@ -4800,8 +4964,8 @@ required overwrite confirmation."
     (url-copy-file url destination overwrite)
     destination))
 
-(defun refbox-save-file-to-library (reference source &optional overwrite)
-  "Save SOURCE as a library resource for REFERENCE.
+(defun refbox-save-file-to-library (key source &optional overwrite)
+  "Save SOURCE as a library resource for KEY.
 
 SOURCE is a plist returned by one of `refbox-add-file-sources'.
 OVERWRITE follows the same convention as `copy-file'; an integer
@@ -4810,13 +4974,13 @@ asks before replacing an existing file."
          (extension (or (plist-get source :extension)
                         (read-string "File extension: ")))
          (write-file (plist-get source :write-file))
-         (destination (refbox-library-destination-file reference extension)))
+         (destination (refbox-library-destination-file key extension)))
     (unless (functionp write-file)
       (user-error "refbox add-file source has no callable :write-file"))
     (funcall write-file destination overwrite)
     destination))
 
-(defun refbox-add-file-source-buffer (_reference)
+(defun refbox-add-file-source-buffer (_key)
   "Return an add-file source plist for a selected buffer."
   (let ((buffer (get-buffer (read-buffer "Add file buffer: " (current-buffer) t))))
     (list
@@ -4826,7 +4990,7 @@ asks before replacing an existing file."
      (lambda (destination overwrite)
        (refbox-library--write-buffer buffer destination overwrite)))))
 
-(defun refbox-add-file-source-file (_reference)
+(defun refbox-add-file-source-file (_key)
   "Return an add-file source plist for an existing file."
   (let ((file (read-file-name "Add file: " nil nil t)))
     (list
@@ -4835,7 +4999,7 @@ asks before replacing an existing file."
      (lambda (destination overwrite)
        (copy-file file destination overwrite)))))
 
-(defun refbox-add-file-source-url (_reference)
+(defun refbox-add-file-source-url (_key)
   "Return an add-file source plist for a URL."
   (let* ((url (read-string "Add file URL: "))
          (extension (url-file-extension url)))
@@ -4878,10 +5042,11 @@ asks before replacing an existing file."
     (user-error "Make sure `refbox-add-file-sources' is non-nil"))
   (unless (functionp refbox-add-file-function)
     (user-error "refbox-add-file-function is not callable"))
-  (let* ((source (refbox-add-file-source--read))
+  (let* ((key (refbox--reference-key reference))
+         (source (refbox-add-file-source--read))
          (source-plist (funcall (refbox-add-file-source--function source)
-                                reference)))
-    (funcall refbox-add-file-function reference source-plist)))
+                                key)))
+    (funcall refbox-add-file-function key source-plist)))
 
 (defun refbox--completion-state (&optional limit source-paths include-configured-sources)
   "Return fresh completion state using LIMIT and SOURCE-PATHS."
