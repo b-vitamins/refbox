@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use unicode_normalization::UnicodeNormalization;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PingInfo {
@@ -408,6 +409,11 @@ pub fn normalize_lookup_name(name: &str) -> String {
 }
 
 #[must_use]
+pub fn compose_unicode_accents(text: &str) -> String {
+    text.nfc().collect()
+}
+
+#[must_use]
 pub fn resource_kind_for_lookup_name(lookup_name: &str) -> Option<ResourceKind> {
     bibtex_parser::classify_resource_field(lookup_name).map(ResourceKind::from)
 }
@@ -550,6 +556,20 @@ mod tests {
                     EntryId::new("refs/b.bib", "knuth1984"),
                 ],
             }]
+        );
+    }
+
+    #[test]
+    fn composes_common_latin_combining_accents() {
+        assert_eq!(
+            compose_unicode_accents(
+                "Porra\u{0300}; Bogun\u{0303}a\u{0301}; Adamova\u{0301}; Tomas\u{030c}"
+            ),
+            "Porr\u{00e0}; Bogu\u{00f1}\u{00e1}; Adamov\u{00e1}; Toma\u{0161}"
+        );
+        assert_eq!(
+            compose_unicode_accents("Schro\u{0308}dinger"),
+            "Schr\u{00f6}dinger"
         );
     }
 

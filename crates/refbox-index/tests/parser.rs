@@ -284,7 +284,7 @@ fn cleans_primary_field_tex_markup_like_parsebib() {
         "tex.bib",
         r#"@article{tex2024,
   title = {An {\LaTeX} Study -- Schr{\"o}dinger and {\'E}tude \& \textsc{abc}},
-  author = {Garc{\'i}a, Ana and M{\"u}ller, Max},
+  author = {Garc{\'{\i}}a, Ana and M{\"u}ller, Max},
   editor = {\AA Team},
   note = {Keep {\LaTeX} and Schr{\"o}dinger},
 }
@@ -295,17 +295,39 @@ fn cleans_primary_field_tex_markup_like_parsebib() {
     let entry = entry(&file, "tex2024");
     assert_eq!(
         field_value(entry, "title"),
-        "An \\LaTeX Study \u{2013} Schro\u{0308}dinger and E\u{0301}tude & ABC"
+        "An \\LaTeX Study \u{2013} Schr\u{00f6}dinger and \u{00c9}tude & ABC"
     );
     assert_eq!(
         field_value(entry, "author"),
-        "Garci\u{0301}a, Ana and Mu\u{0308}ller, Max"
+        "Garc\u{00ed}a, Ana and M\u{00fc}ller, Max"
     );
     assert_eq!(field_value(entry, "editor"), "\u{00C5}Team");
     assert_eq!(
         field_value(entry, "note"),
         "Keep {\\LaTeX} and Schr{\\\"o}dinger"
     );
+}
+
+#[test]
+fn normalizes_shorthand_bibtex_author_accents() {
+    let file = parse_bibliography_file(
+        "names.bib",
+        r#"@article{names2024,
+  title = {Authors with BibTeX Accents},
+  author = {Porr\`a, Josep and Bogu\~n{\'a}, Mari\`a and Adamov\'a, Petra and Tom{\'a}{\v{s}} Koc{\'a}k},
+}
+"#,
+    );
+
+    assert!(file.diagnostics.is_empty());
+    let entry = entry(&file, "names2024");
+    assert_eq!(
+        field_value(entry, "author"),
+        "Porr\u{00e0}, Josep and Bogu\u{00f1}\u{00e1}, Mari\u{00e0} and Adamov\u{00e1}, Petra and Tom\u{00e1}\u{0161} Koc\u{00e1}k"
+    );
+    assert_eq!(entry.names[0].names[0].family, vec!["Porr\u{00e0}"]);
+    assert_eq!(entry.names[0].names[1].family, vec!["Bogu\u{00f1}\u{00e1}"]);
+    assert_eq!(entry.names[0].names[2].family, vec!["Adamov\u{00e1}"]);
 }
 
 #[test]

@@ -58,6 +58,95 @@ fn migrations_are_versioned_from_first_schema() {
 }
 
 #[test]
+fn migration_normalizes_completion_display_accents() {
+    let db_path = unique_db_path("refbox-completion-accent-migration");
+    {
+        let mut store = RefboxStore::open(&db_path).expect("store should open");
+        let file = parse_bibliography_file(
+            "refs/accent.bib",
+            r#"@article{accent2024,
+  author = {Porr\`a, Josep},
+  title = {Accent Migration},
+  year = {2024},
+}
+"#,
+        );
+        store.insert_file(&file).expect("file should insert");
+    }
+    {
+        let connection = Connection::open(&db_path).expect("database should open");
+        connection
+            .execute(
+                "UPDATE entry_completion_display
+                 SET author = ?1, title = ?2",
+                ["Porra\u{0300}, Josep", "Schro\u{0308}dinger Migration"],
+            )
+            .expect("completion display should downgrade");
+        connection
+            .execute(
+                "UPDATE fields
+                 SET value = ?1
+                 WHERE lookup_name = 'author'",
+                ["Porra\u{0300}, Josep"],
+            )
+            .expect("author field should downgrade");
+        connection
+            .execute(
+                "UPDATE fields
+                 SET value = ?1
+                 WHERE lookup_name = 'title'",
+                ["Schro\u{0308}dinger Migration"],
+            )
+            .expect("title field should downgrade");
+        connection
+            .execute("DELETE FROM schema_migrations WHERE version = 13", [])
+            .expect("schema marker should downgrade");
+        connection
+            .execute_batch("PRAGMA user_version = 12;")
+            .expect("user version should downgrade");
+    }
+
+    let store = RefboxStore::open(&db_path).expect("store should migrate");
+    let completion_only = store
+        .search("migration", 5, SearchOptions::default())
+        .and_then(|results| {
+            store.hydrate_search_results(
+                results,
+                HydrateOptions {
+                    include_completion_display: true,
+                    include_fields: false,
+                    include_resources: false,
+                    ..HydrateOptions::default()
+                },
+            )
+        })
+        .expect("completion display should hydrate");
+    let display = completion_only[0]
+        .completion_display
+        .as_ref()
+        .expect("completion display should exist");
+    assert_eq!(display.author, "Porr\u{00e0}, Josep");
+    assert_eq!(display.title, "Schr\u{00f6}dinger Migration");
+    let entries = store
+        .entries_by_key("accent2024", None, None)
+        .expect("entry should query after migration");
+    let fields = store
+        .fields_for_entry(entries[0].id)
+        .expect("fields should query after migration");
+    assert!(
+        fields
+            .iter()
+            .any(|field| field.lookup_name == "author" && field.value == "Porr\u{00e0}, Josep")
+    );
+    assert!(fields.iter().any(|field| {
+        field.lookup_name == "title" && field.value == "Schr\u{00f6}dinger Migration"
+    }));
+    drop(store);
+
+    let _ = fs::remove_file(db_path);
+}
+
+#[test]
 fn crossref_inherited_fields_are_indexed_and_searchable() {
     let mut store = RefboxStore::open_in_memory().expect("store should open");
     let file = parse_bibliography_file(
@@ -288,6 +377,45 @@ fn inserts_parsed_files_and_queries_records_back() {
     assert_eq!(resources[0].kind, "doi");
     assert_eq!(resources[0].key, "smith2020");
     assert_eq!(resources[0].owner_key, "smith2020");
+}
+
+#[test]
+fn completion_display_cache_stores_composed_author_accents() {
+    let mut store = RefboxStore::open_in_memory().expect("store should open");
+    let file = parse_bibliography_file(
+        "refs/accent.bib",
+        r#"@article{accent2024,
+  author = {Porr\`a, Josep and Bogu\~n{\'a}, Mari\`a and Adamov\'a, Petra},
+  title = {Schr{\"o}dinger Search},
+  year = {2024},
+}
+"#,
+    );
+
+    store.insert_file(&file).expect("file should insert");
+    let completion_only = store
+        .search("accent2024", 5, SearchOptions::default())
+        .and_then(|results| {
+            store.hydrate_search_results(
+                results,
+                HydrateOptions {
+                    include_completion_display: true,
+                    include_fields: false,
+                    include_resources: false,
+                    ..HydrateOptions::default()
+                },
+            )
+        })
+        .expect("completion display should hydrate");
+    let display = completion_only[0]
+        .completion_display
+        .as_ref()
+        .expect("completion display should exist");
+    assert_eq!(
+        display.author,
+        "Porr\u{00e0}, Josep and Bogu\u{00f1}\u{00e1}, Mari\u{00e0} and Adamov\u{00e1}, Petra"
+    );
+    assert_eq!(display.title, "Schr\u{00f6}dinger Search");
 }
 
 #[test]

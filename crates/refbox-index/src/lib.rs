@@ -17,7 +17,7 @@ use refbox_core::{
     BibliographyEntry, BibliographyField, BibliographyFile, DateParts, DerivedBibliographyStore,
     Diagnostic, DiagnosticSeverity, EntryDate, EntryId, FileParseStatus, IndexStoreCounts,
     IndexedFileMetadata, IndexedFileOrigin, NameList, PersonName, RawEntry, ResourceField,
-    SourcePosition, SourceSpan, normalize_lookup_name,
+    SourcePosition, SourceSpan, compose_unicode_accents, normalize_lookup_name,
 };
 use sha2::{Digest, Sha256};
 
@@ -772,7 +772,7 @@ fn collapse_display_whitespace(text: &str) -> String {
 }
 
 fn clean_tex_markup(text: &str) -> String {
-    replace_tex_literals(&replace_tex_commands(text))
+    compose_unicode_accents(&replace_tex_literals(&replace_tex_commands(text)))
 }
 
 fn replace_tex_commands(text: &str) -> String {
@@ -853,8 +853,7 @@ fn replace_tex_commands(text: &str) -> String {
             .map(clean_tex_markup)
             .unwrap_or_default();
         if let Some(accent) = tex_accent_replacement(&command) {
-            cleaned.push_str(&argument);
-            cleaned.push(accent);
+            cleaned.push_str(&accented_tex_argument(&argument, accent));
         } else if let Some(replacement) = tex_command_replacement(&command, &argument) {
             cleaned.push_str(&replacement);
         } else if let Some(argument) = braced_argument {
@@ -865,6 +864,26 @@ fn replace_tex_commands(text: &str) -> String {
     }
 
     cleaned
+}
+
+fn accented_tex_argument(argument: &str, accent: char) -> String {
+    let Some((first_index, first)) = argument.char_indices().next() else {
+        return accent.to_string();
+    };
+    debug_assert_eq!(first_index, 0);
+
+    let base = match first {
+        '\u{0131}' => 'i',
+        '\u{0237}' => 'j',
+        _ => first,
+    };
+    let rest_start = first.len_utf8();
+    let mut accented = String::new();
+    accented.push(base);
+    accented.push(accent);
+    let mut accented = compose_unicode_accents(&accented);
+    accented.push_str(&argument[rest_start..]);
+    accented
 }
 
 fn tex_accent_replacement(command: &str) -> Option<char> {

@@ -7,6 +7,9 @@ The format follows Keep a Changelog, and this project follows SemVer.
 ## [Unreleased]
 
 ### Fixed
+- Normalized BibTeX accent commands into composed Latin characters while
+  indexing completion display fields, preventing combining marks from rendering
+  as noisy punctuation in author names.
 - Highlighted visible title and suffix matches in native reference completion
   rows instead of relying on completion styles that are bypassed for
   daemon-ranked `basic` matching.

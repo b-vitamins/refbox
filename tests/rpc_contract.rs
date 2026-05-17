@@ -10,6 +10,7 @@ use refbox_rpc::{
     METHOD_SEARCH_ENTRIES, METHOD_SOURCE_LOCATION, METHOD_STATUS, METHOD_SYNC_FILE,
     METHOD_SYNC_FULL,
 };
+use refbox_store::SCHEMA_VERSION;
 use serde_json::{Value, json};
 
 #[test]
@@ -46,7 +47,7 @@ fn stdio_rpc_contract_covers_success_and_error_shapes() {
     assert!(sync["diagnostic_count"].as_u64().expect("diagnostics") >= 1);
 
     let status = rpc.result(2, METHOD_STATUS, json!({}));
-    assert_eq!(status["schema_version"], 12);
+    assert_eq!(status["schema_version"], SCHEMA_VERSION);
     assert_eq!(status["counts"]["file_count"], 8);
     assert!(status["counts"]["entry_count"].as_u64().expect("entries") >= 7);
 

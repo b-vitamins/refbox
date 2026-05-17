@@ -6,12 +6,12 @@ use std::path::Path;
 use refbox_core::{
     BibliographyEntry, BibliographyFile, DerivedBibliographyStore, Diagnostic, DiagnosticSeverity,
     DiagnosticTarget, FileParseStatus, IndexStoreCounts, IndexedFileMetadata, IndexedFileOrigin,
-    ResourceKind, SourcePosition, SourceSpan,
+    ResourceKind, SourcePosition, SourceSpan, compose_unicode_accents,
 };
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use thiserror::Error;
 
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 const RESOURCE_KIND_SEPARATOR: char = '\x1f';
 const ENTRY_FTS_COLUMNS: &[&str] = &[
     "entry_key",
@@ -1499,6 +1499,9 @@ impl RefboxStore {
 
             if !already_applied {
                 tx.execute_batch(migration)?;
+                if *version == 13 {
+                    normalize_cached_display_accents(&tx)?;
+                }
                 tx.execute(
                     "INSERT INTO schema_migrations(version) VALUES (?1)",
                     params![version],
@@ -1586,6 +1589,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (10, MIGRATION_010),
     (11, MIGRATION_011),
     (12, MIGRATION_012),
+    (13, MIGRATION_013),
 ];
 
 const MIGRATION_001: &str = r#"
@@ -1972,6 +1976,141 @@ SET resource_kinds = COALESCE(
     );
 "#;
 
+const MIGRATION_013: &str = r#"
+-- Cached display rows and indexed primary names are normalized by a Rust migration hook.
+"#;
+
+fn normalize_cached_display_accents(connection: &Connection) -> Result<()> {
+    normalize_primary_field_accents(connection)?;
+    normalize_name_accents(connection)?;
+    normalize_completion_display_accents(connection)?;
+    Ok(())
+}
+
+fn normalize_primary_field_accents(connection: &Connection) -> Result<()> {
+    let rows = {
+        let mut statement = connection.prepare(
+            "SELECT id, value
+             FROM fields
+             WHERE lookup_name IN ('author', 'editor', 'title')",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+    };
+
+    let mut update = connection.prepare_cached("UPDATE fields SET value = ?2 WHERE id = ?1")?;
+    for (field_id, value) in rows {
+        let normalized_value = compose_unicode_accents(&value);
+        if normalized_value != value {
+            update.execute(params![field_id, normalized_value])?;
+        }
+    }
+    Ok(())
+}
+
+fn normalize_name_accents(connection: &Connection) -> Result<()> {
+    let rows = {
+        let mut statement = connection.prepare(
+            "SELECT id, raw, given, family, prefix, suffix, literal
+             FROM names",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+    };
+
+    let mut update = connection.prepare_cached(
+        "UPDATE names
+         SET raw = ?2, given = ?3, family = ?4, prefix = ?5, suffix = ?6, literal = ?7
+         WHERE id = ?1",
+    )?;
+    for (name_id, raw, given, family, prefix, suffix, literal) in rows {
+        let normalized_raw = compose_unicode_accents(&raw);
+        let normalized_given = compose_unicode_accents(&given);
+        let normalized_family = compose_unicode_accents(&family);
+        let normalized_prefix = compose_unicode_accents(&prefix);
+        let normalized_suffix = compose_unicode_accents(&suffix);
+        let normalized_literal = literal.as_deref().map(compose_unicode_accents);
+        if normalized_raw != raw
+            || normalized_given != given
+            || normalized_family != family
+            || normalized_prefix != prefix
+            || normalized_suffix != suffix
+            || normalized_literal != literal
+        {
+            update.execute(params![
+                name_id,
+                normalized_raw,
+                normalized_given,
+                normalized_family,
+                normalized_prefix,
+                normalized_suffix,
+                normalized_literal,
+            ])?;
+        }
+    }
+    Ok(())
+}
+
+fn normalize_completion_display_accents(connection: &Connection) -> Result<()> {
+    let rows = {
+        let mut statement = connection.prepare(
+            "SELECT entry_id, author, date, title, tags
+             FROM entry_completion_display",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+    };
+
+    let mut update = connection.prepare_cached(
+        "UPDATE entry_completion_display
+         SET author = ?2, date = ?3, title = ?4, tags = ?5
+         WHERE entry_id = ?1",
+    )?;
+    for (entry_id, author, date, title, tags) in rows {
+        let normalized_author = compose_unicode_accents(&author);
+        let normalized_date = compose_unicode_accents(&date);
+        let normalized_title = compose_unicode_accents(&title);
+        let normalized_tags = compose_unicode_accents(&tags);
+        if normalized_author != author
+            || normalized_date != date
+            || normalized_title != title
+            || normalized_tags != tags
+        {
+            update.execute(params![
+                entry_id,
+                normalized_author,
+                normalized_date,
+                normalized_title,
+                normalized_tags,
+            ])?;
+        }
+    }
+    Ok(())
+}
+
 fn insert_file_rows(
     connection: &Connection,
     file: &BibliographyFile,
@@ -2239,10 +2378,10 @@ fn insert_completion_display_row(
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             entry_id,
-            first_field_value(entry, &["author", "editor"]),
-            first_field_value(entry, &["date", "year", "issued"]),
-            first_field_value(entry, &["title"]),
-            first_field_value(entry, &["tags", "keywords"]),
+            first_completion_display_field_value(entry, &["author", "editor"]),
+            first_completion_display_field_value(entry, &["date", "year", "issued"]),
+            first_completion_display_field_value(entry, &["title"]),
+            first_completion_display_field_value(entry, &["tags", "keywords"]),
             entry_resource_kind_summary(entry),
             optional_first_field_value(entry, &["crossref"]),
         ],
@@ -2803,6 +2942,10 @@ fn first_field_value(entry: &BibliographyEntry, names: &[&str]) -> String {
         .find(|field| names.contains(&field.lookup_name.as_str()))
         .map(|field| field.value.clone())
         .unwrap_or_default()
+}
+
+fn first_completion_display_field_value(entry: &BibliographyEntry, names: &[&str]) -> String {
+    compose_unicode_accents(&first_field_value(entry, names))
 }
 
 fn optional_first_field_value(entry: &BibliographyEntry, names: &[&str]) -> Option<String> {
