@@ -42,16 +42,17 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
 (ert-deftest refbox-latex-test-detects-plain-cite ()
   "Plain \\cite commands should expose citation and key metadata."
   (refbox-latex-test-with-buffer "Text \\cite{al|pha}."
-    (let ((citation (refbox-latex-citation-at-point)))
+    (let ((citation (refbox-latex--citation-at-point)))
       (should (equal (plist-get citation :command) "cite"))
       (should (equal (plist-get citation :keys) '("alpha")))
-      (should (equal (refbox-latex-key-at-point) "alpha")))))
+      (should (equal (car (refbox-latex-citation-at-point)) '("alpha")))
+      (should (equal (car (refbox-latex-key-at-point)) "alpha")))))
 
 (ert-deftest refbox-latex-test-key-at-point_requires_actual_key ()
   "Citation command positions should not masquerade as a key."
   (refbox-latex-test-with-buffer "\\ci|te{alpha,beta}"
     (should-not (refbox-latex-key-at-point))
-    (should (equal (plist-get (refbox-latex-citation-at-point) :keys)
+    (should (equal (car (refbox-latex-citation-at-point))
                    '("alpha" "beta")))))
 
 (ert-deftest refbox-latex-test-dwim_uses_whole_citation_on_command_text ()
@@ -68,31 +69,31 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
 (ert-deftest refbox-latex-test-detects-natbib-optional-arguments ()
   "Natbib-style citations should preserve optional arguments and multiple keys."
   (refbox-latex-test-with-buffer "\\citet[see][p. 7]{alpha, be|ta}"
-    (let ((citation (refbox-latex-citation-at-point)))
+    (let ((citation (refbox-latex--citation-at-point)))
       (should (equal (plist-get citation :command) "citet"))
       (should (equal (plist-get citation :optional-args) '("see" "p. 7")))
       (should (equal (plist-get citation :keys) '("alpha" "beta")))
-      (should (equal (refbox-latex-key-at-point) "beta")))))
+      (should (equal (car (refbox-latex-key-at-point)) "beta")))))
 
 (ert-deftest refbox-latex-test-detects_complex_optional_arguments ()
   "Optional argument parsing should honor escapes and balanced braces."
   (refbox-latex-test-with-buffer
       "\\parencite[see {Appendix [A]} and \\] literal][p. 7]{al|pha}"
-    (let ((citation (refbox-latex-citation-at-point)))
+    (let ((citation (refbox-latex--citation-at-point)))
       (should (equal (plist-get citation :command) "parencite"))
       (should (equal (plist-get citation :optional-args)
                      '("see {Appendix [A]} and \\] literal" "p. 7")))
       (should (equal (plist-get citation :keys) '("alpha")))
-      (should (equal (refbox-latex-key-at-point) "alpha")))))
+      (should (equal (car (refbox-latex-key-at-point)) "alpha")))))
 
 (ert-deftest refbox-latex-test-recognizes_extended_citation_commands ()
   "Default command recognition should cover common BibLaTeX and Natbib forms."
   (refbox-latex-test-with-buffer "\\footfullcite{al|pha}"
-    (let ((citation (refbox-latex-citation-at-point)))
+    (let ((citation (refbox-latex--citation-at-point)))
       (should (equal (plist-get citation :command) "footfullcite"))
       (should (equal (plist-get citation :keys) '("alpha")))))
   (refbox-latex-test-with-buffer "\\citeauthor*{be|ta}"
-    (let ((citation (refbox-latex-citation-at-point)))
+    (let ((citation (refbox-latex--citation-at-point)))
       (should (equal (plist-get citation :command) "citeauthor*"))
       (should (equal (plist-get citation :keys) '("beta"))))))
 
@@ -101,8 +102,7 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
   (refbox-latex-test-with-buffer "Before | after"
     (let ((refbox-latex-default-cite-command "parencite")
           (refbox-latex-prompt-for-cite-style nil)
-          (refbox-latex-prompt-for-extra-arguments nil)
-          (refbox-latex-default-optional-arguments nil))
+          (refbox-latex-prompt-for-extra-arguments nil))
 	      (cl-letf (((symbol-function 'refbox-read-references)
 	                 (lambda (&rest _args)
 	                   (list (refbox-latex-test-candidate "alpha")
@@ -129,8 +129,7 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
         (let ((default-directory root)
               (refbox-latex-default-cite-command "cite")
               (refbox-latex-prompt-for-cite-style nil)
-              (refbox-latex-prompt-for-extra-arguments nil)
-              (refbox-latex-default-optional-arguments nil))
+              (refbox-latex-prompt-for-extra-arguments nil))
           (make-directory (file-name-directory bib) t)
           (write-region "" nil bib)
           (refbox-latex-test-with-buffer "\\bibliography{refs/main}\n|"
@@ -235,17 +234,17 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
   (refbox-latex-test-with-buffer "\\chaptercite{ch. 2}{al|pha}"
     (let ((refbox-latex-cite-commands
            '((("chaptercite") . ("Chapter" t)))))
-      (let ((citation (refbox-latex-citation-at-point)))
+      (let ((citation (refbox-latex--citation-at-point)))
         (should (equal (plist-get citation :command) "chaptercite"))
         (should (equal (plist-get citation :keys) '("alpha")))
-        (should (equal (refbox-latex-key-at-point) "alpha"))))))
+        (should (equal (car (refbox-latex-key-at-point)) "alpha"))))))
 
 (ert-deftest refbox-latex-test-command_specs_do_not_treat_mandatory_args_as_keys ()
   "Point in a non-key mandatory argument should still find citation keys."
   (refbox-latex-test-with-buffer "\\chaptercite{ch. |2}{alpha}"
     (let ((refbox-latex-cite-commands
            '((("chaptercite") . ("Chapter" t)))))
-      (let ((citation (refbox-latex-citation-at-point)))
+      (let ((citation (refbox-latex--citation-at-point)))
         (should (equal (plist-get citation :keys) '("alpha")))
         (should-not (refbox-latex-key-at-point))))))
 
@@ -281,8 +280,7 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
 (ert-deftest refbox-latex-test-adds-to-existing-citation ()
   "Insertion at an existing citation should add selected keys."
   (refbox-latex-test-with-buffer "A \\cite{al|pha, beta} Z"
-    (let ((refbox-latex-default-cite-command "autocite")
-          (refbox-latex-default-optional-arguments nil))
+    (let ((refbox-latex-default-cite-command "autocite"))
 	      (cl-letf (((symbol-function 'refbox-read-references)
 	                 (lambda (&rest _args)
 	                   (list (refbox-latex-test-candidate "gamma")))))
@@ -308,12 +306,11 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
 
 (ert-deftest refbox-latex-test-formats-biblatex-and-optional-arguments ()
   "Formatter should support biblatex-style commands and optional arguments."
-  (let ((refbox-latex-key-separator ","))
-    (should (equal (refbox-latex-format-citation
-                    "parencite"
-                    '("alpha" "beta")
-                    '("see" "chap. 2"))
-                   "\\parencite[see][chap. 2]{alpha,beta}"))))
+  (should (equal (refbox-latex-format-citation
+                  "parencite"
+                  '("alpha" "beta")
+                  '("see" "chap. 2"))
+                 "\\parencite[see][chap. 2]{alpha,beta}")))
 
 (ert-deftest refbox-latex-test-local-bibliography-discovery ()
   "Bibliography discovery should parse common LaTeX declarations."

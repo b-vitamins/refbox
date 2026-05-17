@@ -217,7 +217,9 @@ is a list of command symbols for which creation is always offered."
 Each entry maps a mode list, or t as a fallback, to an alist of
 adapter functions.  Supported adapter keys are `local-bib-files',
 `insert-keys', `insert-citation', `insert-edit', `key-at-point',
-`citation-at-point', and `list-keys'."
+`citation-at-point', and `list-keys'.  `key-at-point' functions
+return (KEY . BOUNDS), and `citation-at-point' functions return
+(KEYS . BOUNDS), where BOUNDS is a (BEG . END) pair."
   :type 'alist
   :group 'refbox)
 
@@ -1309,8 +1311,8 @@ the buffer plus the configured corpus."
 
 (defun refbox--default-reference-indicators-p ()
   "Return non-nil when `refbox-indicators' has the default layout."
-  (and (eq (nth 0 refbox-indicators) refbox-indicator-files)
-       (eq (nth 1 refbox-indicators) refbox-indicator-links)
+  (and (eq (nth 0 refbox-indicators) refbox-indicator-links)
+       (eq (nth 1 refbox-indicators) refbox-indicator-files)
        (eq (nth 2 refbox-indicators) refbox-indicator-notes)
        (eq (nth 3 refbox-indicators) refbox-indicator-cited)
        (null (nthcdr 4 refbox-indicators))))
@@ -1338,6 +1340,7 @@ the buffer plus the configured corpus."
   "Return default indicator text for CANDIDATE without generic dispatch."
   (let* ((resource-kinds (refbox--candidate-resource-kind-list candidate))
          (supplied (refbox--candidate-resource-kinds-supplied-p candidate))
+         (link-fields (refbox--link-field-names))
          (has-files
           (if supplied
               (member "file" resource-kinds)
@@ -1345,7 +1348,7 @@ the buffer plus the configured corpus."
          (has-links
           (if supplied
               (cl-some (lambda (kind) (member kind resource-kinds))
-                       '("url" "doi" "pmid" "pmcid" "eprint"))
+                       link-fields)
             (refbox-reference-has-links-p candidate)))
          (has-notes
           (and refbox-reference-note-predicate
@@ -1355,8 +1358,8 @@ the buffer plus the configured corpus."
                (funcall refbox-reference-note-predicate candidate))))
     (refbox--finalize-indicator-text
      (concat
-      (refbox--indicator-chunk refbox-indicator-files has-files)
       (refbox--indicator-chunk refbox-indicator-links has-links)
+      (refbox--indicator-chunk refbox-indicator-files has-files)
       (refbox--indicator-chunk refbox-indicator-notes has-notes)
       (refbox--indicator-chunk
        refbox-indicator-cited
@@ -4386,44 +4389,15 @@ insertion."
   "Return reference keys from REFERENCES."
   (delq nil (mapcar #'refbox--reference-key references)))
 
-(defun refbox--org-citation-keys (citation)
-  "Return Org citation keys from CITATION."
-  (when (and (fboundp 'org-cite-get-references)
-             (fboundp 'org-element-property))
-    (mapcar (lambda (reference)
-              (org-element-property :key reference))
-            (org-cite-get-references citation))))
-
-(defun refbox--citation-keys-from-value (value)
-  "Return citation keys represented by mode-specific VALUE."
-  (cond
-   ((null value) nil)
-   ((and (listp value)
-         (plist-member value :keys))
-    (refbox--listify (plist-get value :keys)))
-   ((and (consp value)
-         (listp (car value))
-         (cl-every #'stringp (car value)))
-    (car value))
-   ((and (fboundp 'org-element-type)
-         (memq (org-element-type value) '(citation citation-reference)))
-    (let ((citation (if (eq (org-element-type value) 'citation)
-                        value
-                      (and (fboundp 'org-element-parent)
-                           (org-element-parent value)))))
-      (and citation (refbox--org-citation-keys citation))))
-   (t nil)))
-
 ;;;###autoload
 (defun refbox-key-at-point ()
   "Return the citation key at point in the current buffer, or nil."
-  (refbox--major-mode-function 'key-at-point #'ignore))
+  (car (refbox--major-mode-function 'key-at-point #'ignore)))
 
 ;;;###autoload
 (defun refbox-citation-at-point ()
   "Return citation keys at point in the current buffer, or nil."
-  (refbox--citation-keys-from-value
-   (refbox--major-mode-function 'citation-at-point #'ignore)))
+  (car (refbox--major-mode-function 'citation-at-point #'ignore)))
 
 (defun refbox-current-buffer-citation-keys (&optional buffer)
   "Return unique citation keys in BUFFER."

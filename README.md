@@ -164,13 +164,11 @@ Use:
 
 ```text
 M-x refbox-org-insert-citation
-M-x refbox-org-set-reference-prefix
-M-x refbox-org-set-reference-suffix
+M-x refbox-org-update-prefix-suffix
 M-x refbox-org-shift-reference-left
 M-x refbox-org-shift-reference-right
 M-x refbox-org-delete-citation
 M-x refbox-org-kill-citation
-M-x refbox-org-follow-at-point
 ```
 
 Org completion is active inside Org citation references and is scoped by Org's
@@ -227,8 +225,6 @@ Relevant options:
 
 ```elisp
 (setq refbox-markdown-prompt-for-extra-arguments nil)
-(setq refbox-markdown-default-prefix nil)
-(setq refbox-markdown-default-suffix nil)
 ```
 
 Markdown insertion uses Pandoc-style `[@key]` citations.

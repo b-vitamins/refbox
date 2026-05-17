@@ -93,6 +93,16 @@ The format follows Keep a Changelog, and this project follows SemVer.
 - Matched Citar's resource completion metadata by exposing file, URL, note-source, and mixed-resource categories.
 - Matched Citar's prompt-local Embark default actions for resource selection prompts.
 - Matched Citar's file resource aggregation by combining file-field resources with same-key library-path resources.
+- Matched Citar's public mode adapter return contract for citation keys and whole citations at point.
+- Matched Citar's Org reference-shifting point preservation and boundary error messages.
+- Matched Citar's Org citation deletion and kill-region behavior for current citation datums.
+- Matched Citar's Org prefix/suffix update rewrite and citation keymap bindings.
+- Matched Citar's Org follow processor by routing citation clicks through `org-open-at-point`.
+- Restored the default completion indicator fast path while preserving Citar's link/file/note/cited order.
+- Routed Org citation insertion through Org's native insert dispatcher instead of a local dispatcher copy.
+- Removed extra Org style override/default variables so style completion follows Org's supported style registry.
+- Removed extra Markdown citation default/separator variables so insertion follows Citar's fixed Pandoc shape.
+- Removed extra LaTeX optional-argument and key-separator variables so citation insertion follows Citar's fixed command shape.
 
 ## [0.4.8] - 2026-05-17
 

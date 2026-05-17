@@ -50,6 +50,7 @@
 (declare-function org-element-parse-buffer "org-element" (&optional granularity visible-only))
 (declare-function org-element-property "org-element" (property element))
 (declare-function org-element-interpret-data "org-element" (data))
+(declare-function org-open-at-point "org" (&optional arg reference-buffer))
 (declare-function org-cite-basic-activate "oc-basic" (citation))
 (declare-function org-cite-basic--set-keymap "oc-basic" (begin end follow))
 (declare-function org-id-get-create "org-id" (&optional force))
@@ -63,19 +64,6 @@
   :group 'refbox
   :prefix "refbox-org-")
 
-(defcustom refbox-org-default-style nil
-  "Default Org citation style inserted when a style is requested."
-  :type '(choice (const :tag "No explicit style" nil) string)
-  :group 'refbox-org)
-
-(defcustom refbox-org-citation-styles nil
-  "Citation styles offered by `refbox-org-select-style'.
-
-When nil, styles are read from Org's supported citation styles."
-  :type '(choice (const :tag "Use Org supported styles" nil)
-                 (repeat string))
-  :group 'refbox-org)
-
 (defcustom refbox-org-styles-format 'long
   "Org citation style display format."
   :type '(choice (const long)
@@ -87,14 +75,6 @@ When nil, styles are read from Org's supported citation styles."
 
 When nil, all styles reported by Org are offered."
   :type '(repeat symbol)
-  :group 'refbox-org)
-
-(defcustom refbox-org-follow-action #'refbox-org-follow-at-point-function
-  "Function called by `refbox-org-follow-at-point'.
-
-The function receives three arguments: the citation key, the Org
-datum at point, and the raw prefix argument."
-  :type 'function
   :group 'refbox-org)
 
 (defcustom refbox-org-activation-functions
@@ -133,18 +113,14 @@ Each function receives the citation datum."
 
 (defvar refbox-org-citation-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "<mouse-1>") #'refbox-org-follow-at-point)
+    (define-key map (kbd "<mouse-1>") (cons "default action" #'org-open-at-point))
     (with-eval-after-load 'embark
-      (define-key map (kbd "<mouse-3>") #'embark-act))
-    (define-key map (kbd "C-c C-x DEL") #'refbox-org-delete-citation)
-    (define-key map (kbd "C-c C-x k") #'refbox-org-kill-citation)
-    (define-key map (kbd "d") #'refbox-org-delete-citation)
-    (define-key map (kbd "k") #'refbox-org-kill-citation)
-    (define-key map (kbd "S-<left>") #'refbox-org-shift-reference-left)
-    (define-key map (kbd "S-<right>") #'refbox-org-shift-reference-right)
-    (define-key map (kbd "M-p") #'refbox-org-update-prefix-suffix)
-    (define-key map (kbd "p") #'refbox-org-set-reference-prefix)
-    (define-key map (kbd "s") #'refbox-org-set-reference-suffix)
+      (define-key map (kbd "<mouse-3>") (cons "embark act" #'embark-act)))
+    (define-key map (kbd "C-c C-x DEL") (cons "delete citation" #'refbox-org-delete-citation))
+    (define-key map (kbd "C-c C-x k") (cons "kill citation" #'refbox-org-kill-citation))
+    (define-key map (kbd "S-<left>") (cons "shift left" #'refbox-org-shift-reference-left))
+    (define-key map (kbd "S-<right>") (cons "shift right" #'refbox-org-shift-reference-right))
+    (define-key map (kbd "M-p") (cons "update prefix/suffix" #'refbox-org-update-prefix-suffix))
     map)
   "Keymap installed by `refbox-org-activate'.")
 
@@ -213,9 +189,8 @@ When MULTIPLE is non-nil, return a list of keys.  Otherwise return one key."
   "Return Org citation style completion candidates."
   (mapcar
    #'refbox-org--style-candidate
-   (or refbox-org-citation-styles
-       (sort (refbox-org--flat-styles refbox-org-style-targets)
-             #'string-lessp))))
+   (sort (refbox-org--flat-styles refbox-org-style-targets)
+         #'string-lessp)))
 
 (defun refbox-org--style-group (style transform)
   "Return group metadata for STYLE.
@@ -260,8 +235,7 @@ When TRANSFORM is non-nil, return the displayed candidate."
                  nil
                  nil
                  nil
-                 'refbox-org-style-history
-                 refbox-org-default-style))
+                 'refbox-org-style-history))
          (style (string-trim style)))
     (cond
      ((string= style "/") "")
@@ -283,7 +257,7 @@ When TRANSFORM is non-nil, return the displayed candidate."
 (defun refbox-org--insert-supplied-citation (keys &optional style)
   "Insert KEYS in Org citation syntax, optionally using STYLE."
   (let ((context (org-element-context)))
-    (if-let ((citation (refbox-org-citation-at-point context)))
+    (if-let ((citation (refbox-org--citation-at-point context)))
         (let* ((existing (org-cite-get-references citation t))
                (keys (seq-difference keys existing #'equal))
                (key-string (refbox-org--key-string keys))
@@ -317,18 +291,6 @@ When TRANSFORM is non-nil, return the displayed candidate."
    #'refbox-org--select-keys
    #'refbox-org--select-style))
 
-(defun refbox-org--insert-edit (style)
-  "Insert or edit an Org citation through the Refbox Org processor."
-  (let ((context (org-element-context))
-        (insert (refbox-org--insert-processor)))
-    (cond
-     ((org-element-type-p context '(citation citation-reference))
-      (funcall insert context style))
-     ((org-cite--allowed-p context)
-      (funcall insert nil style))
-     (t
-      (user-error "Cannot insert an Org citation here")))))
-
 ;;;###autoload
 (defun refbox-org-register-processor ()
   "Register the refbox Org citation processor for Org's native dispatcher."
@@ -351,7 +313,9 @@ citation formatter."
 (defun refbox-org-insert-edit (&optional arg)
   "Insert or edit an Org citation at point."
   (interactive "P")
-  (refbox-org--insert-edit arg))
+  (refbox-org-register-processor)
+  (let ((org-cite-insert-processor 'refbox))
+    (org-cite-insert arg)))
 
 (defun refbox-org-reference-at-point (&optional datum)
   "Return the Org citation reference at point or in DATUM."
@@ -367,7 +331,7 @@ citation formatter."
           references)))
       (_ nil))))
 
-(defun refbox-org-citation-at-point (&optional datum)
+(defun refbox-org--citation-at-point (&optional datum)
   "Return the Org citation at point or in DATUM."
   (let ((context (or datum (org-element-context))))
     (pcase (org-element-type context)
@@ -375,12 +339,23 @@ citation formatter."
       ('citation-reference (org-element-parent context))
       (_ nil))))
 
+(defun refbox-org-citation-at-point (&optional datum)
+  "Return Org citation keys at point with their bounds."
+  (when-let ((citation (refbox-org--citation-at-point datum)))
+    (cons (org-cite-get-references citation t)
+          (org-cite-boundaries citation))))
+
+(defun refbox-org--reference-key-and-bounds-at-point (&optional datum)
+  "Return an Org citation-reference key and bounds at point."
+  (when-let ((reference (refbox-org-reference-at-point datum)))
+    (cons (org-element-property :key reference)
+          (cons (org-element-begin reference)
+                (org-element-end reference)))))
+
 (defun refbox-org-key-at-point (&optional datum)
-  "Return the Org citation key at point or in DATUM."
-  (or (let ((reference (refbox-org-reference-at-point datum)))
-        (when reference
-          (org-element-property :key reference)))
-      (refbox-org-property-key-at-point datum)))
+  "Return the Org citation key at point with its bounds."
+  (or (refbox-org--reference-key-and-bounds-at-point datum)
+      (refbox-org--property-key-and-bounds-at-point datum)))
 
 (defun refbox-org--property-key-and-bounds-at-point (&optional datum)
   "Return an Org node-property citation key and bounds at point."
@@ -390,9 +365,9 @@ citation formatter."
                 (concat "[[:space:]]@\\("
                         refbox-org--key-regexp
                         "\\)")))
-      (list (match-string-no-properties 1)
-            (1- (match-beginning 1))
-            (match-end 1)))))
+      (cons (match-string-no-properties 1)
+            (cons (1- (match-beginning 1))
+                  (match-end 1))))))
 
 (defun refbox-org-property-key-at-point (&optional datum)
   "Return an @KEY citation key from an Org node property at point."
@@ -428,108 +403,31 @@ With FORCE, force creation of a new ID."
 
 (defun refbox-org--citation-or-error ()
   "Return the citation at point or signal a user error."
-  (or (refbox-org-citation-at-point)
+  (or (refbox-org--citation-at-point)
       (user-error "Point is not on an Org citation")))
-
-(defun refbox-org--cleanup-citation-spacing-at-point ()
-  "Remove incidental leading space before the first reference at point."
-  (save-excursion
-    (let ((end (line-end-position)))
-      (goto-char (line-beginning-position))
-      (while (re-search-forward "\\(\\[cite[^]\n]*:\\)[ \t]+@" end t)
-        (replace-match "\\1@" nil nil)))))
-
-(defun refbox-org--normalize-prefix (prefix)
-  "Normalize citation reference PREFIX for insertion."
-  (let ((prefix (string-trim (or prefix ""))))
-    (if (string-empty-p prefix) "" (concat prefix " "))))
-
-(defun refbox-org--normalize-suffix (suffix)
-  "Normalize citation reference SUFFIX for insertion."
-  (let ((suffix (string-trim (or suffix ""))))
-    (if (string-empty-p suffix) "" (concat " " suffix))))
-
-(defun refbox-org--reference-suffix-end (reference)
-  "Return the end of REFERENCE's suffix without the citation separator."
-  (save-excursion
-    (goto-char (org-element-end reference))
-    (skip-chars-backward " \t")
-    (when (and (> (point) (org-element-begin reference))
-               (eq (char-before) ?\;))
-      (backward-char)
-      (skip-chars-backward " \t"))
-    (point)))
-
-(defun refbox-org--reference-prefix-begin (reference)
-  "Return the beginning of REFERENCE's editable prefix text."
-  (let ((begin (org-element-begin reference)))
-    (if (and (> begin (point-min))
-             (memq (char-before begin) '(?\;))
-             (memq (char-after begin) '(?\s ?\t ?\n)))
-        (1+ begin)
-      begin)))
-
-(defun refbox-org--set-reference-affix (reference side text)
-  "Set REFERENCE affix SIDE to TEXT.
-
-SIDE is either `prefix' or `suffix'."
-  (pcase-let* ((`(,key-begin . ,key-end) (org-cite-key-boundaries reference))
-               (prefix-begin (refbox-org--reference-prefix-begin reference))
-               (suffix-end (refbox-org--reference-suffix-end reference)))
-    (pcase side
-      ('prefix
-       (delete-region prefix-begin key-begin)
-       (goto-char prefix-begin)
-       (insert (refbox-org--normalize-prefix text)))
-      ('suffix
-       (delete-region key-end suffix-end)
-       (goto-char key-end)
-       (insert (refbox-org--normalize-suffix text)))
-      (_ (error "Unknown citation affix side: %S" side)))))
-
-;;;###autoload
-(defun refbox-org-set-reference-prefix (prefix)
-  "Set the prefix for the Org citation reference at point."
-  (interactive "sReference prefix: ")
-  (refbox-org--set-reference-affix
-   (refbox-org--reference-or-error)
-   'prefix
-   prefix))
-
-;;;###autoload
-(defun refbox-org-set-reference-suffix (suffix)
-  "Set the suffix for the Org citation reference at point."
-  (interactive "sReference suffix: ")
-  (refbox-org--set-reference-affix
-   (refbox-org--reference-or-error)
-   'suffix
-   suffix))
-
-(defun refbox-org--reference-affix-text (reference property)
-  "Return REFERENCE affix PROPERTY as plain prompt text."
-  (if-let ((value (org-element-property property reference)))
-      (string-trim (org-element-interpret-data value))
-    ""))
 
 (defun refbox-org--update-reference-prefix-suffix (reference)
   "Prompt for and update REFERENCE's prefix and suffix."
   (unless (eq 'citation-reference (org-element-type reference))
-    (user-error "Point is not on an Org citation reference"))
+    (error "Not on a reference"))
   (let* ((key (org-element-property :key reference))
          (label (propertize key 'face 'mode-line-emphasis))
+         (pre (org-element-interpret-data
+               (org-element-property :prefix reference)))
+         (post (org-element-interpret-data
+                (org-element-property :suffix reference)))
          (prefix (read-string (format "Prefix for %s: " label)
-                              (refbox-org--reference-affix-text
-                               reference
-                               :prefix)))
-         (suffix (read-string (format "Suffix for %s: " label)
-                              (refbox-org--reference-affix-text
-                               reference
-                               :suffix))))
-    (refbox-org--set-reference-affix reference 'prefix prefix)
-    (refbox-org--set-reference-affix
-     (refbox-org--reference-or-error)
-     'suffix
-     suffix)))
+                              (string-trim pre)))
+         (suffix (string-trim-left
+                  (read-string (format "Suffix for %s: " label)
+                               (string-trim post))))
+         (suffix (concat (unless (string-empty-p suffix) " ") suffix)))
+    (cl--set-buffer-substring
+     (org-element-begin reference)
+     (org-element-end reference)
+     (org-element-interpret-data
+      `(citation-reference
+        (:key ,key :prefix ,prefix :suffix ,suffix))))))
 
 ;;;###autoload
 (defun refbox-org-update-prefix-suffix (&optional arg)
@@ -544,7 +442,7 @@ every reference in that citation."
          (citation (pcase type
                      ('citation datum)
                      ('citation-reference (org-element-property :parent datum))
-                     (_ (user-error "Point is not on an Org citation or citation reference"))))
+                     (_ (error "Not on a citation or reference"))))
          (references (org-cite-get-references citation)))
     (save-excursion
       (if (or arg (eq type 'citation))
@@ -564,32 +462,15 @@ every reference in that citation."
 (defun refbox-org-delete-citation ()
   "Delete the Org citation or citation reference at point."
   (interactive)
-  (let ((context (org-element-context)))
-    (if (org-element-type-p context '(citation citation-reference))
-        (progn
-          (org-cite-delete-citation context)
-          (refbox-org--cleanup-citation-spacing-at-point))
-      (user-error "Point is not on an Org citation"))))
+  (org-cite-delete-citation (org-element-context)))
 
 ;;;###autoload
 (defun refbox-org-kill-citation ()
   "Kill the Org citation or citation reference at point."
   (interactive)
-  (let* ((context (org-element-context))
-         (bounds
-          (pcase (org-element-type context)
-            ('citation (org-cite-boundaries context))
-            ('citation-reference
-             (let* ((citation (org-element-parent context))
-                    (references (org-cite-get-references citation)))
-               (if (= 1 (length references))
-                   (org-cite-boundaries citation)
-                 (cons (org-element-begin context)
-                       (org-element-end context)))))
-            (_ (user-error "Point is not on an Org citation")))))
-    (kill-new (buffer-substring-no-properties (car bounds) (cdr bounds)))
-    (org-cite-delete-citation context)
-    (refbox-org--cleanup-citation-spacing-at-point)))
+  (let ((context (org-element-context)))
+    (kill-region (org-element-begin context)
+                 (org-element-end context))))
 
 (defun refbox-org--reference-strings (references)
   "Return raw strings for REFERENCES."
@@ -619,22 +500,32 @@ DIRECTION is -1 for left and 1 for right."
          (citation (org-element-parent reference))
          (references (org-cite-get-references citation))
          (reference-begin (org-element-begin reference))
+         (point-offset (- (point) reference-begin))
          (index (cl-position-if
                  (lambda (candidate)
                    (= reference-begin (org-element-begin candidate)))
                  references)))
+    (when (= 1 (length references))
+      (error "You only have one reference; you cannot shift this"))
     (unless index
-      (user-error "Point is not on an Org citation reference"))
+      (error "Nothing to shift here"))
     (let ((target (+ index direction)))
       (unless (and (>= target 0) (< target (length references)))
-        (user-error "Cannot shift citation reference further"))
-      (let ((strings (refbox-org--reference-strings references))
+        (error "You cannot shift the reference in this direction"))
+      (let ((citation-begin (org-element-begin citation))
+            (strings (refbox-org--reference-strings references))
             (begin (org-element-contents-begin citation))
             (end (org-element-contents-end citation)))
         (cl-rotatef (nth index strings) (nth target strings))
         (delete-region begin end)
         (goto-char begin)
-        (insert (string-join strings "; "))))))
+        (insert (string-join strings "; "))
+        (goto-char citation-begin)
+        (when-let* ((updated-citation (refbox-org--citation-at-point))
+                    (updated-reference
+                     (nth target (org-cite-get-references updated-citation))))
+          (goto-char (+ (org-element-begin updated-reference)
+                        point-offset)))))))
 
 ;;;###autoload
 (defun refbox-org-shift-reference-left ()
@@ -649,33 +540,10 @@ DIRECTION is -1 for left and 1 for right."
   (refbox-org--shift-reference 1))
 
 (defun refbox-org-follow (datum arg)
-  "Follow Org citation DATUM with ARG through `refbox-org-follow-action'."
+  "Follow Org citation DATUM with ARG."
   (interactive (list (org-element-context) current-prefix-arg))
-  (let* ((citation (refbox-org-citation-at-point datum))
-         (key (or (refbox-org-key-at-point datum)
-                  (car (and citation
-                            (org-cite-get-references citation t))))))
-    (unless key
-      (user-error "No Org citation key at point"))
-    (funcall refbox-org-follow-action key datum arg)))
-
-;;;###autoload
-(defun refbox-org-follow-at-point (&optional arg)
-  "Follow the Org citation key at point using `refbox-org-follow-action'."
-  (interactive "P")
-  (refbox-org-follow (org-element-context) arg))
-
-(defun refbox-org-open-source (key _datum _arg)
-  "Open bibliography source for citation KEY."
-  (refbox-open-source key))
-
-(defun refbox-org-follow-at-point-function (_key _datum _arg)
-  "Run `refbox-at-point-function' for the citation at point."
+  (ignore datum arg)
   (call-interactively refbox-at-point-function))
-
-(defun refbox-org-follow-default-action (key _datum _arg)
-  "Run `refbox-default-action' for citation KEY."
-  (refbox-run-default-action (list key)))
 
 (defun refbox-org-list-keys (&optional buffer)
   "Return unique Org citation keys in BUFFER."
@@ -688,7 +556,7 @@ DIRECTION is -1 for left and 1 for right."
 
 (defun refbox-org--completion-bounds ()
   "Return Org citation key bounds for completion at point."
-  (when-let ((citation (refbox-org-citation-at-point)))
+  (when-let ((citation (refbox-org--citation-at-point)))
     (refbox-capf-key-bounds-after-at
      (org-element-contents-begin citation)
      (org-element-contents-end citation))))

@@ -50,21 +50,6 @@
   :type 'boolean
   :group 'refbox-markdown)
 
-(defcustom refbox-markdown-default-prefix nil
-  "Default text inserted before the first Markdown citation key."
-  :type '(choice (const :tag "No prefix" nil) string)
-  :group 'refbox-markdown)
-
-(defcustom refbox-markdown-default-suffix nil
-  "Default text inserted after the last Markdown citation key."
-  :type '(choice (const :tag "No suffix" nil) string)
-  :group 'refbox-markdown)
-
-(defcustom refbox-markdown-key-separator "; "
-  "Separator used between Markdown citation keys."
-  :type 'string
-  :group 'refbox-markdown)
-
 (defconst refbox-markdown-citation-key-regexp
   (concat "-?@"
           "\\(?:"
@@ -104,12 +89,12 @@ Captures the actual key in group 1.")
             (suffix (read-from-minibuffer "Postnote: ")))
         (cons (unless (string-empty-p prefix) prefix)
               (unless (string-empty-p suffix) suffix)))
-    (cons refbox-markdown-default-prefix refbox-markdown-default-suffix)))
+    (cons nil nil)))
 
 (defun refbox-markdown-format-citation (keys &optional prefix suffix)
   "Return a Pandoc-style Markdown citation for KEYS, PREFIX, and SUFFIX."
   (let ((body (string-join (mapcar (lambda (key) (concat "@" key)) keys)
-                           refbox-markdown-key-separator)))
+                           "; ")))
     (concat "["
             (if (and prefix (not (string-empty-p prefix)))
                 (concat prefix " ")
@@ -143,7 +128,7 @@ Captures the actual key in group 1.")
          (keys (refbox-markdown--new-keys keys existing))
          (text (mapconcat (lambda (key) (concat "@" key))
                           keys
-                          refbox-markdown-key-separator))
+                          "; "))
          (body-begin (plist-get citation :body-begin))
          (body-end (plist-get citation :body-end))
          (spans (refbox-markdown--key-spans citation)))
@@ -154,10 +139,10 @@ Captures the actual key in group 1.")
         (insert text))
        ((<= (point) body-begin)
         (goto-char body-begin)
-        (insert text refbox-markdown-key-separator))
+        (insert text "; "))
        ((>= (point) body-end)
         (goto-char body-end)
-        (insert refbox-markdown-key-separator text))
+        (insert "; " text))
        (t
         (goto-char
          (or (cl-loop
@@ -165,9 +150,9 @@ Captures the actual key in group 1.")
               when (and (<= begin (point)) (<= (point) end))
               return end)
              body-end))
-        (insert refbox-markdown-key-separator text))))))
+        (insert "; " text))))))
 
-(defun refbox-markdown-citation-at-point ()
+(defun refbox-markdown--citation-at-point ()
   "Return Markdown citation metadata at point, or nil."
   (let ((original-point (point)))
     (save-excursion
@@ -191,6 +176,13 @@ Captures the actual key in group 1.")
                                :body-end body-end
                                :keys (refbox-markdown--keys-in-string body))))))))))))
 
+(defun refbox-markdown-citation-at-point ()
+  "Return Markdown citation keys at point with their bounds."
+  (when-let ((citation (refbox-markdown--citation-at-point)))
+    (cons (plist-get citation :keys)
+          (cons (plist-get citation :begin)
+                (plist-get citation :end)))))
+
 (defun refbox-markdown--keys-in-string (string)
   "Return citation keys found in STRING without leading @ markers."
   (let ((position 0)
@@ -204,11 +196,11 @@ Captures the actual key in group 1.")
   "Return the Markdown citation key and bounds at point, or nil."
   (let ((point (point)))
     (or
-     (when-let ((citation (refbox-markdown-citation-at-point)))
+     (when-let ((citation (refbox-markdown--citation-at-point)))
        (cl-loop
         for (key begin end) in (refbox-markdown--key-spans citation)
         when (and (<= begin point) (<= point end))
-        return (list key begin end)))
+        return (cons key (cons begin end))))
      (save-excursion
        (goto-char (line-beginning-position))
        (catch 'key
@@ -218,18 +210,18 @@ Captures the actual key in group 1.")
            (when (and (<= (match-beginning 0) point)
                       (<= point (match-end 0)))
              (throw 'key
-                    (list (refbox-markdown--match-key)
-                          (match-beginning 0)
-                          (match-end 0)))))
+                    (cons (refbox-markdown--match-key)
+                          (cons (match-beginning 0)
+                                (match-end 0))))))
          nil)))))
 
 (defun refbox-markdown-key-at-point ()
-  "Return the Markdown citation key at point, or nil."
-  (car (refbox-markdown--key-and-bounds-at-point)))
+  "Return the Markdown citation key at point with its bounds."
+  (refbox-markdown--key-and-bounds-at-point))
 
 (defun refbox-markdown--completion-bounds ()
   "Return Markdown citation key bounds for completion at point."
-  (if-let ((citation (refbox-markdown-citation-at-point)))
+  (if-let ((citation (refbox-markdown--citation-at-point)))
       (refbox-capf-key-bounds-after-at
        (plist-get citation :body-begin)
        (plist-get citation :body-end))
@@ -269,7 +261,7 @@ Captures the actual key in group 1.")
 When point is already in a citation, add selected keys to that
 citation instead of replacing it.  INVERT-PROMPT reverses
 `refbox-markdown-prompt-for-extra-arguments'."
-  (let ((citation (refbox-markdown-citation-at-point)))
+  (let ((citation (refbox-markdown--citation-at-point)))
     (when keys
       (if (and citation
                (/= (point) (plist-get citation :begin))

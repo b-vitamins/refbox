@@ -66,7 +66,7 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
 (ert-deftest refbox-markdown-test-detects-key-at-point ()
   "Key helper should find keys inside bracketed citations."
   (refbox-markdown-test-with-buffer "See [@alpha; -@be|ta]."
-    (should (equal (refbox-markdown-key-at-point) "beta"))))
+    (should (equal (car (refbox-markdown-key-at-point)) "beta"))))
 
 (ert-deftest refbox-markdown-test-public_key_regexp_captures_group_one ()
   "The public Pandoc key regexp should capture citation keys in group one."
@@ -78,8 +78,8 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
 (ert-deftest refbox-markdown-test-detects_braced_pandoc_keys ()
   "Markdown helpers should understand Pandoc brace-delimited keys."
   (refbox-markdown-test-with-buffer "See [@alpha; @{braced-key}; -@{ne|g key}]."
-    (should (equal (refbox-markdown-key-at-point) "neg key"))
-    (should (equal (plist-get (refbox-markdown-citation-at-point) :keys)
+    (should (equal (car (refbox-markdown-key-at-point)) "neg key"))
+    (should (equal (car (refbox-markdown-citation-at-point))
                    '("alpha" "braced-key" "neg key"))))
   (refbox-markdown-test-with-buffer "Text @{braced-key} and [-@{neg key}]."
     (should (equal (refbox-markdown-list-keys)
@@ -88,14 +88,14 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
 (ert-deftest refbox-markdown-test-key_at_point_uses_actual_key_span ()
   "Key lookup should preserve full Pandoc key bounds."
   (refbox-markdown-test-with-buffer "See [@{bra|ced key}; @beta]."
-    (pcase-let ((`(,key ,begin ,end)
+    (pcase-let ((`(,key . (,begin . ,end))
                  (refbox-markdown--key-and-bounds-at-point)))
       (should (equal key "braced key"))
       (should (equal (buffer-substring-no-properties begin end)
                      "@{braced key}"))
-      (should (equal (refbox-markdown-key-at-point) "braced key"))))
+      (should (equal (car (refbox-markdown-key-at-point)) "braced key"))))
   (refbox-markdown-test-with-buffer "Text @al|pha outside."
-    (pcase-let ((`(,key ,begin ,end)
+    (pcase-let ((`(,key . (,begin . ,end))
                  (refbox-markdown--key-and-bounds-at-point)))
       (should (equal key "alpha"))
       (should (equal (buffer-substring-no-properties begin end)
@@ -105,43 +105,39 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
   "Citation helper should return bracketed citation metadata."
   (refbox-markdown-test-with-buffer "See [see @al|pha pp. 1-2; @beta]."
     (let ((citation (refbox-markdown-citation-at-point)))
-      (should (equal (plist-get citation :keys) '("alpha" "beta")))
-      (should (equal (buffer-substring-no-properties
-                      (plist-get citation :begin)
-                      (plist-get citation :end))
-                     "[see @alpha pp. 1-2; @beta]")))))
+      (pcase-let ((`(,keys . (,begin . ,end)) citation))
+        (should (equal keys '("alpha" "beta")))
+        (should (equal (buffer-substring-no-properties begin end)
+                       "[see @alpha pp. 1-2; @beta]"))))))
 
 (ert-deftest refbox-markdown-test-detects_multiline_citation_at_point ()
   "Citation helper should handle balanced bracket expressions across lines."
   (refbox-markdown-test-with-buffer "See [compare @alpha;\n  @be|ta pp. 1-2]."
     (let ((citation (refbox-markdown-citation-at-point)))
-      (should (equal (plist-get citation :keys) '("alpha" "beta")))
-      (should (equal (buffer-substring-no-properties
-                      (plist-get citation :begin)
-                      (plist-get citation :end))
-                     "[compare @alpha;\n  @beta pp. 1-2]")))))
+      (pcase-let ((`(,keys . (,begin . ,end)) citation))
+        (should (equal keys '("alpha" "beta")))
+        (should (equal (buffer-substring-no-properties begin end)
+                       "[compare @alpha;\n  @beta pp. 1-2]"))))))
 
 (ert-deftest refbox-markdown-test-citation_lookup_uses_containing_brackets ()
   "Citation lookup should ignore unrelated previous bracketed text."
   (refbox-markdown-test-with-buffer "[not @alpha]\n\nplain |text"
     (should-not (refbox-markdown-citation-at-point)))
   (refbox-markdown-test-with-buffer "|[@alpha]"
-    (should (equal (plist-get (refbox-markdown-citation-at-point) :keys)
+    (should (equal (car (refbox-markdown-citation-at-point))
                    '("alpha"))))
   (refbox-markdown-test-with-buffer "[@alpha]|"
-    (should (equal (plist-get (refbox-markdown-citation-at-point) :keys)
+    (should (equal (car (refbox-markdown-citation-at-point))
                    '("alpha")))))
 
 (ert-deftest refbox-markdown-test-adds-to-existing-citation ()
   "Insertion at a citation should add selected keys."
   (refbox-markdown-test-with-buffer "A [@al|pha; @beta] Z"
-    (let ((refbox-markdown-default-prefix "see")
-          (refbox-markdown-default-suffix "p. 4"))
-	      (cl-letf (((symbol-function 'refbox-read-references)
-	                 (lambda (&rest _args)
-	                   (list (refbox-markdown-test-candidate "gamma")))))
-	        (refbox-markdown-insert-edit)
-	        (should (equal (buffer-string) "A [@alpha; @gamma; @beta] Z"))))))
+    (cl-letf (((symbol-function 'refbox-read-references)
+               (lambda (&rest _args)
+                 (list (refbox-markdown-test-candidate "gamma")))))
+      (refbox-markdown-insert-edit)
+      (should (equal (buffer-string) "A [@alpha; @gamma; @beta] Z")))))
 
 (ert-deftest refbox-markdown-test-inserts_new_citation_at_bracket_edges ()
   "Insertion at citation bracket edges should match Citar's boundary behavior."

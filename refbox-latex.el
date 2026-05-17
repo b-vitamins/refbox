@@ -76,16 +76,6 @@ arguments and `t' marks the citation-key argument."
   :type 'boolean
   :group 'refbox-latex)
 
-(defcustom refbox-latex-default-optional-arguments nil
-  "Optional arguments inserted when no prompt is requested."
-  :type '(repeat string)
-  :group 'refbox-latex)
-
-(defcustom refbox-latex-key-separator ","
-  "Separator used between LaTeX citation keys."
-  :type 'string
-  :group 'refbox-latex)
-
 (defvar refbox-latex-cite-command-history nil
   "Minibuffer history for LaTeX citation commands.")
 
@@ -245,7 +235,7 @@ when the configured key argument is absent."
                   :key-end key-end
                   :keys keys)))))))
 
-(defun refbox-latex-citation-at-point ()
+(defun refbox-latex--citation-at-point ()
   "Return LaTeX citation metadata at point, or nil."
   (save-excursion
     (let ((point (point))
@@ -262,6 +252,13 @@ when the configured key argument is absent."
                      (<= point (plist-get parsed :end)))
             (setq citation parsed))))
       citation)))
+
+(defun refbox-latex-citation-at-point ()
+  "Return LaTeX citation keys at point with their bounds."
+  (when-let ((citation (refbox-latex--citation-at-point)))
+    (cons (plist-get citation :keys)
+          (cons (plist-get citation :begin)
+                (plist-get citation :end)))))
 
 (defun refbox-latex--key-spans (citation)
   "Return key spans for CITATION as (KEY BEGIN END) lists."
@@ -280,14 +277,18 @@ when the configured key argument is absent."
                   spans))))
       (nreverse spans))))
 
-(defun refbox-latex-key-at-point ()
-  "Return the LaTeX citation key at point, or nil."
-  (when-let ((citation (refbox-latex-citation-at-point)))
+(defun refbox-latex--key-and-bounds-at-point ()
+  "Return the LaTeX citation key and bounds at point, or nil."
+  (when-let ((citation (refbox-latex--citation-at-point)))
     (let ((point (point)))
       (cl-loop
        for (key begin end) in (refbox-latex--key-spans citation)
        when (and (<= begin point) (<= point end))
-       return key))))
+       return (cons key (cons begin end))))))
+
+(defun refbox-latex-key-at-point ()
+  "Return the LaTeX citation key at point with its bounds."
+  (refbox-latex--key-and-bounds-at-point))
 
 (defun refbox-latex-list-keys (&optional buffer)
   "Return unique LaTeX citation keys in BUFFER."
@@ -303,7 +304,7 @@ when the configured key argument is absent."
 
 (defun refbox-latex--completion-bounds ()
   "Return LaTeX citation key bounds for completion at point."
-  (when-let ((citation (refbox-latex-citation-at-point)))
+  (when-let ((citation (refbox-latex--citation-at-point)))
     (let ((bounds (refbox-capf-key-bounds
                    (plist-get citation :key-begin)
                    (plist-get citation :key-end))))
@@ -373,10 +374,9 @@ COMMAND, when non-nil, is returned directly.  INVERT-PROMPT reverses
                         (format "%s: "
                                 (refbox-latex--argument-prompt
                                  spec "Mandatory argument")))))
-      (let ((defaults (copy-sequence refbox-latex-default-optional-arguments)))
-        (cl-loop for spec in specs
-                 when (vectorp spec)
-                 collect (list :optional (pop defaults)))))))
+      (cl-loop for spec in specs
+               when (vectorp spec)
+               collect (list :optional nil)))))
 
 (defun refbox-latex-format-citation (command keys &optional optional-args)
   "Return a LaTeX citation COMMAND for KEYS and OPTIONAL-ARGS."
@@ -386,12 +386,12 @@ COMMAND, when non-nil, is returned directly.  INVERT-PROMPT reverses
                      optional-args
                      "")
           "{"
-          (string-join keys refbox-latex-key-separator)
+          (string-join keys ",")
           "}"))
 
 (defun refbox-latex--key-argument (keys)
   "Return KEYS formatted as a LaTeX mandatory citation argument."
-  (concat "{" (string-join keys refbox-latex-key-separator) "}"))
+  (concat "{" (string-join keys ",") "}"))
 
 (defun refbox-latex--spec-argument-items (specs arguments)
   "Return SPECS paired with their consumed ARGUMENTS."
@@ -472,7 +472,7 @@ is configured, append the key argument after configured optional args."
 (defun refbox-latex--insert-keys-into-citation (citation keys)
   "Insert KEYS into existing LaTeX CITATION."
   (let* ((existing (plist-get citation :keys))
-         (text (string-join keys refbox-latex-key-separator))
+         (text (string-join keys ","))
          (key-begin (plist-get citation :key-begin))
          (key-end (plist-get citation :key-end))
          (spans (refbox-latex--key-spans citation)))
@@ -483,10 +483,10 @@ is configured, append the key argument after configured optional args."
         (insert text))
        ((<= (point) key-begin)
         (goto-char key-begin)
-        (insert text refbox-latex-key-separator))
+        (insert text ","))
        ((>= (point) key-end)
         (goto-char key-end)
-        (insert refbox-latex-key-separator text))
+        (insert "," text))
        (t
         (goto-char
          (or (cl-loop
@@ -494,11 +494,11 @@ is configured, append the key argument after configured optional args."
               when (and (<= begin (point)) (<= (point) end))
               return end)
              key-end))
-        (insert refbox-latex-key-separator text))))))
+        (insert "," text))))))
 
 (defun refbox-latex--move-after-citation ()
   "Move point after the LaTeX citation command containing point."
-  (when-let ((citation (refbox-latex-citation-at-point)))
+  (when-let ((citation (refbox-latex--citation-at-point)))
     (goto-char (plist-get citation :end))))
 
 ;;;###autoload
@@ -510,7 +510,7 @@ that citation instead of replacing it.  INVERT-PROMPT reverses
 `refbox-latex-prompt-for-cite-style'.  COMMAND, when non-nil, selects
 the citation command directly."
   (when keys
-    (let ((citation (refbox-latex-citation-at-point)))
+    (let ((citation (refbox-latex--citation-at-point)))
       (if citation
           (refbox-latex--insert-keys-into-citation citation keys)
         (let* ((command (refbox-latex--read-command invert-prompt command))

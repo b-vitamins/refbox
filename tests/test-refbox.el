@@ -347,7 +347,7 @@
               ((symbol-function 'refbox-test-key-at-point)
                (lambda () nil))
               ((symbol-function 'refbox-test-citation-at-point)
-               (lambda () (list :keys ["alpha" "beta"])))
+               (lambda () '(("alpha" "beta") . (1 . 12))))
               ((symbol-function 'refbox-test-insert-citation)
                (lambda (keys arg)
                  (insert (format "%s/%s" (string-join keys "|") arg))))
@@ -386,6 +386,21 @@
                    (setq default-action-refs references))))
             (refbox-dwim)
             (should (equal default-action-refs '("alpha" "beta")))))))))
+
+(ert-deftest refbox-test-at_point_helpers_strip_adapter_bounds ()
+  "Generic at-point helpers should expose Citar-style adapter values."
+  (cl-letf (((symbol-function 'refbox-test-key-at-point)
+             (lambda () '("alpha" . (1 . 7))))
+            ((symbol-function 'refbox-test-citation-at-point)
+             (lambda () '(("alpha" "beta") . (1 . 14)))))
+    (let ((refbox-major-mode-functions
+           '(((refbox-test-mode) .
+              ((key-at-point . refbox-test-key-at-point)
+               (citation-at-point . refbox-test-citation-at-point))))))
+      (with-temp-buffer
+        (refbox-test-mode)
+        (should (equal (refbox-key-at-point) "alpha"))
+        (should (equal (refbox-citation-at-point) '("alpha" "beta")))))))
 
 (ert-deftest refbox-test-insert-edit_without_adapter_matches_citar_message ()
   "Generic citation edit should not fall back to citation insertion."
@@ -868,6 +883,31 @@
   "Default indicators should preserve Citar's link/file/note/cited order."
   (should (equal (mapcar #'refbox-indicator-tag refbox-indicators)
                  '("has:links" "has:files" "has:notes" "is:cited"))))
+
+(ert-deftest refbox-test-default_indicator_fast_path_matches_configured_links ()
+  "Default indicator rendering should be fast, ordered, and link-field driven."
+  (let ((refbox-reference-note-predicate nil)
+        (refbox-reference-cited-predicate nil))
+    (should (refbox--default-reference-indicators-p))
+    (should (string-prefix-p
+             "L F"
+             (substring-no-properties
+              (refbox-reference-indicators
+               '(:key "alpha" :resource_kinds ["file" "doi"])))))
+    (should-not
+     (string-match-p
+      "L"
+      (substring-no-properties
+       (refbox-reference-indicators
+        '(:key "beta" :resource_kinds ["eprint"])))))
+    (let ((refbox-link-fields
+           '((eprint . "https://example.test/eprint/%s"))))
+      (should
+       (string-match-p
+        "L"
+        (substring-no-properties
+         (refbox-reference-indicators
+          '(:key "gamma" :resource_kinds ["eprint"]))))))))
 
 (ert-deftest refbox-test-completion-uses_daemon_shaped_default_display ()
   "Default completion display should use daemon-shaped rows when present."

@@ -138,33 +138,36 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
 
 (ert-deftest refbox-org-test-style_selection_uses_org_supported_styles ()
   "Style completion should use Org's supported style registry by default."
-  (let ((refbox-org-citation-styles nil))
+  (let ((refbox-org-style-targets '(csl))
+        targets-seen)
     (cl-letf (((symbol-function 'org-cite-supported-styles)
-               (lambda (&optional _targets)
+               (lambda (&optional targets)
+                 (setq targets-seen targets)
                  '((("nil") ("/b"))
                    (("text") ("/f")))))
               ((symbol-function 'completing-read)
                (lambda (prompt collection &rest _args)
                  (should (equal prompt "Styles: "))
                  (car (all-completions "text" collection)))))
-      (should (equal (refbox-org-select-style) "text"))))
-  (let ((refbox-org-citation-styles '("author")))
-    (cl-letf (((symbol-function 'completing-read)
-               (lambda (prompt collection &rest _args)
-                 (should (equal prompt "Styles: "))
-                 (car (all-completions "" collection)))))
-      (should (equal (refbox-org-select-style) "author")))))
+      (should (equal (refbox-org-select-style) "text"))
+      (should (equal targets-seen '(csl))))))
 
 (ert-deftest refbox-org-test-empty_style_selection_matches_citar ()
   "Empty style completion should return the empty string."
-  (let ((refbox-org-citation-styles '("/" "text")))
-    (cl-letf (((symbol-function 'completing-read)
-               (lambda (&rest _args) "")))
-      (should (equal (refbox-org-select-style) "")))))
+  (cl-letf (((symbol-function 'org-cite-supported-styles)
+             (lambda (&optional _targets)
+               '((("nil") ("/b"))
+                 (("text") ("/f")))))
+            ((symbol-function 'completing-read)
+             (lambda (&rest _args) "")))
+      (should (equal (refbox-org-select-style) ""))))
 
 (ert-deftest refbox-org-test-style_completion_metadata_is_rich ()
   "Style completion metadata should expose familiar groups and previews."
-  (let ((refbox-org-citation-styles '("/" "author" "author/c")))
+  (cl-letf (((symbol-function 'org-cite-supported-styles)
+             (lambda (&optional _targets)
+               '((("nil"))
+                 (("author") ("/c"))))))
     (pcase-let ((`(,default ,author ,variant)
                  (refbox-org-style-candidates)))
       (should (eq (get-text-property 0 'face default)
@@ -183,13 +186,21 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
             (refbox-org--style-annotation "author/cf")))))
 
 (ert-deftest refbox-org-test-delete-and-kill-citation-elements ()
-  "Deletion and kill commands should use Org citation boundaries."
+  "Deletion and kill commands should follow Citar's Org datum behavior."
   (refbox-org-test-with-buffer "A [cite:@al|pha; @beta] Z"
     (refbox-org-delete-citation)
-    (should (equal (buffer-string) "A [cite:@beta] Z")))
+    (should (equal (buffer-string) "A [cite: @beta] Z")))
   (refbox-org-test-with-buffer "A [cite:@al|pha] Z"
     (refbox-org-kill-citation)
-    (should (equal (current-kill 0 t) "[cite:@alpha]"))
+    (should (equal (current-kill 0 t) "@alpha"))
+    (should (equal (buffer-string) "A [cite:] Z")))
+  (refbox-org-test-with-buffer "A [cite:@al|pha; @beta] Z"
+    (refbox-org-kill-citation)
+    (should (equal (current-kill 0 t) "@alpha;"))
+    (should (equal (buffer-string) "A [cite: @beta] Z")))
+  (refbox-org-test-with-buffer "A [ci|te:@alpha; @beta] Z"
+    (refbox-org-kill-citation)
+    (should (equal (current-kill 0 t) "[cite:@alpha; @beta] "))
     (should (equal (buffer-string) "A Z"))))
 
 (ert-deftest refbox-org-test-shifts-references ()
@@ -197,11 +208,31 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
   (refbox-org-test-with-buffer "[cite:@alpha; @be|ta; @gamma]"
     (refbox-org-shift-reference-left)
     (should (equal (buffer-string)
-                   "[cite:@beta; @alpha; @gamma]")))
+                   "[cite:@beta; @alpha; @gamma]"))
+    (should (equal (car (refbox-org-key-at-point)) "beta")))
   (refbox-org-test-with-buffer "[cite:@alpha; @be|ta; @gamma]"
     (refbox-org-shift-reference-right)
     (should (equal (buffer-string)
-                   "[cite:@alpha; @gamma; @beta]"))))
+                   "[cite:@alpha; @gamma; @beta]"))
+    (should (equal (car (refbox-org-key-at-point)) "beta"))))
+
+(ert-deftest refbox-org-test-shift_errors_match_citar ()
+  "Reference shifting should report Citar's boundary errors."
+  (refbox-org-test-with-buffer "[cite:@al|pha]"
+    (let ((error-data (should-error (refbox-org-shift-reference-left)
+                                    :type 'error)))
+      (should (equal (cadr error-data)
+                     "You only have one reference; you cannot shift this"))))
+  (refbox-org-test-with-buffer "[cite:@al|pha; @beta]"
+    (let ((error-data (should-error (refbox-org-shift-reference-left)
+                                    :type 'error)))
+      (should (equal (cadr error-data)
+                     "You cannot shift the reference in this direction"))))
+  (refbox-org-test-with-buffer "[cite:@alpha; @be|ta]"
+    (let ((error-data (should-error (refbox-org-shift-reference-right)
+                                    :type 'error)))
+      (should (equal (cadr error-data)
+                     "You cannot shift the reference in this direction")))))
 
 (ert-deftest refbox-org-test-cite-swap_swaps_list_positions ()
   "Citation swap helper should swap two list positions in place."
@@ -228,14 +259,15 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
         (should (equal refs '("@alpha")))))))
 
 (ert-deftest refbox-org-test-prefix-and-suffix-updates ()
-  "Prefix and suffix commands should edit citation-reference affixes."
+  "Prefix and suffix updates should match Citar's reference rewrite."
   (refbox-org-test-with-buffer "[cite:|@alpha]"
-    (refbox-org-set-reference-prefix "see")
-    (goto-char (point-min))
-    (search-forward "@alpha")
-    (refbox-org-set-reference-suffix "p. 12")
+    (let ((answers '("see " "p. 12")))
+      (cl-letf (((symbol-function 'read-string)
+                 (lambda (_prompt &optional _initial _history _default _inherit)
+                   (pop answers))))
+        (refbox-org-update-prefix-suffix)))
     (should (equal (buffer-string)
-                   "[cite:see @alpha p. 12]"))))
+                   "[cite:see @alpha p. 12;]"))))
 
 (ert-deftest refbox-org-test-prefix-and-suffix-update_can_edit_all_refs ()
   "Prefix and suffix update should handle every reference in a citation."
@@ -246,13 +278,14 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                    (pop answers))))
         (refbox-org-update-prefix-suffix t)))
     (should (equal (buffer-string)
-                   "[cite:see @alpha p. 1; also @beta p. 2]"))))
+                   "[cite:see@alpha p. 1;also@beta p. 2;]"))))
 
 (ert-deftest refbox-org-test-key-and-citation-at-point ()
   "Helpers should find citation and key locations."
   (refbox-org-test-with-buffer "[cite:@al|pha]"
-    (should (equal (refbox-org-key-at-point) "alpha"))
-    (should (eq (org-element-type (refbox-org-citation-at-point)) 'citation))
+    (should (equal (car (refbox-org-key-at-point)) "alpha"))
+    (should (equal (car (refbox-org-citation-at-point)) '("alpha")))
+    (should (eq (org-element-type (refbox-org--citation-at-point)) 'citation))
     (should (eq (org-element-type (refbox-org-reference-at-point))
                 'citation-reference))))
 
@@ -269,52 +302,48 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
 (ert-deftest refbox-org-test-key-at-point_reads_node_property_refs ()
   "Org key helper should find @KEY references in property drawers."
   (refbox-org-test-with-buffer ":PROPERTIES:\n:ROAM_REFS: @smi|th2020\n:END:\n"
-    (should (equal (refbox-org-key-at-point) "smith2020"))
-    (pcase-let ((`(,key ,begin ,end)
+    (should (equal (car (refbox-org-key-at-point)) "smith2020"))
+    (pcase-let ((`(,key . (,begin . ,end))
                  (refbox-org--property-key-and-bounds-at-point)))
       (should (equal key "smith2020"))
       (should (equal (buffer-substring-no-properties begin end)
                      "@smith2020")))))
 
-(ert-deftest refbox-org-test-follow-at-citation-and-reference-locations ()
-  "Follow should dispatch the key through the configured action."
-  (dolist (fixture '("[ci|te:@alpha]" "[cite:@al|pha]"))
-    (refbox-org-test-with-buffer fixture
-      (let (calls)
-        (let ((refbox-org-follow-action
-               (lambda (key datum arg)
-                 (push (list key (org-element-type datum) arg) calls))))
-          (refbox-org-follow-at-point :arg)
-          (should (equal (caar calls) "alpha")))))))
-
-(ert-deftest refbox-org-test-default_follow_runs_default_action ()
-  "The default Org follow action should run the normal reference action."
-  (refbox-org-test-with-buffer "[cite:|@alpha]"
-    (let (seen)
-      (let ((refbox-default-action
-             (lambda (references)
-               (setq seen references))))
-        (refbox-org-follow-at-point nil))
-      (should (equal seen '("alpha"))))))
-
-(ert-deftest refbox-org-test-default_follow_uses_at_point_function ()
-  "The default Org follow action should honor the at-point function."
+(ert-deftest refbox-org-test-follow_processor_uses_at_point_function ()
+  "The Org follow processor should call the configured at-point command."
   (refbox-org-test-with-buffer "[cite:|@alpha]"
     (let (called)
       (let ((refbox-at-point-function
              (lambda ()
                (interactive)
-               (setq called (refbox-org-key-at-point)))))
-        (refbox-org-follow-at-point nil))
+               (setq called (refbox-key-at-point)))))
+        (refbox-org-follow (org-element-context) nil))
       (should (equal called "alpha")))))
 
 (ert-deftest refbox-org-test-activation-installs-keymap ()
   "Activation should install the refbox citation keymap on citation text."
   (refbox-org-test-with-buffer "[cite:|@alpha]"
-    (let ((citation (refbox-org-citation-at-point)))
+    (let ((citation (refbox-org--citation-at-point)))
       (refbox-org-activate citation)
       (should (eq (get-text-property (point) 'keymap)
                   refbox-org-citation-map)))))
+
+(ert-deftest refbox-org-test-citation_keymap_matches_citar_bindings ()
+  "Org citation keymap should expose Citar's citation editing bindings."
+  (should (eq (lookup-key refbox-org-citation-map (kbd "<mouse-1>"))
+              #'org-open-at-point))
+  (should (eq (lookup-key refbox-org-citation-map (kbd "C-c C-x DEL"))
+              #'refbox-org-delete-citation))
+  (should (eq (lookup-key refbox-org-citation-map (kbd "C-c C-x k"))
+              #'refbox-org-kill-citation))
+  (should (eq (lookup-key refbox-org-citation-map (kbd "S-<left>"))
+              #'refbox-org-shift-reference-left))
+  (should (eq (lookup-key refbox-org-citation-map (kbd "S-<right>"))
+              #'refbox-org-shift-reference-right))
+  (should (eq (lookup-key refbox-org-citation-map (kbd "M-p"))
+              #'refbox-org-update-prefix-suffix))
+  (dolist (key '("d" "k" "p" "s"))
+    (should-not (lookup-key refbox-org-citation-map (kbd key)))))
 
 (ert-deftest refbox-org-test-basic_activation_uses_refbox_index ()
   "Basic activation should style known keys and suggest indexed alternatives."
@@ -330,7 +359,7 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                    (if (string-empty-p query)
                        (list (refbox-org-test-search-candidate "alpha" nil))
                      (list (refbox-org-test-search-candidate "alpine" nil))))))
-        (let ((citation (refbox-org-citation-at-point)))
+        (let ((citation (refbox-org--citation-at-point)))
           (refbox-org-cite-basic-activate citation)
           (goto-char (point-min))
           (search-forward "@alpha")
@@ -382,7 +411,7 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                              :fields '((:lookup_name "title"
                                         :value "Local Title")))))))
                 (refbox-org-cite-basic-activate
-                 (refbox-org-citation-at-point))
+                 (refbox-org--citation-at-point))
                 (goto-char (point-min))
                 (search-forward "@dup")
                 (should (string-match-p
