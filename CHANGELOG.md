@@ -7,6 +7,7 @@ The format follows Keep a Changelog, and this project follows SemVer.
 ## [Unreleased]
 
 ### Changed
+- Added enforced generated-corpus benchmark thresholds for the 100k-entry release profile and 1M-entry local profile.
 - Made citeproc CSL style and locale configuration use Citar-shaped single directory values instead of list-valued directory knobs.
 - Removed unused simple indicator knobs; `refbox-indicators` is now the single authoritative indicator configuration path.
 - Removed the separate note and cited predicate knobs; note and cited indicators now use the same `refbox-indicators` path as other indicators.

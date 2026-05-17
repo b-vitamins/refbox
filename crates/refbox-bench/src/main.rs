@@ -31,6 +31,119 @@ const COMPLETION_SEARCH_FIELDS: &[&str] = &[
     "keywords",
     "identifiers",
 ];
+#[cfg(test)]
+const GATE_METRICS: &[&str] = &[
+    "full_sync",
+    "single_file_sync",
+    "indexed_search",
+    "capf_candidate_retrieval",
+    "resource_lookup",
+    "diagnostics_query",
+    "source_lookup",
+    "elisp_candidate_rendering",
+];
+const CI_THRESHOLDS: &[Threshold] = &[
+    Threshold {
+        metric: "full_sync",
+        p95_ms: 10_000.0,
+    },
+    Threshold {
+        metric: "single_file_sync",
+        p95_ms: 3_000.0,
+    },
+    Threshold {
+        metric: "indexed_search",
+        p95_ms: 500.0,
+    },
+    Threshold {
+        metric: "capf_candidate_retrieval",
+        p95_ms: 500.0,
+    },
+    Threshold {
+        metric: "resource_lookup",
+        p95_ms: 500.0,
+    },
+    Threshold {
+        metric: "diagnostics_query",
+        p95_ms: 500.0,
+    },
+    Threshold {
+        metric: "source_lookup",
+        p95_ms: 500.0,
+    },
+    Threshold {
+        metric: "elisp_candidate_rendering",
+        p95_ms: 500.0,
+    },
+];
+const RELEASE_THRESHOLDS: &[Threshold] = &[
+    Threshold {
+        metric: "full_sync",
+        p95_ms: 120_000.0,
+    },
+    Threshold {
+        metric: "single_file_sync",
+        p95_ms: 2_000.0,
+    },
+    Threshold {
+        metric: "indexed_search",
+        p95_ms: 500.0,
+    },
+    Threshold {
+        metric: "capf_candidate_retrieval",
+        p95_ms: 750.0,
+    },
+    Threshold {
+        metric: "resource_lookup",
+        p95_ms: 50.0,
+    },
+    Threshold {
+        metric: "diagnostics_query",
+        p95_ms: 50.0,
+    },
+    Threshold {
+        metric: "source_lookup",
+        p95_ms: 50.0,
+    },
+    Threshold {
+        metric: "elisp_candidate_rendering",
+        p95_ms: 100.0,
+    },
+];
+const LOCAL_THRESHOLDS: &[Threshold] = &[
+    Threshold {
+        metric: "full_sync",
+        p95_ms: 900_000.0,
+    },
+    Threshold {
+        metric: "single_file_sync",
+        p95_ms: 5_000.0,
+    },
+    Threshold {
+        metric: "indexed_search",
+        p95_ms: 750.0,
+    },
+    Threshold {
+        metric: "capf_candidate_retrieval",
+        p95_ms: 1_000.0,
+    },
+    Threshold {
+        metric: "resource_lookup",
+        p95_ms: 50.0,
+    },
+    Threshold {
+        metric: "diagnostics_query",
+        p95_ms: 50.0,
+    },
+    Threshold {
+        metric: "source_lookup",
+        p95_ms: 50.0,
+    },
+    Threshold {
+        metric: "elisp_candidate_rendering",
+        p95_ms: 100.0,
+    },
+];
 
 #[derive(Debug, Parser)]
 #[command(author, version, about = "refbox scale benchmark harness")]
@@ -458,40 +571,7 @@ fn profile_spec(profile: Profile) -> ProfileSpec {
             rpc_samples: 20,
             sync_file_samples: 3,
             elisp_samples: 20,
-            thresholds: &[
-                Threshold {
-                    metric: "full_sync",
-                    p95_ms: 10_000.0,
-                },
-                Threshold {
-                    metric: "single_file_sync",
-                    p95_ms: 3_000.0,
-                },
-                Threshold {
-                    metric: "indexed_search",
-                    p95_ms: 500.0,
-                },
-                Threshold {
-                    metric: "capf_candidate_retrieval",
-                    p95_ms: 500.0,
-                },
-                Threshold {
-                    metric: "resource_lookup",
-                    p95_ms: 500.0,
-                },
-                Threshold {
-                    metric: "diagnostics_query",
-                    p95_ms: 500.0,
-                },
-                Threshold {
-                    metric: "source_lookup",
-                    p95_ms: 500.0,
-                },
-                Threshold {
-                    metric: "elisp_candidate_rendering",
-                    p95_ms: 500.0,
-                },
-            ],
+            thresholds: CI_THRESHOLDS,
         },
         Profile::Release => ProfileSpec {
             name: "release",
@@ -500,7 +580,7 @@ fn profile_spec(profile: Profile) -> ProfileSpec {
             rpc_samples: 50,
             sync_file_samples: 5,
             elisp_samples: 50,
-            thresholds: &[],
+            thresholds: RELEASE_THRESHOLDS,
         },
         Profile::Local => ProfileSpec {
             name: "local",
@@ -509,7 +589,7 @@ fn profile_spec(profile: Profile) -> ProfileSpec {
             rpc_samples: 50,
             sync_file_samples: 5,
             elisp_samples: 50,
-            thresholds: &[],
+            thresholds: LOCAL_THRESHOLDS,
         },
         Profile::Real => ProfileSpec {
             name: "real",
@@ -921,19 +1001,16 @@ mod tests {
     }
 
     #[test]
-    fn ci_profile_has_thresholds_for_every_gate_metric() {
-        let spec = profile_spec(Profile::Ci);
-        for metric in [
-            "full_sync",
-            "single_file_sync",
-            "indexed_search",
-            "capf_candidate_retrieval",
-            "resource_lookup",
-            "diagnostics_query",
-            "source_lookup",
-            "elisp_candidate_rendering",
-        ] {
-            assert!(threshold_for(spec, metric).is_some(), "missing {metric}");
+    fn generated_profiles_have_thresholds_for_every_gate_metric() {
+        for profile in [Profile::Ci, Profile::Release, Profile::Local] {
+            let spec = profile_spec(profile);
+            for metric in GATE_METRICS {
+                assert!(
+                    threshold_for(spec, metric).is_some(),
+                    "missing {metric} for {:?}",
+                    profile
+                );
+            }
         }
     }
 
