@@ -6,6 +6,8 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-05-17
+
 ### Changed
 - Added enforced generated-corpus benchmark thresholds for the 100k-entry release profile and 1M-entry local profile.
 - Made citeproc CSL style and locale configuration use Citar-shaped single directory values instead of list-valued directory knobs.
