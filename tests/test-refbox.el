@@ -2883,6 +2883,34 @@
     (should (string-match-p "Alpha Reference Title" label))
     (should-not (string-match-p "new:smith2020" label))))
 
+(ert-deftest refbox-test-create_note_choices_for_keys_have_visible_labels ()
+  "Create-note choices for selected key strings should not render blank rows."
+  (let* ((refbox-notes-source 'mock)
+         (refbox-notes-sources
+          '((mock :name "Slipbox Notes"
+                  :items (lambda (_keys)
+                           (make-hash-table :test 'equal))
+                  :hasitems ignore
+                  :open ignore
+                  :create ignore
+                  :create-label (lambda (key _reference)
+                                  (format "new:%s" key))))))
+    (cl-letf (((symbol-function 'refbox--get-entry-candidate)
+               (lambda (_key) nil)))
+      (let* ((choice (car (refbox--note-choices (list "smith2020") t)))
+             (label (plist-get choice :label))
+             (completion-label (propertize label
+                                           'refbox-resource-choice choice))
+             (table (refbox--resource-choice-completion-table
+                     (list completion-label)))
+             (metadata (funcall table "" nil 'metadata))
+             (group-function (cdr (assq 'group-function (cdr metadata)))))
+        (should (eq (plist-get choice :type) 'create-note))
+        (should (get-text-property 0 'invisible label))
+        (should (string-match-p "new:smith2020" label))
+        (should (equal (funcall group-function completion-label t)
+                       completion-label))))))
+
 (ert-deftest refbox-test-resource_open_prompt_uses_this_command_like_citar ()
   "Single-resource prompting should follow `this-command'."
   (let* ((root (make-temp-file "refbox-resource-this-command-" t))

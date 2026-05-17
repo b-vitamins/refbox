@@ -6,6 +6,10 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+### Fixed
+- Made create-note resource candidates for selected key strings display a
+  visible note-source label instead of rendering as a blank completion row.
+
 ## [0.5.2] - 2026-05-17
 
 ### Fixed

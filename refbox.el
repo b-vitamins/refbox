@@ -3740,10 +3740,29 @@ EMPTY-MESSAGE, when non-nil, is displayed when CHOICES is empty."
 (defun refbox--create-note-choice-label (reference)
   "Return a reference-shaped completion label for a create-note choice."
   (let* ((key (refbox--reference-choice-key reference))
+         (candidate
+          (or (and (listp reference)
+                   (plist-member reference :key)
+                   reference)
+              (and (stringp reference)
+                   (ignore-errors
+                     (refbox--get-entry-candidate reference)))
+              (and key
+                   (list :key key
+                         :fields nil
+                         :resources nil))))
          (width (max 0 (- (frame-width) 2)))
-         (label (concat
-                 (refbox-reference-format-main reference width t)
-                 (refbox-reference-format-suffix reference))))
+         (main (and candidate
+                    (refbox-reference-format-main candidate width t)))
+         (label
+          (if (and main (not (string-empty-p (string-trim main))))
+              (concat main
+                      (refbox-reference-format-suffix candidate))
+            (or (and reference
+                     (ignore-errors
+                       (refbox-note-source-create-label reference)))
+                key
+                ""))))
     (if (refbox--blank-string-p key)
         label
       (refbox--prepend-hidden-candidate-key key label))))
