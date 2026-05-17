@@ -6,6 +6,8 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-05-18
+
 ### Fixed
 - Normalized BibTeX accent commands into composed Latin characters while
   indexing completion display fields, preventing combining marks from rendering
