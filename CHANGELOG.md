@@ -6,6 +6,13 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-05-17
+
+### Fixed
+- Made the buffer-backed library-save regression test independent of
+  environment-specific final-newline handling for fake PDF buffers, matching
+  Citar's `save-buffer` behavior instead of hard-coding text-mode output.
+
 ## [0.5.0] - 2026-05-17
 
 ### Changed

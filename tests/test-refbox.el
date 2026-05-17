@@ -3931,7 +3931,8 @@
   (let* ((root (make-temp-file "refbox-library-current-file-" t))
          (library (expand-file-name "library" root))
          (destination (expand-file-name "alpha.pdf" library))
-         buffer)
+         buffer
+         saved-buffer-string)
     (unwind-protect
         (let ((refbox-library-paths (list library)))
           (make-directory library t)
@@ -3966,10 +3967,11 @@
                                destination))
                 (should (equal prompt
                                "alpha.pdf exists and the current buffer is visiting it.  Save anyway? "))
-                (should-not (buffer-modified-p)))))
+                (should-not (buffer-modified-p))
+                (setq saved-buffer-string (buffer-string)))))
           (with-temp-buffer
             (insert-file-contents destination)
-            (should (equal (buffer-string) "old new\n"))))
+            (should (equal (buffer-string) saved-buffer-string))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (delete-directory root t))))
