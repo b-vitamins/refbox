@@ -159,7 +159,9 @@ Nil means an empty list.  A single string is treated as one path-like item."
                    (file-name-as-directory (expand-file-name root)))))
         (unless (file-directory-p root)
           (user-error "refbox bibliography root does not exist: %s" root))
-        (push root roots)))
+        (push (directory-file-name
+               (file-name-as-directory (file-truename root)))
+              roots)))
     (delete-dups (nreverse roots))))
 
 (defun refbox-rpc--bibliography-files ()
@@ -171,7 +173,10 @@ Nil means an empty list.  A single string is treated as one path-like item."
       (let ((file (expand-file-name file)))
         (when (file-directory-p file)
           (user-error "refbox bibliography file is a directory: %s" file))
-        (push file files)))
+        (push (if (file-exists-p file)
+                  (file-truename file)
+                file)
+              files)))
     (delete-dups (nreverse files))))
 
 (defun refbox-rpc--bibliography-extensions (&optional required)

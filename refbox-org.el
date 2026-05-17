@@ -126,8 +126,7 @@ Each function receives the citation datum."
 
 (defun refbox-org--candidate-key (candidate)
   "Return the citation key from CANDIDATE."
-  (or (plist-get candidate :key)
-      (user-error "refbox candidate has no key")))
+  (refbox--reference-key candidate))
 
 (defun refbox-org--select-keys (multiple)
   "Select one or more citation keys.
@@ -143,15 +142,17 @@ a single key."
                  nil
                  nil
                  source-paths
+                 t
                  t))
       (refbox-org--candidate-key
-	       (refbox-read-reference
-	        "Reference: "
-	        nil
-	        nil
-	        nil
-	        source-paths
-	        t)))))
+       (refbox-read-reference
+        "Reference: "
+        nil
+        nil
+        nil
+        source-paths
+        t
+        t)))))
 
 ;;;###autoload
 (defun refbox-org-select-key (&optional multiple)

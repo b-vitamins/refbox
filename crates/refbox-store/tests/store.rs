@@ -6,6 +6,20 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+fn test_metadata(path: &str, source_order: i64, origin: IndexedFileOrigin) -> IndexedFileMetadata {
+    IndexedFileMetadata {
+        path: path.to_string(),
+        origin,
+        source_order,
+        size_bytes: 0,
+        modified_ns: None,
+        content_hash: String::new(),
+        parse_status: FileParseStatus::Ok,
+        entry_count: 0,
+        diagnostic_count: 0,
+    }
+}
+
 #[test]
 fn migrations_are_versioned_from_first_schema() {
     let db_path = unique_db_path("refbox-migrations");
@@ -369,6 +383,39 @@ fn duplicate_keys_from_different_files_are_preserved() {
             .expect("duplicate groups should query")
             .is_empty()
     );
+}
+
+#[test]
+fn duplicate_key_lookup_uses_index_source_order() {
+    let mut store = RefboxStore::open_in_memory().expect("store should open");
+    let first_configured =
+        parse_bibliography_file("refs/a.bib", "@article{dup2020, title = {Path First}}\n");
+    let second_configured =
+        parse_bibliography_file("refs/b.bib", "@book{dup2020, title = {Configured First}}\n");
+
+    store
+        .insert_file_with_metadata(
+            &first_configured,
+            &test_metadata("refs/a.bib", 1, IndexedFileOrigin::Configured),
+        )
+        .expect("first file should insert");
+    store
+        .insert_file_with_metadata(
+            &second_configured,
+            &test_metadata("refs/b.bib", 0, IndexedFileOrigin::Configured),
+        )
+        .expect("second file should insert");
+
+    let entries = store
+        .entries_by_key("dup2020", None, Some(1))
+        .expect("limited duplicate entries should query");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].file_path, "refs/b.bib");
+
+    let duplicate_groups = store
+        .duplicate_groups(100)
+        .expect("duplicate groups should query");
+    assert_eq!(duplicate_groups[0].entries[0].file_path, "refs/b.bib");
 }
 
 #[test]
@@ -737,16 +784,7 @@ fn local_files_are_only_visible_when_requested() {
   title = {Shared Local Scope Signal}
 }"#,
     );
-    let local_metadata = IndexedFileMetadata {
-        path: local.path.clone(),
-        origin: IndexedFileOrigin::Local,
-        size_bytes: 0,
-        modified_ns: None,
-        content_hash: String::new(),
-        parse_status: FileParseStatus::Ok,
-        entry_count: local.entries.len(),
-        diagnostic_count: local.diagnostics.len(),
-    };
+    let local_metadata = test_metadata(&local.path, 0, IndexedFileOrigin::Local);
 
     store
         .insert_file(&configured)

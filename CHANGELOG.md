@@ -34,7 +34,7 @@ The format follows Keep a Changelog, and this project follows SemVer.
 - Used RefTeX's bibliography file list when available so LaTeX project bibliography discovery matches Citar-backed setups.
 - Normalized indexed field values with Citar-style string expansion, title brace cleanup, and raw-entry preservation so display, search, and resource lookup no longer expose ordinary BibTeX delimiters.
 - Added bounded Emacs diagnostic and duplicate-key list commands backed by daemon RPCs, with source jumps from the list views.
-- Routed exact multi-key hydration through one daemon request while preserving duplicate-key ambiguity errors.
+- Routed exact multi-key hydration through one daemon request while preserving Citar-style first-hit duplicate-key lookup.
 - Allocated star-width template remainders deterministically so multi-star completion displays consume the requested display width.
 - Bounded Markdown citation detection to containing bracket syntax state instead of scanning backward through unrelated bracketed text.
 - Used exact Markdown citation-key spans for at-point and Embark targets, including brace-delimited Pandoc keys.
@@ -66,6 +66,8 @@ The format follows Keep a Changelog, and this project follows SemVer.
 - Matched Citar's DWIM/default-action contract by erroring when no citation is at point and passing default-action references through unchanged.
 - Removed extra interactive selection echo messages from reference readers and selectors.
 - Matched Citar's citeproc formatter contract by returning citeproc's formatted bibliography string directly.
+- Matched Citar's template formatter by preserving text properties attached to field placeholders.
+- Matched Citar's template width parsing for empty, zero, zero-padded, and nonnumeric width markers.
 - Trimmed the default reference and citation action keymaps to Citar's visible bindings.
 - Pushed exact-key hydration limits into store queries instead of materializing every duplicate-key entry before truncating.
 - Matched Citar's reference action argument contract by passing programmatic nil references through instead of prompting.
@@ -92,17 +94,22 @@ The format follows Keep a Changelog, and this project follows SemVer.
 - Kept LaTeX citation command configuration on Citar's alist-shaped command-spec path instead of accepting a second ad hoc shape.
 - Matched Citar's multi-reference selection prompt by showing selected and indexed-total counts without materializing candidates in Emacs.
 - Matched Citar's resource opener return contract by returning the configured file/link opener result instead of the target path.
-- Matched Citar's public entry accessor behavior by returning nil for unknown keys while preserving duplicate-key ambiguity errors.
+- Matched Citar's public entry accessor behavior by returning nil for unknown keys and using first-hit duplicate-key lookup.
 - Matched Citar's Embark citation-edit behavior by ignoring injected targets for the citation edit action.
 - Matched Citar's multi-reference toggle behavior by restoring selection history when a chosen reference is deselected.
 - Matched Citar's resource selection display by offering raw file/link/note strings, Citar-style group transforms, target deduplication, and reference-shaped create-note rows.
 - Matched Citar's command-state resource prompting by using `this-command` for single-resource prompts and forced create-note offers.
+- Matched Citar's literal file and note extension handling, including case-sensitive resource filters and empty additional-file separators.
 - Matched Citar's Markdown citation affix insertion by preserving user-supplied spacing instead of trimming prefix and suffix text.
 - Matched Citar's Org style completion by preserving empty style selections and applying style/variant faces to completion candidates.
 - Matched Citar's buffer-backed add-file behavior when the destination is the current buffer's visited file.
+- Matched Citar's add-file directory choices by preserving configured and recursive library directory strings in the prompt.
 - Matched Citar's resource completion metadata by exposing file, URL, note-source, and mixed-resource categories.
 - Matched Citar's prompt-local Embark default actions for resource selection prompts.
 - Matched Citar's file resource aggregation by combining file-field resources with same-key library-path resources.
+- Matched Citar's file-field resolution against every explicit bibliography file directory while keeping root discovery out of Emacs.
+- Matched Citar's bibliography cache identity by truename-normalizing active local bibliography files and erroring on missing local bibliography declarations.
+- Matched Citar's duplicate-key lookup semantics by returning the first indexed duplicate while keeping duplicate groups queryable.
 - Matched Citar's public mode adapter return contract for citation keys and whole citations at point.
 - Matched Citar's Org reference-shifting point preservation and boundary error messages.
 - Matched Citar's Org citation deletion and kill-region behavior for current citation datums.

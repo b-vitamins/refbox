@@ -70,10 +70,9 @@ Captures the actual key in group 1.")
 
 (defun refbox-markdown--selected-keys ()
   "Read selected reference keys for Markdown."
-  (mapcar (lambda (candidate)
-            (or (plist-get candidate :key)
-                (user-error "refbox candidate has no key")))
-          (refbox-read-references "References: ")))
+  (mapcar #'refbox--reference-key
+          (refbox-read-references
+           "References: " nil nil nil nil nil t)))
 
 (defun refbox-markdown--read-affixes (&optional invert-prompt)
   "Read or return configured Markdown citation affixes."

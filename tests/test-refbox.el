@@ -543,22 +543,24 @@
              ((local-bib-files . refbox-test-local-bib-files)))))
          (refbox-templates '((preview . "%{title}"))))
     (unwind-protect
-        (cl-letf (((symbol-function 'refbox-test-local-bib-files)
-                   (lambda (&optional _buffer) (list local)))
-                  ((symbol-function 'refbox-entry-by-key)
-                   (lambda (_key)
-                     (error "context resolver should avoid fallback lookup")))
-                  ((symbol-function 'refbox-search-references)
-                   (lambda (query _limit source-paths &rest args)
-                     (should (equal query ""))
-                     (should (equal source-paths (list local)))
-                     (should (equal (nth 5 args) '("dup2020")))
-                     (should (eq (nth 6 args) t))
-                     (list global-candidate local-candidate))))
-          (with-temp-buffer
-            (refbox-test-mode)
-            (should (equal (refbox-format-reference '("dup2020"))
-                           "Local Title"))))
+        (progn
+          (with-temp-file local)
+          (cl-letf (((symbol-function 'refbox-test-local-bib-files)
+                     (lambda (&optional _buffer) (list local)))
+                    ((symbol-function 'refbox-entry-by-key)
+                     (lambda (_key)
+                       (error "context resolver should avoid fallback lookup")))
+                    ((symbol-function 'refbox-search-references)
+                     (lambda (query _limit source-paths &rest args)
+                       (should (equal query ""))
+                       (should (equal source-paths (list local)))
+                       (should (equal (nth 5 args) '("dup2020")))
+                       (should (eq (nth 6 args) t))
+                       (list global-candidate local-candidate))))
+            (with-temp-buffer
+              (refbox-test-mode)
+              (should (equal (refbox-format-reference '("dup2020"))
+                             "Local Title")))))
       (delete-directory root t))))
 
 (ert-deftest refbox-test-read_reference_defaults_to_current_local_bibliography ()
@@ -570,20 +572,22 @@
           '(((refbox-test-mode) .
              ((local-bib-files . refbox-test-local-bib-files))))))
     (unwind-protect
-        (cl-letf (((symbol-function 'refbox-test-local-bib-files)
-                   (lambda (&optional _buffer) (list local)))
-                  ((symbol-function 'completing-read)
-                   (lambda (&rest _args) "local2020"))
-                  ((symbol-function 'refbox-search-references)
-                   (lambda (query _limit source-paths &rest args)
-                     (should (equal query ""))
-                     (should (equal source-paths (list local)))
-                     (should (equal (nth 5 args) '("local2020")))
-                     (should (eq (nth 6 args) t))
-                     (list candidate))))
-          (with-temp-buffer
-            (refbox-test-mode)
-            (should (equal (refbox-read-reference) candidate))))
+        (progn
+          (with-temp-file local)
+          (cl-letf (((symbol-function 'refbox-test-local-bib-files)
+                     (lambda (&optional _buffer) (list local)))
+                    ((symbol-function 'completing-read)
+                     (lambda (&rest _args) "local2020"))
+                    ((symbol-function 'refbox-search-references)
+                     (lambda (query _limit source-paths &rest args)
+                       (should (equal query ""))
+                       (should (equal source-paths (list local)))
+                       (should (equal (nth 5 args) '("local2020")))
+                       (should (eq (nth 6 args) t))
+                       (list candidate))))
+            (with-temp-buffer
+              (refbox-test-mode)
+              (should (equal (refbox-read-reference) candidate)))))
       (delete-directory root t))))
 
 (ert-deftest refbox-test-source_lookup_resolves_current_local_bibliography ()
@@ -597,24 +601,69 @@
           '(((refbox-test-mode) .
              ((local-bib-files . refbox-test-local-bib-files))))))
     (unwind-protect
+        (progn
+          (with-temp-file local)
+          (cl-letf (((symbol-function 'refbox-test-local-bib-files)
+                     (lambda (&optional _buffer) (list local)))
+                    ((symbol-function 'refbox-search-references)
+                     (lambda (query _limit source-paths &rest args)
+                       (should (equal query ""))
+                       (should (equal source-paths (list local)))
+                       (should (equal (nth 5 args) '("local2020")))
+                       (should (eq (nth 6 args) t))
+                       (list candidate)))
+                    ((symbol-function 'refbox-rpc-request)
+                     (lambda (method params)
+                       (should (equal method refbox-rpc-method-source-location))
+                       (should (equal (plist-get params :id) 5))
+                       (should (equal (plist-get params :source_path) local))
+                       location)))
+            (with-temp-buffer
+              (refbox-test-mode)
+              (should (equal (refbox-source-location "local2020") location)))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-local_bibliography_paths_use_truenames ()
+  "Local bibliography source paths should match Citar's truename identity."
+  (let* ((root (make-temp-file "refbox-local-truename-" t))
+         (real (expand-file-name "real.bib" root))
+         (link (expand-file-name "link.bib" root))
+         (refbox-major-mode-functions
+          '(((refbox-test-mode) .
+             ((local-bib-files . refbox-test-local-bib-files))))))
+    (unwind-protect
+        (progn
+          (with-temp-file real)
+          (condition-case _
+              (make-symbolic-link real link)
+            (file-error (ert-skip "symbolic links are unavailable")))
+          (cl-letf (((symbol-function 'refbox-test-local-bib-files)
+                     (lambda (&optional _buffer) (list link real))))
+            (with-temp-buffer
+              (refbox-test-mode)
+              (should (equal (refbox--current-local-bibliography-source-paths)
+                             (list (file-truename real)))))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-local_bibliography_paths_error_when_missing ()
+  "A declared missing local bibliography should be a direct user error."
+  (let* ((root (make-temp-file "refbox-local-missing-" t))
+         (missing (expand-file-name "missing.bib" root))
+         (refbox-major-mode-functions
+          '(((refbox-test-mode) .
+             ((local-bib-files . refbox-test-local-bib-files))))))
+    (unwind-protect
         (cl-letf (((symbol-function 'refbox-test-local-bib-files)
-                   (lambda (&optional _buffer) (list local)))
-                  ((symbol-function 'refbox-search-references)
-                   (lambda (query _limit source-paths &rest args)
-                     (should (equal query ""))
-                     (should (equal source-paths (list local)))
-                     (should (equal (nth 5 args) '("local2020")))
-                     (should (eq (nth 6 args) t))
-                     (list candidate)))
-                  ((symbol-function 'refbox-rpc-request)
-                   (lambda (method params)
-                     (should (equal method refbox-rpc-method-source-location))
-                     (should (equal (plist-get params :id) 5))
-                     (should (equal (plist-get params :source_path) local))
-                     location)))
+                   (lambda (&optional _buffer) (list missing))))
           (with-temp-buffer
             (refbox-test-mode)
-            (should (equal (refbox-source-location "local2020") location))))
+            (should
+             (string-match-p
+              "Cannot find file"
+              (error-message-string
+               (should-error
+                (refbox--current-local-bibliography-source-paths)
+                :type 'user-error))))))
       (delete-directory root t))))
 
 (ert-deftest refbox-test-diagnostics_requests_bounded_rpc ()
@@ -825,6 +874,33 @@
                     (refbox-reference-entry-alist candidate)
                     '(refbox--shorten-names 1))
                    "Smith et al."))))
+
+(ert-deftest refbox-test-template_formatting_preserves_placeholder_properties ()
+  "Template fields should inherit Citar-style placeholder text properties."
+  (clrhash refbox-template--parse-cache)
+  (let ((styled (copy-sequence "${title:8} plain"))
+        (plain "${title:8} plain"))
+    (add-text-properties 0 10 '(face bold refbox-test t) styled)
+    (let ((styled-output
+           (refbox-template-format styled refbox-test-reference-candidate))
+          (plain-output
+           (refbox-template-format plain refbox-test-reference-candidate)))
+      (should (equal (substring-no-properties styled-output)
+                     "Alpha Re plain"))
+      (should (equal (substring-no-properties plain-output)
+                     "Alpha Re plain"))
+      (should (eq (get-text-property 0 'face styled-output) 'bold))
+      (should (eq (get-text-property 0 'refbox-test styled-output) t))
+      (should-not (get-text-property 9 'face styled-output))
+      (should-not (get-text-property 0 'face plain-output)))))
+
+(ert-deftest refbox-test-template_formatting_matches_citar_zero_width_parsing ()
+  "Template width parsing should keep Citar's string-to-number behavior."
+  (dolist (template '("${title:}" "${title:0}" "${title:00}" "${title:abc}"))
+    (should (equal (refbox-template-format
+                    template
+                    refbox-test-reference-candidate)
+                   "Alpha Reference Title"))))
 
 (ert-deftest refbox-test-template-formatting_supports_template_alist ()
   "Template alists should configure the standard reference display slots."
@@ -1234,6 +1310,42 @@
         (should (equal requested-key "smith2020"))
         (should (equal (plist-get selected :key) "smith2020"))))))
 
+(ert-deftest refbox-test-read-reference_rejects_freeform_by_default ()
+  "Candidate readers should stay strict unless key selection asks otherwise."
+  (cl-letf (((symbol-function 'refbox--sync-current-bibliography-buffer-if-needed)
+             #'ignore)
+            ((symbol-function 'completing-read)
+             (lambda (_prompt collection _predicate _require &rest _args)
+               (funcall collection "missing2026" nil t)
+               "missing2026"))
+            ((symbol-function 'refbox-search-references)
+             (lambda (&rest _args) nil))
+            ((symbol-function 'refbox-entry-by-key)
+             (lambda (_key)
+               (user-error "Key not found"))))
+    (should-error (refbox-read-reference) :type 'user-error)))
+
+(ert-deftest refbox-test-select_refs_accepts_freeform_keys_like_citar ()
+  "Key readers should accept raw typed citation keys like Citar."
+  (let (requested-key require-match)
+    (cl-letf (((symbol-function 'refbox--sync-current-bibliography-buffer-if-needed)
+               #'ignore)
+              ((symbol-function 'completing-read)
+               (lambda (_prompt collection _predicate require &rest _args)
+                 (setq require-match require)
+                 (funcall collection "missing2026" nil t)
+                 "missing2026"))
+              ((symbol-function 'refbox-search-references)
+               (lambda (&rest _args) nil))
+              ((symbol-function 'refbox-entry-by-key)
+               (lambda (key)
+                 (setq requested-key key)
+                 (user-error "Key not found"))))
+      (should (equal (refbox-select-refs :multiple nil)
+                     '("missing2026")))
+      (should-not require-match)
+      (should (equal requested-key "missing2026")))))
+
 (ert-deftest refbox-test-completion-caches_cited_indicator_scan ()
   "Cited indicators should scan the current buffer once per completion state."
   (let* ((cited (copy-tree refbox-test-reference-candidate))
@@ -1562,10 +1674,10 @@
   (let ((alpha (list :key "alpha" :source_path "/tmp/a.bib"))
         (beta (list :key "beta" :source_path "/tmp/b.bib")))
     (cl-letf (((symbol-function 'refbox-entries-by-keys)
-               (lambda (keys limit)
-                 (should (equal keys '("beta" "alpha")))
-                 (should (equal limit 2))
-                 (list alpha beta)))
+	       (lambda (keys limit)
+	         (should (equal keys '("beta" "alpha")))
+	         (should (equal limit 1))
+	         (list alpha beta)))
               ((symbol-function 'refbox-entry-by-key)
                (lambda (_key)
                  (error "unique batched keys should not use scalar lookup"))))
@@ -1574,20 +1686,19 @@
                               '("beta" "alpha" "beta")))
                      '("beta" "alpha" "beta"))))))
 
-(ert-deftest refbox-test-resolved_references_preserve_ambiguous_key_errors ()
-  "Batched exact lookup should still defer ambiguous keys to scalar errors."
-  (let ((fallback-key nil))
+(ert-deftest refbox-test-resolved_references_use_first_duplicate_like_citar ()
+  "Batched exact lookup should keep the first duplicate candidate."
+  (let ((first '(:key "dup2020" :source_path "/tmp/a.bib"))
+        (second '(:key "dup2020" :source_path "/tmp/b.bib")))
     (cl-letf (((symbol-function 'refbox-entries-by-keys)
-               (lambda (_keys _limit)
-                 '((:key "dup2020" :source_path "/tmp/a.bib")
-                   (:key "dup2020" :source_path "/tmp/b.bib"))))
-              ((symbol-function 'refbox-entry-by-key)
-               (lambda (key)
-                 (setq fallback-key key)
-                 (list :key key :fallback t))))
+	       (lambda (_keys limit)
+	         (should (equal limit 1))
+	         (list first second)))
+	      ((symbol-function 'refbox-entry-by-key)
+	       (lambda (_key)
+	         (error "duplicate first-hit resolution should stay batched"))))
       (should (equal (refbox--resolved-reference-list '("dup2020"))
-                     '((:key "dup2020" :fallback t))))
-      (should (equal fallback-key "dup2020")))))
+		     (list first))))))
 
 (ert-deftest refbox-test-get_entries_requires_explicit_limit ()
   "Entry hash materialization should stay bounded."
@@ -1614,7 +1725,7 @@
                  (push (list keys limit-per-key) calls)
                  (list refbox-test-reference-candidate))))
       (let ((entry (refbox-get-entry "smith2020")))
-        (should (equal calls '((("smith2020") 2))))
+        (should (equal calls '((("smith2020") 1))))
         (should (equal (cdr (assoc-string "title" entry t))
                        "{Alpha Reference Title}"))
         (should (equal (refbox-get-value "author" entry) "{Smith, Jane}"))
@@ -1632,10 +1743,10 @@
 (ert-deftest refbox-test-get_entry_missing_key_matches_citar ()
   "Missing public entry lookups should return nil like Citar."
   (cl-letf (((symbol-function 'refbox-entries-by-keys)
-             (lambda (keys limit-per-key)
-               (should (equal keys '("missing2020")))
-               (should (equal limit-per-key 2))
-               nil))
+	       (lambda (keys limit-per-key)
+	         (should (equal keys '("missing2020")))
+	         (should (equal limit-per-key 1))
+	         nil))
             ((symbol-function 'refbox-entry-by-key)
              (lambda (&rest _args)
                (error "missing get-entry should not use scalar lookup"))))
@@ -1643,20 +1754,25 @@
     (should-not (refbox-get-value "title" "missing2020"))
     (should-not (refbox-get-field-with-value '("title") "missing2020"))))
 
-(ert-deftest refbox-test-get_entry_preserves_ambiguous_key_errors ()
-  "Public entry lookup should not silently choose between duplicate keys."
-  (let (fallback-key)
+(ert-deftest refbox-test-get_entry_uses_first_duplicate_like_citar ()
+  "Public entry lookup should return the first duplicate entry like Citar."
+  (let ((first '(:key "dup2020"
+                 :fields ((:raw_name "title"
+                           :lookup_name "title"
+                           :value "First"))))
+        (second '(:key "dup2020"
+                  :fields ((:raw_name "title"
+                            :lookup_name "title"
+                            :value "Second")))))
     (cl-letf (((symbol-function 'refbox-entries-by-keys)
-               (lambda (_keys _limit-per-key)
-                 '((:key "dup2020" :source_path "/tmp/a.bib")
-                   (:key "dup2020" :source_path "/tmp/b.bib"))))
-              ((symbol-function 'refbox-entry-by-key)
-               (lambda (key)
-                 (setq fallback-key key)
-                 (user-error "entry key matches multiple indexed entries: %s"
-                             key))))
-      (should-error (refbox-get-entry "dup2020") :type 'user-error)
-      (should (equal fallback-key "dup2020")))))
+	       (lambda (_keys limit-per-key)
+	         (should (equal limit-per-key 1))
+	         (list first second)))
+	      ((symbol-function 'refbox-entry-by-key)
+	       (lambda (_key)
+	         (error "get-entry should not use scalar duplicate fallback"))))
+      (should (equal (cdr (assoc-string "title" (refbox-get-entry "dup2020") t))
+                     "First")))))
 
 (ert-deftest refbox-test-read-reference_accepts_candidate_predicates ()
   "Reference selection should support filtering by candidate metadata."
@@ -1778,10 +1894,85 @@
           (let ((refbox-library-paths (list library))
                 (refbox-library-file-extensions '("pdf"))
                 (refbox-file-sources (list (car refbox--default-file-sources))))
+	            (should (equal (refbox-reference-files
+	                            candidate
+	                            (refbox--candidate-resources candidate))
+	                           (list library-paper supplement)))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-reference-files_resolve_field_files_from_all_bibliography_dirs ()
+  "File-field lookup should use every explicit bibliography directory like Citar."
+  (let* ((root (make-temp-file "refbox-field-all-bib-dirs-" t))
+         (refs-a (expand-file-name "refs-a" root))
+         (refs-b (expand-file-name "refs-b" root))
+         (source-a (expand-file-name "a.bib" refs-a))
+         (source-b (expand-file-name "b.bib" refs-b))
+         (paper (expand-file-name "paper.pdf" refs-b))
+         (candidate
+          (list :key "mixed"
+                :source_path source-a
+                :resources
+                (list (list :key "mixed"
+                            :source_path source-a
+                            :owner_key "mixed"
+                            :owner_source_path source-a
+                            :kind "file"
+                            :raw_name "file"
+                            :lookup_name "file"
+                            :value "paper.pdf")))))
+    (unwind-protect
+        (progn
+          (make-directory refs-a t)
+          (make-directory refs-b t)
+          (with-temp-file source-a)
+          (with-temp-file source-b)
+          (with-temp-file paper)
+          (let ((refbox-bibliography (list source-a source-b))
+                (refbox-file-sources (list (car refbox--default-file-sources))))
             (should (equal (refbox-reference-files
                             candidate
                             (refbox--candidate-resources candidate))
-                           (list library-paper supplement)))))
+                           (list paper)))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-resource_extensions_are_literal_like_citar ()
+  "Resource extension filters should not normalize case or leading dots."
+  (let* ((root (make-temp-file "refbox-literal-extension-" t))
+         (refs (expand-file-name "refs" root))
+         (source (expand-file-name "main.bib" refs))
+         (paper (expand-file-name "paper.PDF" refs))
+         (candidate
+          (list :key "mixed"
+                :source_path source
+                :resources
+                (list (list :key "mixed"
+                            :source_path source
+                            :owner_key "mixed"
+                            :owner_source_path source
+                            :kind "file"
+                            :raw_name "file"
+                            :lookup_name "file"
+                            :value "paper.PDF")))))
+    (unwind-protect
+        (progn
+          (make-directory refs t)
+          (with-temp-file paper)
+          (let ((refbox-library-file-extensions '("pdf"))
+                (refbox-file-sources (list (car refbox--default-file-sources))))
+            (should-not (refbox-reference-files
+                         candidate
+                         (refbox--candidate-resources candidate))))
+          (let ((refbox-library-file-extensions '("PDF"))
+                (refbox-file-sources (list (car refbox--default-file-sources))))
+            (should (equal (refbox-reference-files
+                            candidate
+                            (refbox--candidate-resources candidate))
+                           (list paper))))
+          (let ((refbox-library-file-extensions '(".PDF"))
+                (refbox-file-sources (list (car refbox--default-file-sources))))
+            (should-not (refbox-reference-files
+                         candidate
+                         (refbox--candidate-resources candidate)))))
       (delete-directory root t))))
 
 (ert-deftest refbox-test-reference-files_combine_fields_and_library_like_citar ()
@@ -1987,10 +2178,10 @@
                     :hasitems ,#'ignore
                     :open ,#'ignore))))
             (cl-letf (((symbol-function 'refbox-entries-by-keys)
-                       (lambda (keys limit)
-                         (should (equal keys '("alpha")))
-                         (should (equal limit 2))
-                         (list candidate)))
+	               (lambda (keys limit)
+	                 (should (equal keys '("alpha")))
+	                 (should (equal limit 1))
+	                 (list candidate)))
                       ((symbol-function 'refbox-entry-by-key)
                        (lambda (_key)
                          (error "resource lookup should use batched hydration"))))
@@ -2022,10 +2213,10 @@
                             (equal key "smith2020")))
              :open ,#'ignore))))
     (cl-letf (((symbol-function 'refbox-entries-by-keys)
-               (lambda (keys limit)
-                 (should (equal keys '("smith2020")))
-                 (should (equal limit 2))
-                 (list candidate)))
+	       (lambda (keys limit)
+	         (should (equal keys '("smith2020")))
+	         (should (equal limit 1))
+	         (list candidate)))
               ((symbol-function 'refbox-entry-by-key)
                (lambda (_key)
                  (error "resource predicates should use batched hydration"))))
@@ -2062,10 +2253,10 @@
                             (equal key "parent2020")))
              :open ,#'ignore))))
     (cl-letf (((symbol-function 'refbox-entries-by-keys)
-               (lambda (keys limit)
-                 (should (equal keys '("smith2020")))
-                 (should (equal limit 2))
-                 (list candidate)))
+	       (lambda (keys limit)
+	         (should (equal keys '("smith2020")))
+	         (should (equal limit 1))
+	         (list candidate)))
               ((symbol-function 'refbox-entry-by-key)
                (lambda (_key)
                  (error "note predicate should use batched hydration"))))
@@ -2122,6 +2313,16 @@
           (let ((refbox-notes-paths root)
                 (refbox-file-note-extensions "org"))
             (should (equal (refbox-note-filename "smith2020") existing))))
+	      (delete-directory root t))))
+
+(ert-deftest refbox-test-note_filename_uses_literal_extension_like_citar ()
+  "Note filename generation should append the configured extension literally."
+  (let* ((root (make-temp-file "refbox-note-literal-extension-" t))
+         (expected (expand-file-name "smith2020..org" root)))
+    (unwind-protect
+        (let ((refbox-notes-paths (list root))
+              (refbox-file-note-extensions '(".org")))
+          (should (equal (refbox-note-filename "smith2020") expected)))
       (delete-directory root t))))
 
 (ert-deftest refbox-test-file_note_keys_use_regexp_additional_separator ()
@@ -2546,7 +2747,7 @@
       (should (eq (metadata-category (list file-choice)) 'file))
       (should (eq (metadata-category (list link-choice)) 'url))
       (should (eq (metadata-category (list note-choice)) 'file))
-      (should (eq (metadata-category (list create-choice)) 'refbox-resource))
+      (should (eq (metadata-category (list create-choice)) 'refbox-reference))
       (let* ((labels (mapcar #'label
                              (list file-choice link-choice note-choice
                                    create-choice)))
@@ -2570,7 +2771,7 @@
         (should (eq (car file-target) 'file))
         (should (eq (car link-target) 'url))
         (should (eq (car note-target) 'file))
-        (should (eq (car create-target) 'refbox-resource))
+        (should (eq (car create-target) 'refbox-reference))
         (should (eq (plist-get
                      (get-text-property
                       0 'refbox-resource-choice (cdr create-target))
@@ -3648,6 +3849,48 @@
           (should (file-exists-p (expand-file-name "alpha.pdf" library-b))))
       (delete-directory root t))))
 
+(ert-deftest refbox-test-add-file-to-library_offers_recursive_directories ()
+  "Library add helpers should match Citar's recursive directory choices."
+  (let* ((root (make-temp-file "refbox-library-recursive-choice-" t))
+         (library (expand-file-name "library" root))
+         (subdir (expand-file-name "papers" library)))
+    (unwind-protect
+        (let ((refbox-library-paths (list library))
+              (refbox-library-paths-recursive t))
+          (make-directory subdir t)
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (prompt collection &rest _args)
+                       (should (equal prompt "Directory: "))
+                       (should (member subdir collection))
+                       subdir)))
+            (with-temp-buffer
+              (insert "buffer-pdf")
+              (should (equal (refbox-add-buffer-to-library "alpha" "pdf")
+                             (expand-file-name "alpha.pdf" subdir)))))
+          (should (file-exists-p (expand-file-name "alpha.pdf" subdir))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-add-file-to-library_preserves_relative_directory_choices ()
+  "Library add helpers should offer relative directories like Citar."
+  (let* ((root (make-temp-file "refbox-library-relative-choice-" t))
+         (default-directory (file-name-as-directory root))
+         (library "library")
+         (subdir "library/papers"))
+    (unwind-protect
+        (let ((refbox-library-paths (list library))
+              (refbox-library-paths-recursive t))
+          (make-directory subdir t)
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (prompt collection &rest _args)
+                       (should (equal prompt "Directory: "))
+                       (should (equal collection (list library subdir)))
+                       subdir)))
+            (with-temp-buffer
+              (insert "buffer-pdf")
+              (should (equal (refbox-add-buffer-to-library "alpha" "pdf")
+                             (expand-file-name "alpha.pdf" subdir))))))
+      (delete-directory root t))))
+
 (ert-deftest refbox-test-add-buffer-to-library_confirms_before_overwrite ()
   "Buffer-backed library saves should confirm before replacing files."
   (let* ((root (make-temp-file "refbox-library-overwrite-" t))
@@ -4142,10 +4385,11 @@
 
 (ert-deftest refbox-test-select-refs_returns_keys_and_filters_by_key ()
   "Key-oriented selection should expose key strings for extension code."
-  (let (filter-seen)
-    (cl-letf (((symbol-function 'refbox-select-references)
+  (let (filter-seen reader-args)
+    (cl-letf (((symbol-function 'refbox-read-references)
                (lambda (&rest args)
-                 (let ((filter (plist-get args :filter)))
+                 (setq reader-args args)
+                 (let ((filter (nth 3 args)))
                    (when filter
                      (setq filter-seen
                            (funcall filter refbox-test-reference-candidate))))
@@ -4154,7 +4398,15 @@
                       :filter (lambda (key)
                                 (equal key "smith2020")))
                      '("smith2020")))
-      (should filter-seen))))
+      (should filter-seen)
+      (should (equal (list (nth 0 reader-args)
+                           (nth 1 reader-args)
+                           (nth 2 reader-args)
+                           (nth 4 reader-args)
+                           (nth 5 reader-args)
+                           (nth 6 reader-args))
+                     '("References: " nil nil nil nil t)))
+      (should (functionp (nth 3 reader-args))))))
 
 (ert-deftest refbox-test-selection_commands_are_quiet_like_citar ()
   "Interactive selection helpers should not emit extra echo messages."

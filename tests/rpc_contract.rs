@@ -41,7 +41,7 @@ fn stdio_rpc_contract_covers_success_and_error_shapes() {
     assert!(sync["diagnostic_count"].as_u64().expect("diagnostics") >= 1);
 
     let status = rpc.result(2, METHOD_STATUS, json!({}));
-    assert_eq!(status["schema_version"], 9);
+    assert_eq!(status["schema_version"], 10);
     assert_eq!(status["counts"]["file_count"], 7);
     assert!(status["counts"]["entry_count"].as_u64().expect("entries") >= 7);
 
@@ -187,9 +187,10 @@ fn stdio_rpc_contract_covers_success_and_error_shapes() {
             .contains("@article{alpha2020")
     );
 
-    assert_error_kind(
-        rpc.request(11, METHOD_ENTRY_BY_KEY, json!({ "key": "dup2020" })),
-        "ambiguous_key",
+    let duplicate_lookup = rpc.result(11, METHOD_ENTRY_BY_KEY, json!({ "key": "dup2020" }));
+    assert_eq!(
+        duplicate_lookup["source_path"],
+        project.path_string("duplicates-a.bib")
     );
     assert_error_kind(
         rpc.request(12, METHOD_RAW_ENTRY, json!({ "key": "missing" })),

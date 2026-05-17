@@ -11,7 +11,7 @@ use refbox_core::{
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use thiserror::Error;
 
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 const ENTRY_FTS_COLUMNS: &[&str] = &[
     "entry_key",
     "title",
@@ -307,9 +307,9 @@ impl RefboxStore {
 
     pub fn indexed_file_metadata(&self) -> Result<Vec<IndexedFileMetadata>> {
         let mut statement = self.connection.prepare(
-            "SELECT path, origin, size_bytes, modified_ns, content_hash, parse_status, entry_count, diagnostic_count
+            "SELECT path, origin, source_order, size_bytes, modified_ns, content_hash, parse_status, entry_count, diagnostic_count
              FROM files
-             ORDER BY path",
+             ORDER BY source_order, path",
         )?;
         let files = statement
             .query_map([], indexed_file_metadata_from_row)?
@@ -356,7 +356,7 @@ impl RefboxStore {
              JOIN files f ON f.id = e.file_id
              WHERE e.entry_key = ?1
                AND (?2 IS NULL OR f.path = ?2)
-             ORDER BY f.path, e.id
+             ORDER BY f.source_order, f.path, e.id
              LIMIT COALESCE(?3, -1)",
         )?;
         let entries = statement
@@ -391,7 +391,7 @@ impl RefboxStore {
              FROM entries e
              JOIN files f ON f.id = e.file_id
              WHERE f.origin = 'configured'
-             ORDER BY e.entry_key, f.path, e.id
+             ORDER BY e.entry_key, f.source_order, f.path, e.id
              LIMIT ?1 OFFSET ?2",
         )?;
         let entries = statement
@@ -579,7 +579,7 @@ impl RefboxStore {
                      FROM hits
                      JOIN entries e ON e.id = hits.rowid
                      JOIN files f ON f.id = e.file_id
-                     ORDER BY hits.score, e.entry_key, f.path, e.id
+                     ORDER BY hits.score, e.entry_key, f.source_order, f.path, e.id
                      LIMIT ?3",
                 )?;
                 let results = statement
@@ -718,7 +718,7 @@ impl RefboxStore {
                                     ON local_parent_file.id = local_parent.file_id
                                   WHERE local_parent.entry_key = parent.entry_key
                                     AND local_parent_file.path = f.path
-                                  ORDER BY local_parent_file.path, local_parent.id
+                                  ORDER BY local_parent_file.source_order, local_parent_file.path, local_parent.id
                                   LIMIT 1
                               ),
                               (
@@ -727,7 +727,7 @@ impl RefboxStore {
                                   JOIN files global_parent_file
                                     ON global_parent_file.id = global_parent.file_id
                                   WHERE global_parent.entry_key = parent.entry_key
-                                  ORDER BY global_parent_file.path, global_parent.id
+                                  ORDER BY global_parent_file.source_order, global_parent_file.path, global_parent.id
                                   LIMIT 1
                               )
                           ))",
@@ -741,12 +741,12 @@ impl RefboxStore {
         }
         if fts_query.is_some() {
             if options.ranked {
-                sql.push_str(" ORDER BY entry_fts.rank, e.entry_key, f.path, e.id");
+                sql.push_str(" ORDER BY entry_fts.rank, e.entry_key, f.source_order, f.path, e.id");
             } else {
                 sql.push_str(" ORDER BY entry_fts.rowid");
             }
         } else {
-            sql.push_str(" ORDER BY e.entry_key, f.path, e.id");
+            sql.push_str(" ORDER BY e.entry_key, f.source_order, f.path, e.id");
         }
         sql.push_str(" LIMIT ?");
         sql.push_str(&next_param.to_string());
@@ -1034,7 +1034,7 @@ impl RefboxStore {
                              ON local_parent_file.id = local_parent.file_id
                            WHERE local_parent.entry_key = parent.entry_key
                              AND local_parent_file.path = child_file.path
-                           ORDER BY local_parent_file.path, local_parent.id
+                           ORDER BY local_parent_file.source_order, local_parent_file.path, local_parent.id
                            LIMIT 1
                        ),
                        (
@@ -1043,7 +1043,7 @@ impl RefboxStore {
                            JOIN files global_parent_file
                              ON global_parent_file.id = global_parent.file_id
                            WHERE global_parent.entry_key = parent.entry_key
-                           ORDER BY global_parent_file.path, global_parent.id
+                           ORDER BY global_parent_file.source_order, global_parent_file.path, global_parent.id
                            LIMIT 1
                        )
                    )
@@ -1270,7 +1270,7 @@ impl RefboxStore {
              JOIN entries e ON e.id = dge.entry_id
              JOIN files f ON f.id = e.file_id
              WHERE dge.group_id = ?1
-             ORDER BY f.path, e.id",
+             ORDER BY f.source_order, f.path, e.id",
         )?;
         let entries = statement
             .query_map(params![group_id], |row| {
@@ -1331,6 +1331,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (7, MIGRATION_007),
     (8, MIGRATION_008),
     (9, MIGRATION_009),
+    (10, MIGRATION_010),
 ];
 
 const MIGRATION_001: &str = r#"
@@ -1625,6 +1626,11 @@ ALTER TABLE files ADD COLUMN origin TEXT NOT NULL DEFAULT 'configured';
 CREATE INDEX IF NOT EXISTS files_origin_idx ON files(origin);
 "#;
 
+const MIGRATION_010: &str = r#"
+ALTER TABLE files ADD COLUMN source_order INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS files_origin_order_idx ON files(origin, source_order, path);
+"#;
+
 fn insert_file_rows(
     connection: &Connection,
     file: &BibliographyFile,
@@ -1636,11 +1642,12 @@ fn insert_file_rows(
     execute_cached(
         connection,
         "INSERT INTO files(
-            path, origin, size_bytes, modified_ns, content_hash, parse_status, entry_count, diagnostic_count
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            path, origin, source_order, size_bytes, modified_ns, content_hash, parse_status, entry_count, diagnostic_count
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             file.path,
             origin_name(metadata.origin),
+            metadata.source_order,
             i64_from_u64(metadata.size_bytes)?,
             metadata.modified_ns,
             metadata.content_hash,
@@ -1890,8 +1897,13 @@ fn refresh_duplicate_groups(connection: &Connection) -> Result<()> {
         )?;
         let group_id = connection.last_insert_rowid();
         let entry_ids = {
-            let mut statement = connection
-                .prepare("SELECT id FROM entries WHERE entry_key = ?1 ORDER BY file_id, id")?;
+            let mut statement = connection.prepare(
+                "SELECT e.id
+                 FROM entries e
+                 JOIN files f ON f.id = e.file_id
+                 WHERE e.entry_key = ?1
+                 ORDER BY f.source_order, f.path, e.id",
+            )?;
             statement
                 .query_map(params![key], |row| row.get::<_, i64>(0))?
                 .collect::<std::result::Result<Vec<_>, _>>()?
@@ -1936,8 +1948,13 @@ fn refresh_duplicate_groups_for_keys(connection: &Connection, keys: &[String]) -
         }
 
         let entry_ids = {
-            let mut statement = connection
-                .prepare("SELECT id FROM entries WHERE entry_key = ?1 ORDER BY file_id, id")?;
+            let mut statement = connection.prepare(
+                "SELECT e.id
+                 FROM entries e
+                 JOIN files f ON f.id = e.file_id
+                 WHERE e.entry_key = ?1
+                 ORDER BY f.source_order, f.path, e.id",
+            )?;
             statement
                 .query_map(params![key], |row| row.get::<_, i64>(0))?
                 .collect::<std::result::Result<Vec<_>, _>>()?
@@ -2092,12 +2109,13 @@ fn indexed_file_metadata_from_row(row: &Row<'_>) -> rusqlite::Result<IndexedFile
     Ok(IndexedFileMetadata {
         path: row.get(0)?,
         origin: origin_from_name(&row.get::<_, String>(1)?),
-        size_bytes: row.get::<_, Option<i64>>(2)?.unwrap_or_default() as u64,
-        modified_ns: row.get(3)?,
-        content_hash: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
-        parse_status: parse_status_from_name(&row.get::<_, String>(5)?),
-        entry_count: usize_from_i64(row.get(6)?),
-        diagnostic_count: usize_from_i64(row.get(7)?),
+        source_order: row.get(2)?,
+        size_bytes: row.get::<_, Option<i64>>(3)?.unwrap_or_default() as u64,
+        modified_ns: row.get(4)?,
+        content_hash: row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+        parse_status: parse_status_from_name(&row.get::<_, String>(6)?),
+        entry_count: usize_from_i64(row.get(7)?),
+        diagnostic_count: usize_from_i64(row.get(8)?),
     })
 }
 
@@ -2323,6 +2341,7 @@ fn metadata_from_file(file: &BibliographyFile) -> IndexedFileMetadata {
     IndexedFileMetadata {
         path: file.path.clone(),
         origin: IndexedFileOrigin::Configured,
+        source_order: 0,
         size_bytes: 0,
         modified_ns: None,
         content_hash: String::new(),

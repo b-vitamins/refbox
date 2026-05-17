@@ -596,13 +596,13 @@ impl Daemon {
 
         let mut entries = self
             .store
-            .entries_by_key(key, source_path, Some(2))
+            .entries_by_key(key, source_path, Some(1))
             .map_err(store_error)?;
 
         match entries.len() {
             0 => Err(unknown_key(key.to_string())),
             1 => Ok(entries.remove(0)),
-            _ => Err(ambiguous_key(key.to_string())),
+            _ => unreachable!("exact key lookup is limited to one entry"),
         }
     }
 
@@ -755,9 +755,7 @@ fn library_files_by_keys(request: LibraryFilesByKeysRequest) -> Vec<String> {
 
     let extensions = normalize_extensions(request.extensions);
     let recursive = request.recursive.unwrap_or(false);
-    let additional_separator = request
-        .additional_separator
-        .and_then(|separator| (!separator.is_empty()).then_some(separator));
+    let additional_separator = request.additional_separator;
     let mut found = Vec::new();
     let mut seen = HashSet::new();
 
@@ -808,18 +806,9 @@ fn normalize_existing_dirs(roots: Vec<String>) -> Vec<PathBuf> {
 }
 
 fn normalize_extensions(extensions: Option<Vec<String>>) -> Option<HashSet<String>> {
-    let extensions = extensions
-        .unwrap_or_default()
-        .into_iter()
-        .map(|extension| {
-            extension
-                .trim()
-                .trim_start_matches('.')
-                .to_ascii_lowercase()
-        })
-        .filter(|extension| !extension.is_empty())
-        .collect::<HashSet<_>>();
-    (!extensions.is_empty()).then_some(extensions)
+    extensions.and_then(|extensions| {
+        (!extensions.is_empty()).then(|| extensions.into_iter().collect::<HashSet<_>>())
+    })
 }
 
 fn push_regular_file(
@@ -847,7 +836,7 @@ fn extension_allowed(path: &Path, extensions: Option<&HashSet<String>>) -> bool 
         Some(extensions) => path
             .extension()
             .and_then(|extension| extension.to_str())
-            .map(|extension| extensions.contains(&extension.to_ascii_lowercase()))
+            .map(|extension| extensions.contains(extension))
             .unwrap_or(false),
         None => true,
     }
@@ -867,7 +856,7 @@ fn keyed_file_matches(
     additional_separator.is_some_and(|separator| {
         keys.iter().any(|key| {
             base.strip_prefix(key)
-                .is_some_and(|suffix| suffix.starts_with(separator))
+                .is_some_and(|suffix| separator.is_empty() || suffix.starts_with(separator))
         })
     })
 }
@@ -1092,14 +1081,6 @@ fn unknown_key(key: String) -> JsonRpcError {
     ))
 }
 
-fn ambiguous_key(key: String) -> JsonRpcError {
-    JsonRpcError::new(JsonRpcErrorObject::domain(
-        -32003,
-        "ambiguous_key",
-        format!("entry key matches multiple indexed entries: {key}"),
-    ))
-}
-
 fn stale_source_file(path: String) -> JsonRpcError {
     JsonRpcError::new(JsonRpcErrorObject::domain(
         -32004,
@@ -1229,7 +1210,7 @@ mod tests {
     }
 
     #[test]
-    fn daemon_returns_stable_lookup_errors() {
+    fn daemon_exact_key_lookup_uses_first_indexed_duplicate() {
         let project = TestProject::new("daemon-errors");
         let first = project.write("refs/a.bib", "@article{dup2020, title = {First}}\n");
         project.write("refs/b.bib", "@book{dup2020, title = {Second}}\n");
@@ -1237,11 +1218,12 @@ mod tests {
             .expect("daemon should start");
         result(daemon.handle_request(request(METHOD_SYNC_FULL, json!({}))));
 
-        let ambiguous =
-            daemon.handle_request(request(METHOD_ENTRY_BY_KEY, json!({ "key": "dup2020" })));
+        let first_duplicate = result(
+            daemon.handle_request(request(METHOD_ENTRY_BY_KEY, json!({ "key": "dup2020" }))),
+        );
         assert_eq!(
-            ambiguous.error.expect("expected error").data.expect("data")["kind"],
-            "ambiguous_key"
+            first_duplicate["source_path"],
+            first.to_string_lossy().as_ref()
         );
 
         let disambiguated = result(daemon.handle_request(request(
@@ -1335,9 +1317,12 @@ mod tests {
         let project = TestProject::new("daemon-resource-files");
         let library = project.path("library");
         let declared = project.write("library/declared.pdf", "");
+        let uppercase_declared = project.write("library/declared.PDF", "");
         let nested_declared = project.write("library/nested/declared.pdf", "");
         project.write("library/declared.txt", "");
         let keyed = project.write("library/smith2020.pdf", "");
+        let keyed_uppercase = project.write("library/smith2020.PDF", "");
+        let keyed_prefix = project.write("library/smith2020extra.pdf", "");
         let keyed_extra = project.write("library/nested/smith2020-extra.pdf", "");
         project.write("library/nested/smith2020-extra.html", "");
         let mut daemon = Daemon::new(project.policy(), project.path("index.sqlite"))
@@ -1358,6 +1343,20 @@ mod tests {
                 declared.to_string_lossy(),
                 nested_declared.to_string_lossy()
             ])
+        );
+
+        let uppercase = result(daemon.handle_request(request(
+            METHOD_RESOLVE_FILES,
+            json!({
+                "files": ["declared.PDF"],
+                "roots": [library],
+                "recursive": true,
+                "extensions": ["PDF"],
+            }),
+        )));
+        assert_eq!(
+            uppercase["files"],
+            json!([uppercase_declared.to_string_lossy()])
         );
 
         let absolute = result(daemon.handle_request(request(
@@ -1383,6 +1382,39 @@ mod tests {
         assert_eq!(
             keyed_files["files"],
             json!([keyed.to_string_lossy(), keyed_extra.to_string_lossy()])
+        );
+
+        let keyed_uppercase_files = result(daemon.handle_request(request(
+            METHOD_LIBRARY_FILES_BY_KEYS,
+            json!({
+                "keys": ["smith2020"],
+                "roots": [project.path("library")],
+                "recursive": true,
+                "extensions": ["PDF"],
+            }),
+        )));
+        assert_eq!(
+            keyed_uppercase_files["files"],
+            json!([keyed_uppercase.to_string_lossy()])
+        );
+
+        let keyed_prefix_files = result(daemon.handle_request(request(
+            METHOD_LIBRARY_FILES_BY_KEYS,
+            json!({
+                "keys": ["smith2020"],
+                "roots": [project.path("library")],
+                "recursive": true,
+                "extensions": ["pdf"],
+                "additional_separator": "",
+            }),
+        )));
+        assert_eq!(
+            keyed_prefix_files["files"],
+            json!([
+                keyed.to_string_lossy(),
+                keyed_prefix.to_string_lossy(),
+                keyed_extra.to_string_lossy()
+            ])
         );
     }
 

@@ -49,6 +49,7 @@ impl BibliographyFile {
 pub struct IndexedFileMetadata {
     pub path: String,
     pub origin: IndexedFileOrigin,
+    pub source_order: i64,
     pub size_bytes: u64,
     pub modified_ns: Option<i64>,
     pub content_hash: String,

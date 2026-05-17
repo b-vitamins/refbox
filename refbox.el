@@ -1144,17 +1144,24 @@ reference key string."
       (window-buffer (minibuffer-selected-window))
     (current-buffer)))
 
+(defun refbox--normalize-bibliography-source-paths (files)
+  "Return FILES as existing, truename-normalized bibliography paths."
+  (let (paths)
+    (dolist (file (refbox--string-list files "bibliography source paths"))
+      (let ((path (expand-file-name file)))
+        (unless (file-exists-p path)
+          (user-error "Cannot find file: %s" path))
+        (push (file-truename path) paths)))
+    (delete-dups (nreverse paths))))
+
 (defun refbox--current-local-bibliography-source-paths ()
   "Return local bibliography files for the active citation context."
   (let ((buffer (refbox--citation-buffer)))
     (when (buffer-live-p buffer)
-      (delete-dups
+      (refbox--normalize-bibliography-source-paths
        (cl-remove-if
         #'refbox--blank-string-p
-        (mapcar
-         #'expand-file-name
-         (ignore-errors
-           (refbox-local-bibliography-files buffer))))))))
+        (refbox-local-bibliography-files buffer))))))
 
 (defun refbox--contextual-source-args (source-paths include-configured-sources)
   "Return source arguments with current-buffer local bibliographies applied.
@@ -1396,8 +1403,11 @@ between displayed names."
 (defun refbox-template--field-width (width)
   "Return normalized template WIDTH."
   (cond
-   ((or (null width) (string-empty-p width) (string= width "0")) nil)
+   ((or (null width)
+        (string-empty-p width))
+    nil)
    ((string= width "*") '*)
+   ((= 0 (string-to-number width)) nil)
    (t (string-to-number width))))
 
 (defun refbox-template--split-fields (fields separator)
@@ -1414,7 +1424,8 @@ between displayed names."
     (cdr (assoc (intern (string-trim transform))
                 refbox-display-transform-functions))))
 
-(defun refbox-template--parse-field (body &optional display-transform)
+(defun refbox-template--parse-field
+    (body &optional display-transform text-properties)
   "Parse placeholder BODY into a field token.
 
 When DISPLAY-TRANSFORM is non-nil, parse `%TRANSFORM' through
@@ -1431,7 +1442,7 @@ direct function transform."
       (user-error "refbox template field is empty"))
     (when (and transform-part (string-empty-p (string-trim transform-part)))
       (user-error "refbox template transform is empty: %s" body))
-    (when (string-match "\\`\\(.*?\\):[[:blank:]]*\\([0-9]+\\|\\*\\)[[:blank:]]*\\'"
+    (when (string-match "\\`\\(.*?\\):[[:blank:]]*\\(.*?\\)[[:blank:]]*\\'"
                         field-part)
       (setq width (match-string 2 field-part)
             field-part (match-string 1 field-part)))
@@ -1446,12 +1457,26 @@ direct function transform."
         (user-error "refbox template field is empty"))
       (list :fields fields
             :width (refbox-template--field-width width)
+            :text-properties text-properties
             :transform (cond
                         (display-transform
                          (refbox-template--display-transform transform-part))
                         (transform-part
                          (intern (string-trim transform-part)))
                         (t nil))))))
+
+(defun refbox-template--text-property-signature (template)
+  "Return text-property intervals for TEMPLATE."
+  (let ((position 0)
+        signature)
+    (while (< position (length template))
+      (let ((next (or (next-property-change position template)
+                      (length template)))
+            (properties (text-properties-at position template)))
+        (when properties
+          (push (list position next properties) signature))
+        (setq position next)))
+    (nreverse signature)))
 
 (defun refbox-template-parse (template)
   "Parse TEMPLATE into literal strings and field tokens."
@@ -1467,7 +1492,10 @@ direct function transform."
             (display-transform (match-beginning 2)))
         (when (> match-start position)
           (push (substring template position match-start) tokens))
-        (push (refbox-template--parse-field field-body display-transform)
+        (push (refbox-template--parse-field
+               field-body
+               display-transform
+               (text-properties-at match-start template))
               tokens)
         (setq position match-end)))
     (when (< position (length template))
@@ -1476,7 +1504,9 @@ direct function transform."
 
 (defun refbox-template--parsed (template)
   "Return cached parsed TEMPLATE."
-  (let ((cache-key (list template refbox-display-transform-functions)))
+  (let ((cache-key (list template
+                         (refbox-template--text-property-signature template)
+                         refbox-display-transform-functions)))
     (or (gethash cache-key refbox-template--parse-cache)
         (puthash cache-key
                  (refbox-template-parse template)
@@ -1513,14 +1543,14 @@ direct function transform."
     (if (and (consp transform)
              (eq (car transform) 'refbox--shorten-names)
              (integerp (plist-get token :width)))
-      (setq
-       value
-       (format "%s"
-               (or (apply #'refbox--shorten-names-to-width
-                          value
-                          (plist-get token :width)
-                          (cdr transform))
-                   "")))
+        (setq
+         value
+         (format "%s"
+                 (or (apply #'refbox--shorten-names-to-width
+                            value
+                            (plist-get token :width)
+                            (cdr transform))
+                     "")))
       (setq value (refbox-template-clean value))
       (when transform
         (setq
@@ -1544,6 +1574,8 @@ direct function transform."
               (user-error "refbox template transform is invalid: %S"
                           transform)))
            "")))))
+    (when-let ((properties (plist-get token :text-properties)))
+      (setq value (apply #'propertize value properties)))
     value))
 
 (defun refbox-template--fit (value width)
@@ -1925,9 +1957,8 @@ pre-shaped standard completion display columns."
                         (refbox-rpc--search-limit refbox-search-maximum-limit)
                       requested-limit))
          (source-paths
-          (cl-remove-if
-            #'refbox--blank-string-p
-            (mapcar #'expand-file-name source-paths)))
+          (refbox--normalize-bibliography-source-paths
+           (cl-remove-if #'refbox--blank-string-p source-paths)))
          (key-filter
           (unless post-empty-key-filter
             (delete-dups
@@ -2058,11 +2089,10 @@ LIMIT-PER-KEY bounds duplicate-key expansion for each requested key."
     (or (when-let ((context-map (refbox--context-reference-map
                                  (list reference))))
           (gethash reference context-map))
-        (let ((candidates (refbox-entries-by-keys (list reference) 2)))
+        (let ((candidates (refbox-entries-by-keys (list reference) 1)))
           (pcase (length candidates)
             (0 nil)
-            (1 (car candidates))
-            (_ (refbox-entry-by-key reference))))))))
+            (_ (car candidates))))))))
 
 (defun refbox-get-entry (reference)
   "Return REFERENCE as a bibliography entry alist, or nil if absent."
@@ -2432,19 +2462,16 @@ whose cdr is passed as additional arguments."
                (or (funcall parser value) nil))
              refbox-file-parser-functions)))))
 
-(defun refbox-resource--normalize-extensions (extensions)
-  "Return normalized EXTENSIONS."
-  (mapcar (lambda (extension)
-            (downcase (string-remove-prefix "." extension)))
-          (refbox--string-list extensions "extensions")))
+(defun refbox-resource--extension-list (extensions)
+  "Return EXTENSIONS as configured for Citar-shaped resource matching."
+  (refbox--string-list extensions "extensions"))
 
 (defun refbox-resource--extension-allowed-p (file extensions)
   "Return non-nil when FILE has an accepted extension."
   (or (null extensions)
       (let ((extension (file-name-extension file)))
         (and extension
-             (member (downcase extension)
-                     (refbox-resource--normalize-extensions extensions))))))
+             (member extension (refbox-resource--extension-list extensions))))))
 
 (defun refbox-resource--directory-list-uncached (dirs recursive)
   "Return existing DIRS, optionally including recursive subdirectories."
@@ -2478,12 +2505,22 @@ whose cdr is passed as additional arguments."
    refbox-library-paths
    refbox-library-paths-recursive))
 
+(defun refbox-resource--explicit-bibliography-dirs ()
+  "Return directories of configured explicit bibliography files."
+  (delete-dups
+   (cl-loop
+    for path in (refbox--explicit-bibliography-files)
+    for directory = (file-name-directory path)
+    when directory
+      collect (file-name-as-directory (expand-file-name directory)))))
+
 (defun refbox-resource--source-dirs (candidate resources)
   "Return bibliography source directories for CANDIDATE and RESOURCES."
   (delete-dups
    (cl-remove
     nil
     (append
+     (refbox-resource--explicit-bibliography-dirs)
      (when-let* ((path (refbox-reference-field candidate "source_path"))
                  (dir (file-name-directory path)))
        (list (file-name-as-directory (expand-file-name dir))))
@@ -2523,7 +2560,7 @@ whose cdr is passed as additional arguments."
                          files)))
          (roots (refbox-resource--normalized-roots roots))
          (extensions (and extensions
-                          (refbox-resource--normalize-extensions extensions))))
+                          (refbox-resource--extension-list extensions))))
     (cond
      ((null files) nil)
      ((not recursive)
@@ -2562,7 +2599,7 @@ whose cdr is passed as additional arguments."
   (list (refbox-resource--normalized-roots roots)
         recursive
         (and extensions
-             (refbox-resource--normalize-extensions extensions))))
+             (refbox-resource--extension-list extensions))))
 
 (defun refbox-resource--file-index (roots recursive extensions)
   "Return cached regular files under ROOTS matching EXTENSIONS."
@@ -2582,7 +2619,7 @@ whose cdr is passed as additional arguments."
                (when (and (file-regular-p file)
                           (or (null extensions)
                               (when-let ((extension (file-name-extension file)))
-                                (member (downcase extension) extensions))))
+                                (member extension extensions))))
                  (push (cons (file-name-base file) file) entries)))))
          (while stack
            (let ((dir (pop stack))
@@ -2596,7 +2633,7 @@ whose cdr is passed as additional arguments."
                 ((and (file-regular-p file)
                       (or (null extensions)
                           (when-let ((extension (file-name-extension file)))
-                            (member (downcase extension) extensions))))
+                            (member extension extensions))))
                  (push (cons (file-name-base file) file) entries))))
              (dolist (subdir subdirs)
                (push subdir stack))))
@@ -2674,7 +2711,7 @@ already exists in the dynamic cache."
   (list (refbox-resource--normalized-key-list keys)
         (refbox-resource--normalized-roots roots)
         (and extensions
-             (refbox-resource--normalize-extensions extensions))))
+             (refbox-resource--extension-list extensions))))
 
 (defun refbox-resource--files-for-keys-in-roots
     (keys roots recursive extensions additional-sep)
@@ -3099,7 +3136,7 @@ callable."
         (expand-file-name
          (format "%s.%s"
                  key
-                 (string-remove-prefix "." (car note-extensions)))
+                 (car note-extensions))
          (car notes-paths)))))
 
 ;;;###autoload
@@ -3461,8 +3498,8 @@ EMPTY-MESSAGE, when non-nil, is displayed when CHOICES is empty."
   (pcase (plist-get choice :type)
     ('file 'file)
     ('link 'url)
-    ('note (or (plist-get choice :category) 'refbox-resource))
-    ('create-note 'refbox-resource)
+    ('note (plist-get choice :category))
+    ('create-note 'refbox-reference)
     (_ 'refbox-resource)))
 
 (defun refbox--resource-choice-completion-category (labels)
@@ -4337,27 +4374,22 @@ public key-list contract."
                   (and context-map (gethash key context-map)))
                 (delete-dups (copy-sequence keys)))))
          (global-map
-          (when global-keys
-            (let ((table (make-hash-table :test 'equal)))
-              (dolist (candidate (refbox-entries-by-keys global-keys 2))
-                (push candidate
-                      (gethash (refbox--reference-key candidate) table)))
-              table))))
+	      (when global-keys
+	        (let ((table (make-hash-table :test 'equal)))
+	          (dolist (candidate (refbox-entries-by-keys global-keys 1))
+	            (let ((key (refbox--reference-key candidate)))
+	              (unless (gethash key table)
+	                (puthash key candidate table))))
+	          table))))
     (mapcar
      (lambda (reference)
        (cond
         ((and (listp reference) (plist-member reference :key))
          reference)
         ((stringp reference)
-         (or (and context-map (gethash reference context-map))
-             (let ((candidates (and global-map
-                                    (gethash reference global-map))))
-               (cond
-                ((= (length candidates) 1)
-                 (car candidates))
-                ;; Preserve exact lookup errors for missing and ambiguous keys.
-                (t
-                 (refbox-entry-by-key reference))))))
+	         (or (and context-map (gethash reference context-map))
+	             (or (and global-map (gethash reference global-map))
+	                 (refbox-entry-by-key reference))))
         (t reference)))
      references)))
 
@@ -4932,6 +4964,19 @@ STYLE, when non-nil, overrides `refbox-citeproc-csl-style'."
       key
     (format "%s.%s" key (string-remove-prefix "." extension))))
 
+(defun refbox-library--destination-directories (library-paths)
+  "Return Citar-shaped destination directories from LIBRARY-PATHS."
+  (apply
+   #'append
+   (mapcar
+    (lambda (directory)
+      (cons directory
+            (when refbox-library-paths-recursive
+              (seq-filter
+               #'file-directory-p
+               (directory-files-recursively directory "" t)))))
+    library-paths)))
+
 (defun refbox-library--primary-directory ()
   "Return a library destination directory, creating it if needed."
   (let ((library-paths (refbox--string-list
@@ -4941,7 +4986,7 @@ STYLE, when non-nil, overrides `refbox-citeproc-csl-style'."
       (user-error "`refbox-library-paths' must contain at least one directory"))
     (dolist (directory library-paths)
       (make-directory (file-name-as-directory (expand-file-name directory)) t))
-    (let* ((directories (refbox-resource--directory-list library-paths nil))
+    (let* ((directories (refbox-library--destination-directories library-paths))
            (directory (if (cdr directories)
                           (completing-read "Directory: "
                                            directories
@@ -5429,7 +5474,7 @@ decoration."
           (or total "?")))
 
 (defun refbox--read-reference-from-state
-    (prompt preset allow-empty predicate state &optional table)
+    (prompt preset allow-empty predicate state &optional table allow-freeform)
   "Read one reference using completion STATE and TABLE."
   (refbox--sync-current-bibliography-buffer-if-needed)
   (let* ((completion-category-defaults
@@ -5452,6 +5497,9 @@ decoration."
        predicate
        (plist-get state :source-paths)
        (plist-get state :include-configured-sources)))
+     ((and allow-freeform
+           (not (refbox--blank-string-p selection-key)))
+      selection-key)
      (t (user-error "Unknown refbox reference selection: %s" selection)))))
 
 (defun refbox--read-reference-key-fallback
@@ -5479,11 +5527,14 @@ decoration."
       (error nil))))
 
 (defun refbox--read-reference
-    (prompt preset limit allow-empty &optional predicate source-paths include-configured-sources)
+    (prompt preset limit allow-empty &optional predicate source-paths
+            include-configured-sources allow-freeform)
   "Read one reference.
 
 PROMPT, PRESET, LIMIT, ALLOW-EMPTY, PREDICATE, SOURCE-PATHS, and
-INCLUDE-CONFIGURED-SOURCES control completion and validation."
+INCLUDE-CONFIGURED-SOURCES control completion and validation.
+When ALLOW-FREEFORM is non-nil, an unknown selection is returned as a
+raw citation key string."
   (pcase-let ((`(,source-paths ,include-configured-sources)
                (refbox--contextual-source-args
                 source-paths
@@ -5496,7 +5547,9 @@ INCLUDE-CONFIGURED-SOURCES control completion and validation."
      (refbox--completion-state
       limit
       source-paths
-      include-configured-sources))))
+      include-configured-sources)
+     nil
+     allow-freeform)))
 
 ;;;###autoload
 (defun refbox-insert-preset ()
@@ -5721,15 +5774,27 @@ each candidate and should return non-nil for selectable references."
 FILTER, when non-nil, is called with each candidate key."
   (mapcar #'refbox--reference-key
           (refbox--reference-list
-           (refbox-select-references
-            :multiple multiple
-            :filter (when filter
-                      (lambda (candidate)
-                        (funcall filter (refbox--reference-key candidate))))
-            :preset preset
-            :limit limit
-            :source-paths source-paths
-            :include-configured-sources include-configured-sources))))
+           (let ((predicate (when filter
+                              (lambda (candidate)
+                                (funcall filter
+                                         (refbox--reference-key candidate))))))
+             (if (and multiple refbox-select-multiple)
+                 (refbox-read-references
+                  "References: "
+                  preset
+                  limit
+                  predicate
+                  source-paths
+                  include-configured-sources
+                  t)
+               (refbox-read-reference
+                "Reference: "
+                preset
+                limit
+                predicate
+                source-paths
+                include-configured-sources
+                t))))))
 
 ;;;###autoload
 (cl-defun refbox-select-ref
@@ -5745,14 +5810,16 @@ FILTER, when non-nil, is called with each candidate key."
 
 ;;;###autoload
 (defun refbox-read-reference
-    (&optional prompt preset limit predicate source-paths include-configured-sources)
+    (&optional prompt preset limit predicate source-paths
+               include-configured-sources allow-freeform)
   "Read and return a single indexed reference candidate.
 
 PRESET is inserted as the initial minibuffer search text.  LIMIT
 bounds each daemon search request.  PREDICATE, when non-nil, is
 called with each candidate and should return non-nil for
 selectable references.  SOURCE-PATHS restricts searches to those
-bibliography source files."
+bibliography source files.  When ALLOW-FREEFORM is non-nil, a raw
+unknown key may be returned."
   (interactive)
   (refbox--read-reference
    (or prompt "Reference: ")
@@ -5761,18 +5828,21 @@ bibliography source files."
    nil
    predicate
    source-paths
-   include-configured-sources))
+   include-configured-sources
+   allow-freeform))
 
 ;;;###autoload
 (defun refbox-read-references
-    (&optional prompt preset limit predicate source-paths include-configured-sources)
+    (&optional prompt preset limit predicate source-paths
+               include-configured-sources allow-freeform)
   "Read and return multiple indexed reference candidates.
 
 `TAB' toggles the current candidate and keeps selecting.  `RET'
 accepts the current candidate and exits the read.  An empty selection
 also finishes the read.  PREDICATE, when non-nil, is called with each
 candidate and should return non-nil for selectable references.
-SOURCE-PATHS restricts searches to those bibliography source files."
+SOURCE-PATHS restricts searches to those bibliography source files.
+When ALLOW-FREEFORM is non-nil, raw unknown keys may be returned."
   (interactive)
   (pcase-let ((`(,source-paths ,include-configured-sources)
                (refbox--contextual-source-args
@@ -5801,7 +5871,8 @@ SOURCE-PATHS restricts searches to those bibliography source files."
                    t
                    predicate
                    state
-                   (refbox--multiple-completion-table state selected))))
+                   (refbox--multiple-completion-table state selected)
+                   allow-freeform)))
           (if candidate
               (let ((identity (refbox--reference-identity candidate)))
                 (if (gethash identity selected)

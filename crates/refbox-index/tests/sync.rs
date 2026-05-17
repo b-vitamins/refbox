@@ -53,6 +53,52 @@ fn full_sync_indexes_eligible_files_and_prunes_missing_files() {
 }
 
 #[test]
+fn full_sync_preserves_configured_source_order() {
+    let project = TestProject::new("source-order");
+    let later_path = project.write("refs/a.bib", "@article{dup2020, title = {Later}}\n");
+    let first_path = project.write("refs/b.bib", "@book{dup2020, title = {First}}\n");
+    let engine = SyncEngine::new(DiscoveryPolicy::new(
+        Vec::new(),
+        vec![first_path.clone(), later_path.clone()],
+    ));
+    let mut store = MemoryStore::default();
+
+    let status = engine.sync_full(&mut store).expect("full sync should work");
+
+    assert_eq!(status.changed_file_count, 2);
+    assert_eq!(
+        store
+            .metadata
+            .get(first_path.to_string_lossy().as_ref())
+            .map(|metadata| metadata.source_order),
+        Some(0)
+    );
+    assert_eq!(
+        store
+            .metadata
+            .get(later_path.to_string_lossy().as_ref())
+            .map(|metadata| metadata.source_order),
+        Some(1)
+    );
+
+    let engine = SyncEngine::new(DiscoveryPolicy::new(
+        Vec::new(),
+        vec![later_path.clone(), first_path.clone()],
+    ));
+    let status = engine
+        .sync_full(&mut store)
+        .expect("reordered full sync should work");
+    assert_eq!(status.changed_file_count, 2);
+    assert_eq!(
+        store
+            .metadata
+            .get(first_path.to_string_lossy().as_ref())
+            .map(|metadata| metadata.source_order),
+        Some(1)
+    );
+}
+
+#[test]
 fn single_file_sync_updates_only_that_file() {
     let project = TestProject::new("single-file-sync");
     let a_path = project.write("refs/a.bib", "@article{a2020, title = {Alpha}}\n");

@@ -461,15 +461,14 @@ is configured, append the key argument after configured optional args."
 
 (defun refbox-latex--selected-keys ()
   "Read selected reference keys for a LaTeX citation."
-  (mapcar (lambda (candidate)
-            (or (plist-get candidate :key)
-                (user-error "refbox candidate has no key")))
+  (mapcar #'refbox--reference-key
           (refbox-read-references
            "References: "
            nil
            nil
            nil
            (refbox-latex-local-bib-files)
+           t
            t)))
 
 (defun refbox-latex--insert-keys-into-citation (citation keys)

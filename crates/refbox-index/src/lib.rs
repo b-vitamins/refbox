@@ -107,8 +107,8 @@ impl DiscoveryPolicy {
             }
         }
 
-        files.sort();
-        files.dedup();
+        let mut seen = BTreeSet::new();
+        files.retain(|path| seen.insert(path.clone()));
         Ok(files)
     }
 
@@ -242,22 +242,23 @@ impl SyncEngine {
 
         store.begin_bulk_update().map_err(SyncError::Store)?;
         let sync_result = (|| {
-            for path in discovered {
+            for (order, path) in discovered.into_iter().enumerate() {
                 let path = path_string(&path)?;
                 let snapshot = read_file_snapshot(&path)?;
+                let source_order = source_order(order);
                 status.latest_modified_ns =
                     max_optional(status.latest_modified_ns, snapshot.modified_ns);
 
                 if existing
                     .get(&path)
-                    .is_some_and(|metadata| same_freshness(metadata, &snapshot))
+                    .is_some_and(|metadata| same_freshness(metadata, &snapshot, source_order))
                 {
                     status.skipped_file_count += 1;
                     continue;
                 }
 
                 let parsed = parse_bibliography_file(path.clone(), snapshot.text.as_str());
-                let metadata = snapshot.into_metadata(&parsed);
+                let metadata = snapshot.into_metadata(&parsed, source_order);
                 store
                     .upsert_file(&parsed, &metadata)
                     .map_err(SyncError::Store)?;
@@ -311,10 +312,11 @@ impl SyncEngine {
 
         let path = path_string(path)?;
         let snapshot = read_file_snapshot(&path)?;
+        let source_order = existing_source_order(store, &path).unwrap_or_default();
         status.discovered_file_count = 1;
         status.latest_modified_ns = snapshot.modified_ns;
         let parsed = parse_bibliography_file(path.clone(), snapshot.text.as_str());
-        let metadata = snapshot.into_metadata(&parsed);
+        let metadata = snapshot.into_metadata(&parsed, source_order);
         store
             .upsert_file(&parsed, &metadata)
             .map_err(SyncError::Store)?;
@@ -344,7 +346,7 @@ impl SyncEngine {
             ..SyncStatus::default()
         };
         let parsed = parse_bibliography_file(path.clone(), snapshot.text.as_str());
-        let metadata = snapshot.into_metadata_with_origin(&parsed, IndexedFileOrigin::Local);
+        let metadata = snapshot.into_metadata_with_origin(&parsed, IndexedFileOrigin::Local, 0);
         store
             .upsert_file(&parsed, &metadata)
             .map_err(SyncError::Store)?;
@@ -420,18 +422,20 @@ struct FileSnapshot {
 }
 
 impl FileSnapshot {
-    fn into_metadata(self, file: &BibliographyFile) -> IndexedFileMetadata {
-        self.into_metadata_with_origin(file, IndexedFileOrigin::Configured)
+    fn into_metadata(self, file: &BibliographyFile, source_order: i64) -> IndexedFileMetadata {
+        self.into_metadata_with_origin(file, IndexedFileOrigin::Configured, source_order)
     }
 
     fn into_metadata_with_origin(
         self,
         file: &BibliographyFile,
         origin: IndexedFileOrigin,
+        source_order: i64,
     ) -> IndexedFileMetadata {
         IndexedFileMetadata {
             path: self.path,
             origin,
+            source_order,
             size_bytes: self.size_bytes,
             modified_ns: self.modified_ns,
             content_hash: self.content_hash,
@@ -505,8 +509,29 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
-fn same_freshness(metadata: &IndexedFileMetadata, snapshot: &FileSnapshot) -> bool {
+fn source_order(order: usize) -> i64 {
+    i64::try_from(order).unwrap_or(i64::MAX)
+}
+
+fn existing_source_order<S>(store: &S, path: &str) -> Option<i64>
+where
+    S: DerivedBibliographyStore,
+{
+    store
+        .indexed_file_metadata()
+        .ok()?
+        .into_iter()
+        .find(|metadata| metadata.path == path)
+        .map(|metadata| metadata.source_order)
+}
+
+fn same_freshness(
+    metadata: &IndexedFileMetadata,
+    snapshot: &FileSnapshot,
+    source_order: i64,
+) -> bool {
     metadata.origin == IndexedFileOrigin::Configured
+        && metadata.source_order == source_order
         && metadata.size_bytes == snapshot.size_bytes
         && metadata.modified_ns == snapshot.modified_ns
         && metadata.content_hash == snapshot.content_hash
