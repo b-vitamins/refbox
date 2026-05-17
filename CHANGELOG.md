@@ -12,6 +12,9 @@ The format follows Keep a Changelog, and this project follows SemVer.
 ### Fixed
 - Made create-note resource candidates for selected key strings display a
   visible note-source label instead of rendering as a blank completion row.
+- Kept custom completion indicators on the same bounded metadata path as the
+  default indicators, avoiding per-row resource probes and excess display
+  properties during type-ahead completion.
 
 ## [0.5.2] - 2026-05-17
 

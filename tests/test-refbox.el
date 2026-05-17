@@ -1482,6 +1482,55 @@
                        rendered)))))
       (delete-directory root t))))
 
+(ert-deftest refbox-test-custom_resource_indicators_use_daemon_metadata ()
+  "Custom resource indicators should not call expensive generic predicates."
+  (let* ((candidate
+          '(:key "alpha"
+            :fields nil
+            :resources nil
+            :resource_kinds ["file" "doi"]))
+         (refbox-indicators
+          (list (refbox-indicator-create
+                 :symbol "F"
+                 :emptysymbol "-"
+                 :padding ""
+                 :function #'refbox-has-files
+                 :tag "has:files")
+                (refbox-indicator-create
+                 :symbol "L"
+                 :emptysymbol "-"
+                 :padding ""
+                 :function #'refbox-has-links
+                 :tag "has:links"))))
+    (cl-letf (((symbol-function 'refbox-reference-has-files-p)
+               (lambda (&rest _)
+                 (error "file indicator should use resource metadata")))
+              ((symbol-function 'refbox-reference-has-links-p)
+               (lambda (&rest _)
+                 (error "link indicator should use resource metadata"))))
+      (should (equal (substring-no-properties
+                      (refbox-reference-indicators candidate))
+                     "FL")))))
+
+(ert-deftest refbox-test-custom_unknown_indicator_uses_configured_predicate ()
+  "Unknown custom indicators should still use their configured predicate."
+  (let ((calls 0)
+        (candidate '(:key "alpha" :fields nil :resources nil)))
+    (let ((refbox-indicators
+           (list (refbox-indicator-create
+                  :symbol "X"
+                  :emptysymbol "-"
+                  :padding ""
+                  :function
+                  (lambda ()
+                    (lambda (reference)
+                      (setq calls (1+ calls))
+                      (equal (plist-get reference :key) "alpha")))))))
+      (should (equal (substring-no-properties
+                      (refbox-reference-indicators candidate))
+                     "X"))
+      (should (= calls 1)))))
+
 (ert-deftest refbox-test-search-tags-use_daemon_resource_filters ()
   "Search tags backed by indexed resources should be sent to the daemon."
   (let (calls)
@@ -2244,6 +2293,40 @@
       (insert "See smith2020.")
       (should (funcall (refbox-is-cited) "smith2020"))
       (should (funcall (refbox-is-cited) candidate)))))
+
+(ert-deftest refbox-test-note_predicate_caches_source_predicate_and_keys ()
+  "Note indicator checks should not rebuild predicates or recheck keys."
+  (let* ((predicate-builds 0)
+         (key-checks 0)
+         (candidate '(:key "alpha" :fields nil :resources nil))
+         (refbox-notes-source 'mock)
+         (refbox-notes-sources
+          `((mock
+             :items ,(lambda (_keys)
+                       (make-hash-table :test 'equal))
+             :hasitems ,(lambda ()
+                          (setq predicate-builds (1+ predicate-builds))
+                          (lambda (key)
+                            (setq key-checks (1+ key-checks))
+                            (equal key "alpha")))
+             :open ,#'ignore))))
+    (refbox--with-dynamic-cache (make-hash-table :test 'eq)
+      (should (refbox-reference-has-notes-p candidate))
+      (should (refbox-reference-has-notes-p candidate)))
+    (should (= predicate-builds 1))
+    (should (= key-checks 1))))
+
+(ert-deftest refbox-test-note_predicate_accepts_empty_source ()
+  "Note sources may return nil when they can prove no notes exist."
+  (let* ((candidate '(:key "alpha" :fields nil :resources nil))
+         (refbox-notes-source 'mock)
+         (refbox-notes-sources
+          `((mock
+             :items ,(lambda (_keys)
+                       (make-hash-table :test 'equal))
+             :hasitems ,(lambda () nil)
+             :open ,#'ignore))))
+    (should-not (refbox-reference-has-notes-p candidate))))
 
 (ert-deftest refbox-test-note_predicate_hydrates_key_references ()
   "Note predicates should check cross-reference keys from hydrated references."

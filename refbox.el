@@ -589,7 +589,8 @@ Each entry is (SOURCE . PLIST).  Recognized plist keys are
 `:annotate'.  `:category', when non-nil, is the completion category
 for note items.  `:items' receives a list of keys and returns a hash
 table mapping keys to note items.  `:hasitems' receives no arguments
-and returns a predicate for individual keys.  `:all-items' receives no
+and returns a predicate for individual keys, or nil when the source can prove
+it has no matching items.  `:all-items' receives no
 arguments and returns note items directly openable by `:open'.  `:keys'
 receives no arguments and returns note keys that can be expanded through
 `:items'.  `:open', `:transform', and `:annotate' receive a note item.
@@ -732,6 +733,9 @@ candidate and exits the selector.")
 
 (defconst refbox--cache-miss (make-symbol "refbox-cache-miss")
   "Sentinel used for internal cache misses.")
+
+(defconst refbox--indicator-unknown (make-symbol "refbox-indicator-unknown")
+  "Sentinel used when an indicator has no built-in fast predicate.")
 
 (defvar refbox--dynamic-cache nil
   "Dynamic cache shared by one completion or rendering operation.")
@@ -1074,13 +1078,24 @@ loaded for CANDIDATE."
                          (refbox--resource-value resource)))))))
     (delete-dups keys)))
 
-(defun refbox-reference-related-keys (candidate &optional resources)
-  "Return CANDIDATE's key followed by configured parent keys."
+(defun refbox--reference-related-keys-uncached (candidate resources)
+  "Return CANDIDATE's key followed by parent keys from RESOURCES."
   (delete-dups
    (cl-remove-if
     #'refbox--blank-string-p
     (cons (refbox--reference-key candidate)
           (refbox-reference-crossref-keys candidate resources)))))
+
+(cl-defun refbox-reference-related-keys
+    (candidate &optional (resources nil resources-supplied-p))
+  "Return CANDIDATE's key followed by configured parent keys."
+  (if resources-supplied-p
+      (refbox--reference-related-keys-uncached candidate resources)
+    (refbox--dynamic-cache-get-eq
+     'reference-related-keys
+     candidate
+     (lambda ()
+       (refbox--reference-related-keys-uncached candidate nil)))))
 
 (defun refbox--reference-candidate (reference)
   "Return REFERENCE as an indexed candidate plist."
@@ -1219,15 +1234,49 @@ plus the configured corpus."
           (setf (refbox-indicator-compiledfunction indicator) predicate)
           predicate))))
 
+(defun refbox--indicator-builtin-match (indicator candidate)
+  "Return built-in INDICATOR match for CANDIDATE, or unknown sentinel."
+  (let ((function (refbox-indicator-function indicator)))
+    (cond
+     ((eq function #'refbox-has-files)
+      (let ((resource-kinds (refbox--candidate-resource-kind-list candidate)))
+        (if (refbox--candidate-resource-kinds-supplied-p candidate)
+            (member "file" resource-kinds)
+          (refbox-reference-has-files-p candidate))))
+     ((eq function #'refbox-has-links)
+      (let ((link-fields (refbox--link-field-names)))
+        (if (refbox--candidate-resource-kinds-supplied-p candidate)
+            (cl-some
+             (lambda (kind)
+               (member kind (refbox--candidate-resource-kind-list candidate)))
+             link-fields)
+          (refbox-reference-has-links-p candidate))))
+     ((eq function #'refbox-has-notes)
+      (refbox-reference-has-notes-p candidate))
+     ((eq function #'refbox-is-cited)
+      (refbox-reference-cited-in-current-buffer-p candidate))
+     (t refbox--indicator-unknown))))
+
+(defun refbox--indicator-matched-p (indicator candidate)
+  "Return non-nil when INDICATOR matches CANDIDATE."
+  (let ((matched (refbox--indicator-builtin-match indicator candidate)))
+    (if (eq matched refbox--indicator-unknown)
+        (when-let ((predicate (refbox--indicator-predicate indicator)))
+          (funcall predicate candidate))
+      matched)))
+
 (defun refbox--indicator-text (indicator candidate)
   "Return INDICATOR text for CANDIDATE."
-  (let* ((predicate (refbox--indicator-predicate indicator))
-         (matched (and predicate (funcall predicate candidate)))
+  (let* ((matched (refbox--indicator-matched-p indicator candidate))
          (symbol (if matched
                      (refbox-indicator-symbol indicator)
                    (refbox-indicator-emptysymbol indicator)))
          (padding (refbox-indicator-padding indicator)))
     (concat (or symbol "") (or padding ""))))
+
+(defun refbox--indicator-chunks-text (chunks)
+  "Return CHUNKS as indicator text with reserved display width."
+  (refbox--finalize-indicator-text (apply #'concat chunks)))
 
 (defun refbox-reference-indicators (candidate)
   "Return configured indicator text for CANDIDATE."
@@ -1237,11 +1286,10 @@ plus the configured corpus."
    (lambda ()
      (if (refbox--default-reference-indicators-p)
          (refbox--default-reference-indicators candidate)
-       (let ((text ""))
-         (dolist (indicator refbox-indicators text)
-           (let ((chunk (refbox--indicator-text indicator candidate)))
-             (setq text (concat text chunk))
-             (refbox--finalize-indicator-text text))))))))
+       (refbox--indicator-chunks-text
+        (mapcar (lambda (indicator)
+                  (refbox--indicator-text indicator candidate))
+                refbox-indicators))))))
 
 (defun refbox--default-reference-indicators-p ()
   "Return non-nil when `refbox-indicators' has the default layout."
@@ -3376,12 +3424,32 @@ signal a user error; when it is explicitly nil, return nil."
                               (refbox--listify (gethash key table)))
                             keys))))))))))
 
+(defun refbox-note-source--has-items-predicate ()
+  "Return the active note source `:hasitems' predicate."
+  (refbox--dynamic-cache-get
+   'note-source-has-items-predicate
+   refbox-notes-source
+   (lambda ()
+     (let ((predicate (funcall (refbox-note-source--function :hasitems))))
+       (and (functionp predicate) predicate)))))
+
+(defun refbox-note-source--key-has-items-p (predicate key)
+  "Return non-nil when PREDICATE reports note items for KEY."
+  (refbox--dynamic-cache-get
+   'note-source-key-has-items
+   (list refbox-notes-source key)
+   (lambda ()
+     (funcall predicate key))))
+
 (defun refbox-note-source-has-items-p (reference)
   "Return non-nil when REFERENCE has active note source items."
   (let ((keys (refbox-reference-related-keys reference))
-        (predicate (funcall (refbox-note-source--function :hasitems))))
-    (and (functionp predicate)
-         (cl-some predicate keys))))
+        (predicate (refbox-note-source--has-items-predicate)))
+    (and predicate
+         (cl-some
+          (lambda (key)
+            (refbox-note-source--key-has-items-p predicate key))
+          keys))))
 
 (defun refbox-note-source-preload (references)
   "Preload active note source metadata for REFERENCES when supported."
