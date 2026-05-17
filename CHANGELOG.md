@@ -6,6 +6,8 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-05-18
+
 ### Changed
 - Updated `bibtex-parser` to 0.4.0.
 - Added SQLite hot-row caches for native completion display text and direct

@@ -399,7 +399,7 @@ checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
 
 [[package]]
 name = "refbox"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -413,7 +413,7 @@ dependencies = [
 
 [[package]]
 name = "refbox-bench"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -424,7 +424,7 @@ dependencies = [
 
 [[package]]
 name = "refbox-core"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "bibtex-parser",
  "serde",
@@ -433,7 +433,7 @@ dependencies = [
 
 [[package]]
 name = "refbox-index"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "bibtex-parser",
  "globset",
@@ -443,7 +443,7 @@ dependencies = [
 
 [[package]]
 name = "refbox-rpc"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "refbox-core",
  "serde",
@@ -453,7 +453,7 @@ dependencies = [
 
 [[package]]
 name = "refbox-store"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "refbox-core",
  "refbox-index",
