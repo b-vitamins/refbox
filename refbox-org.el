@@ -368,8 +368,8 @@ citation formatter."
                         refbox-org--key-regexp
                         "\\)")))
       (cons (match-string-no-properties 1)
-            (cons (1- (match-beginning 1))
-                  (match-end 1))))))
+            (cons (match-beginning 0)
+                  (match-end 0))))))
 
 (defun refbox-org-property-key-at-point (&optional datum)
   "Return an @KEY citation key from an Org node property at point."

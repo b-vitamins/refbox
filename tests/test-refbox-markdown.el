@@ -59,12 +59,20 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
   (refbox-markdown-test-with-buffer "See [@alpha; -@be|ta]."
     (should (equal (car (refbox-markdown-key-at-point)) "beta"))))
 
+(ert-deftest refbox-markdown-test-key-at-point-is_command ()
+  "Markdown key lookup should be available as an interactive command."
+  (should (commandp #'refbox-markdown-key-at-point)))
+
 (ert-deftest refbox-markdown-test-public_key_regexp_captures_group_one ()
   "The public Pandoc key regexp should capture citation keys in group one."
   (should (string-match refbox-markdown-citation-key-regexp "-@doe-2020"))
   (should (equal (match-string 1 "-@doe-2020") "doe-2020"))
   (should (string-match refbox-markdown-citation-key-regexp "@{doe key}"))
-  (should (equal (match-string 1 "@{doe key}") "doe key")))
+  (should (equal (match-string 1 "@{doe key}") "doe key"))
+  (should (string-match refbox-markdown-citation-key-regexp "@foo_bar"))
+  (should (equal (match-string 1 "@foo_bar") "foo"))
+  (should (string-match refbox-markdown-citation-key-regexp "@{foo_bar}"))
+  (should (equal (match-string 1 "@{foo_bar}") "foo_bar")))
 
 (ert-deftest refbox-markdown-test-detects_braced_pandoc_keys ()
   "Markdown helpers should understand Pandoc brace-delimited keys."
@@ -139,6 +147,22 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
     (refbox-markdown-test-with-buffer "A [@alpha]| Z"
       (refbox-markdown-insert-citation '("beta"))
       (should (equal (buffer-string) "A [@alpha][@beta] Z")))))
+
+(ert-deftest refbox-markdown-test-boundary_insert_deduplicates_existing_keys ()
+  "Insertion at citation bracket edges should not add existing keys again."
+  (let ((refbox-markdown-prompt-for-extra-arguments nil))
+    (refbox-markdown-test-with-buffer "A |[@alpha] Z"
+      (refbox-markdown-insert-citation '("alpha"))
+      (should (equal (buffer-string) "A [@alpha] Z")))
+    (refbox-markdown-test-with-buffer "A [@alpha]| Z"
+      (refbox-markdown-insert-citation '("alpha"))
+      (should (equal (buffer-string) "A [@alpha] Z")))))
+
+(ert-deftest refbox-markdown-test-inserts_before_next_separator_like_citar ()
+  "Insertion inside a citation should happen at the next key delimiter."
+  (refbox-markdown-test-with-buffer "A [@alpha |; @beta] Z"
+    (refbox-markdown-insert-citation '("gamma"))
+    (should (equal (buffer-string) "A [@alpha ; @gamma; @beta] Z"))))
 
 (ert-deftest refbox-markdown-test-prompted-affixes ()
   "Prompted affixes should be reflected in inserted citations."

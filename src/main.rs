@@ -396,6 +396,8 @@ impl Daemon {
             METHOD_ENTRIES_BY_KEYS => {
                 let request: EntriesByKeysRequest = parse_params(params)?;
                 let limit = clamp_limit(request.limit_per_key);
+                let crossref_fields =
+                    request_crossref_fields(request.include_crossrefs, request.crossref_fields);
                 let mut search_results = Vec::new();
                 for key in request.keys {
                     search_results.extend(
@@ -416,7 +418,7 @@ impl Daemon {
                     .store
                     .hydrate_search_results(
                         search_results,
-                        &default_crossref_fields(),
+                        &crossref_fields,
                         None,
                         true,
                         true,

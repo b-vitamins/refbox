@@ -249,7 +249,7 @@ when the configured key argument is absent."
         (let ((parsed (refbox-latex--parse-citation-at-match)))
           (when (and parsed
                      (<= (plist-get parsed :begin) point)
-                     (<= point (plist-get parsed :end)))
+                     (< point (plist-get parsed :end)))
             (setq citation parsed))))
       citation)))
 
@@ -474,30 +474,25 @@ is configured, append the key argument after configured optional args."
 
 (defun refbox-latex--insert-keys-into-citation (citation keys)
   "Insert KEYS into existing LaTeX CITATION."
-  (let* ((existing (plist-get citation :keys))
-         (text (string-join keys ","))
-         (key-begin (plist-get citation :key-begin))
-         (key-end (plist-get citation :key-end))
-         (spans (refbox-latex--key-spans citation)))
+  (let ((text (string-join keys ","))
+        (end (plist-get citation :end)))
     (when keys
-      (cond
-       ((null existing)
-        (goto-char key-begin)
-        (insert text))
-       ((<= (point) key-begin)
-        (goto-char key-begin)
-        (insert text ","))
-       ((>= (point) key-end)
-        (goto-char key-end)
-        (insert "," text))
-       (t
-        (goto-char
-         (or (cl-loop
-              for (_key begin end) in spans
-              when (and (<= begin (point)) (<= (point) end))
-              return end)
-             key-end))
-        (insert "," text))))))
+      (pcase (progn
+               (skip-chars-forward "^,{}" end)
+               (following-char))
+        ((guard (= (point) end))
+         (insert "{}")
+         (backward-char))
+        ((or ?{ ?,)
+         (forward-char)
+         (unless (looking-at-p "[[:space:]]*[},]")
+           (insert ",")
+           (backward-char)))
+        (?}
+         (skip-chars-backward "[:space:]")
+         (unless (member (preceding-char) '(?{ ?,))
+           (insert ","))))
+      (insert text))))
 
 (defun refbox-latex--move-after-citation ()
   "Move point after the LaTeX citation command containing point."

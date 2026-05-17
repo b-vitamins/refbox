@@ -248,6 +248,8 @@ pub struct EntryByKeyRequest {
 pub struct EntriesByKeysRequest {
     pub keys: Vec<String>,
     pub limit_per_key: Option<usize>,
+    pub include_crossrefs: Option<bool>,
+    pub crossref_fields: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

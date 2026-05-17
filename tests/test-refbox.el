@@ -1538,11 +1538,14 @@
                  (should (equal (append (plist-get params :keys) nil)
                                 '("smith2020" "doe2021")))
                  (should (equal (plist-get params :limit_per_key) 2))
+                 (should (equal (append (plist-get params :crossref_fields) nil)
+                                '("xref")))
                  (list :entries (list candidate)))))
-      (should (equal (refbox-entries-by-keys
-                      '("smith2020" "doe2021" "smith2020")
-                      2)
-                     (list candidate)))
+      (let ((refbox-crossref-variable "xref"))
+        (should (equal (refbox-entries-by-keys
+                        '("smith2020" "doe2021" "smith2020")
+                        2)
+                       (list candidate))))
       (should (= (length calls) 1)))))
 
 (ert-deftest refbox-test-resolved_references_batch_exact_key_hydration ()
@@ -1711,6 +1714,42 @@
                          '("paper:edition.pdf"))))
       (delete-directory root t))))
 
+(ert-deftest refbox-test-reference-files_resolve_field_files_from_all_roots ()
+  "File-field lookup should combine source-relative and library-path matches."
+  (let* ((root (make-temp-file "refbox-field-files-" t))
+         (refs (expand-file-name "refs" root))
+         (library (expand-file-name "library" root))
+         (source (expand-file-name "main.bib" refs))
+         (paper (expand-file-name "paper.pdf" refs))
+         (supplement (expand-file-name "supplement.pdf" library))
+         (candidate
+          (list :key "mixed"
+                :source_path source
+                :resources
+                (list (list :key "mixed"
+                            :source_path source
+                            :owner_key "mixed"
+                            :owner_source_path source
+                            :kind "file"
+                            :raw_name "file"
+                            :lookup_name "file"
+                            :value "paper.pdf; supplement.pdf")))))
+    (unwind-protect
+        (progn
+          (make-directory refs t)
+          (make-directory library t)
+          (with-temp-file paper)
+          (with-temp-file supplement)
+          (let ((refbox-library-paths (list library))
+                (refbox-library-file-extensions '("pdf"))
+                (refbox-file-sources (list (car refbox--default-file-sources))))
+            (should (equal (mapcar #'file-name-nondirectory
+                                   (refbox-reference-files
+                                    candidate
+                                    (refbox--candidate-resources candidate)))
+                           '("paper.pdf" "supplement.pdf")))))
+      (delete-directory root t))))
+
 (ert-deftest refbox-test-reference-files_combine_fields_and_library_like_citar ()
   "File lookup should combine field and library-path resources."
   (let* ((root (make-temp-file "refbox-resources-" t))
@@ -1738,19 +1777,30 @@
                 (refbox-file-additional-files-separator "-"))
             (cl-letf (((symbol-function 'refbox-rpc-request)
                        (lambda (method params)
-                         (should (eq method
-                                     refbox-rpc-method-library-files-by-keys))
-                         (should (equal (append (plist-get params :keys) nil)
-                                        '("smith2020")))
-                         (should (equal (append (plist-get params :roots) nil)
-                                        (list (file-name-as-directory
-                                               library))))
-                         (should (eq (plist-get params :recursive) t))
-                         (should (equal (append (plist-get params :extensions) nil)
-                                        '("pdf")))
-                         (should (equal (plist-get params :additional_separator)
-                                        "-"))
-                         (list :files (list library-paper library-extra)))))
+                         (pcase method
+                           ((pred (equal refbox-rpc-method-resolve-files))
+                            (should (equal (append (plist-get params :files) nil)
+                                           '("paper.pdf")))
+                            (should (equal (append (plist-get params :roots) nil)
+                                           (list (file-name-as-directory
+                                                  library))))
+                            (should (eq (plist-get params :recursive) t))
+                            (should (equal (append (plist-get params :extensions) nil)
+                                           '("pdf")))
+                            (list :files nil))
+                           ((pred (equal refbox-rpc-method-library-files-by-keys))
+                            (should (equal (append (plist-get params :keys) nil)
+                                           '("smith2020")))
+                            (should (equal (append (plist-get params :roots) nil)
+                                           (list (file-name-as-directory
+                                                  library))))
+                            (should (eq (plist-get params :recursive) t))
+                            (should (equal (append (plist-get params :extensions) nil)
+                                           '("pdf")))
+                            (should (equal (plist-get params :additional_separator)
+                                           "-"))
+                            (list :files (list library-paper library-extra)))
+                           (_ (error "unexpected method: %s" method))))))
               (should
                (equal (mapcar #'file-name-nondirectory
                               (refbox-reference-files
@@ -1928,6 +1978,38 @@
       (insert "See smith2020.")
       (should (funcall (refbox-is-cited) "smith2020"))
       (should (funcall (refbox-is-cited) candidate)))))
+
+(ert-deftest refbox-test-note_predicate_hydrates_key_references ()
+  "Note predicates should pass hydrated references to source predicates."
+  (let* ((candidate (plist-put (copy-tree refbox-test-reference-candidate)
+                               :fields
+                               (append
+                                (plist-get refbox-test-reference-candidate
+                                           :fields)
+                                '((:raw_name "note-flag"
+                                   :lookup_name "note-flag"
+                                   :value "yes")))))
+         (seen nil)
+         (refbox-notes-source 'mock)
+         (refbox-notes-sources
+          `((mock
+             :items ,#'ignore
+             :hasitems ,(lambda (key reference)
+                          (setq seen (list key reference))
+                          (equal (refbox-reference-field reference "note-flag")
+                                 "yes"))
+             :open ,#'ignore))))
+    (cl-letf (((symbol-function 'refbox-entries-by-keys)
+               (lambda (keys limit)
+                 (should (equal keys '("smith2020")))
+                 (should (equal limit 2))
+                 (list candidate)))
+              ((symbol-function 'refbox-entry-by-key)
+               (lambda (_key)
+                 (error "note predicate should use batched hydration"))))
+      (should (funcall (refbox-has-notes) "smith2020"))
+      (should (equal (car seen) "smith2020"))
+      (should (equal (cadr seen) candidate)))))
 
 (ert-deftest refbox-test-local_resource_lookup_uses_crossref_parent_keys ()
   "File lookup should include parent keys declared by cross-reference fields."

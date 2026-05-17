@@ -99,6 +99,33 @@ fn stdio_rpc_contract_covers_success_and_error_shapes() {
             .is_empty()
     );
 
+    let xref_entries = rpc.result(
+        42,
+        METHOD_ENTRIES_BY_KEYS,
+        json!({
+            "keys": ["xchild2021"],
+            "limit_per_key": 1,
+            "crossref_fields": ["xref"],
+        }),
+    );
+    let xref_child = &xref_entries["entries"]
+        .as_array()
+        .expect("xref entries by keys array")[0];
+    assert!(
+        xref_child["resource_kinds"]
+            .as_array()
+            .expect("xref child resource kinds")
+            .iter()
+            .any(|kind| kind == "file")
+    );
+    assert!(
+        xref_child["resources"]
+            .as_array()
+            .expect("xref child resources")
+            .iter()
+            .any(|resource| resource["owner_key"] == "xparent2020")
+    );
+
     let resources = rpc.result(5, METHOD_RESOURCES_BY_KEY, json!({ "key": "res2020" }));
     let mut kinds = resources["resources"]
         .as_array()

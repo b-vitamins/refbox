@@ -55,6 +55,12 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
     (should (equal (car (refbox-latex-citation-at-point))
                    '("alpha" "beta")))))
 
+(ert-deftest refbox-latex-test-point_after_macro_is_not_inside_citation ()
+  "A point after the closing brace should start a new citation like Citar."
+  (refbox-latex-test-with-buffer "\\cite{alpha}|"
+    (should-not (refbox-latex-citation-at-point))
+    (should-not (refbox-latex-key-at-point))))
+
 (ert-deftest refbox-latex-test-dwim_uses_whole_citation_on_command_text ()
   "DWIM on citation command text should act on every key in the citation."
   (refbox-latex-test-with-buffer "\\ci|te{alpha,beta}"
@@ -294,6 +300,20 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
   (refbox-latex-test-with-buffer "A \\cite{al|pha, beta} Z"
     (refbox-latex-insert-citation '("alpha"))
     (should (equal (buffer-string) "A \\cite{alpha,alpha, beta} Z"))))
+
+(ert-deftest refbox-latex-test-inserts_at_next_separator_like_citar ()
+  "LaTeX insertion should scan to the next comma or brace."
+  (refbox-latex-test-with-buffer "A \\cite{|alpha,beta} Z"
+    (refbox-latex-insert-citation '("gamma"))
+    (should (equal (buffer-string) "A \\cite{alpha,gamma,beta} Z")))
+  (refbox-latex-test-with-buffer "A \\cite{alpha |, beta} Z"
+    (refbox-latex-insert-citation '("gamma"))
+    (should (equal (buffer-string) "A \\cite{alpha ,gamma, beta} Z")))
+  (refbox-latex-test-with-buffer "A \\cite{alpha,beta}| Z"
+    (let ((refbox-latex-prompt-for-extra-arguments nil))
+      (refbox-latex-insert-citation '("gamma") nil "cite")
+      (should (equal (buffer-string)
+                     "A \\cite{alpha,beta}\\cite{gamma} Z")))))
 
 (ert-deftest refbox-latex-test-nil_citation_insert_does_not_prompt ()
   "Programmatic nil LaTeX insertion should match Citar's no-op."

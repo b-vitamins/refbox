@@ -77,7 +77,7 @@
       (should (equal (buffer-substring-no-properties
                       (nth 2 target)
                       (cdddr target))
-                     "@alpha")))))
+                     " @alpha")))))
 
 (ert-deftest refbox-embark-test-markdown-key-target_uses_actual_key_bounds ()
   "Markdown key targets should use the full Pandoc key span."

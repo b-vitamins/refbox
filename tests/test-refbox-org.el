@@ -307,7 +307,7 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                  (refbox-org--property-key-and-bounds-at-point)))
       (should (equal key "smith2020"))
       (should (equal (buffer-substring-no-properties begin end)
-                     "@smith2020")))))
+                     " @smith2020")))))
 
 (ert-deftest refbox-org-test-follow_processor_uses_at_point_function ()
   "The Org follow processor should call the configured at-point command."

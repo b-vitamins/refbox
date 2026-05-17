@@ -708,7 +708,30 @@ impl RefboxStore {
                     .collect::<Vec<_>>()
                     .join(", ");
                 sql.push_str(&inherited_placeholders);
-                sql.push_str("))");
+                sql.push_str(
+                    ")
+                          AND parent.id = COALESCE(
+                              (
+                                  SELECT local_parent.id
+                                  FROM entries local_parent
+                                  JOIN files local_parent_file
+                                    ON local_parent_file.id = local_parent.file_id
+                                  WHERE local_parent.entry_key = parent.entry_key
+                                    AND local_parent_file.path = f.path
+                                  ORDER BY local_parent_file.path, local_parent.id
+                                  LIMIT 1
+                              ),
+                              (
+                                  SELECT global_parent.id
+                                  FROM entries global_parent
+                                  JOIN files global_parent_file
+                                    ON global_parent_file.id = global_parent.file_id
+                                  WHERE global_parent.entry_key = parent.entry_key
+                                  ORDER BY global_parent_file.path, global_parent.id
+                                  LIMIT 1
+                              )
+                          ))",
+                );
                 for kind in &resource_kinds {
                     parameters.push(kind);
                     next_param += 1;
@@ -996,12 +1019,34 @@ impl RefboxStore {
             let sql = format!(
                 "SELECT child.id, pr.kind
                  FROM entries child
+                 JOIN files child_file ON child_file.id = child.file_id
                  JOIN fields cf ON cf.entry_id = child.id
                  JOIN entries parent
                    ON parent.entry_key = trim(trim(cf.value), '{{}}\"')
                  JOIN resources pr ON pr.entry_id = parent.id
                  WHERE child.id IN ({})
                    AND cf.lookup_name IN ({})
+                   AND parent.id = COALESCE(
+                       (
+                           SELECT local_parent.id
+                           FROM entries local_parent
+                           JOIN files local_parent_file
+                             ON local_parent_file.id = local_parent.file_id
+                           WHERE local_parent.entry_key = parent.entry_key
+                             AND local_parent_file.path = child_file.path
+                           ORDER BY local_parent_file.path, local_parent.id
+                           LIMIT 1
+                       ),
+                       (
+                           SELECT global_parent.id
+                           FROM entries global_parent
+                           JOIN files global_parent_file
+                             ON global_parent_file.id = global_parent.file_id
+                           WHERE global_parent.entry_key = parent.entry_key
+                           ORDER BY global_parent_file.path, global_parent.id
+                           LIMIT 1
+                       )
+                   )
                  GROUP BY child.id, pr.kind
                  ORDER BY child.id, pr.kind",
                 placeholders(entry_ids.len()),

@@ -958,7 +958,7 @@ fn crossref_resource_inheritance_prefers_same_source_parent() {
         "refs/global.bib",
         r#"@proceedings{parent2020,
   title = {Global Parent},
-  file = {global-parent.pdf}
+  doi = {10.1000/global-parent}
 }"#,
     );
 
@@ -980,6 +980,37 @@ fn crossref_resource_inheritance_prefers_same_source_parent() {
         .collect::<Vec<_>>();
 
     assert_eq!(inherited_files, vec!["local-parent.pdf"]);
+
+    let false_global_parent_results = store
+        .search(
+            "child",
+            5,
+            SearchOptions {
+                resource_kinds: &["doi".to_string()],
+                crossref_fields: &["crossref".to_string()],
+                ..SearchOptions::default()
+            },
+        )
+        .expect("crossref resource filter should use preferred parent");
+    assert!(false_global_parent_results.is_empty());
+
+    let hydrated = store
+        .hydrate_search_results(
+            store
+                .search("child", 5, SearchOptions::default())
+                .expect("child search should work"),
+            &["crossref".to_string()],
+            None,
+            true,
+            true,
+            None,
+        )
+        .expect("hydrated child should use preferred parent resource kinds");
+    let child = hydrated
+        .iter()
+        .find(|entry| entry.key == "child2020")
+        .expect("child should hydrate");
+    assert_eq!(child.resource_kinds, vec!["crossref", "file"]);
 }
 
 #[test]

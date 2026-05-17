@@ -1121,7 +1121,7 @@ reference key string."
 The returned function accepts either an indexed candidate plist or a
 reference key string."
   (lambda (reference)
-    (refbox-reference-has-notes-p reference)))
+    (refbox-reference-has-notes-p (refbox--reference-candidate reference))))
 
 (defun refbox-is-cited ()
   "Return a predicate matching references cited in the current buffer.
@@ -2032,6 +2032,8 @@ LIMIT-PER-KEY bounds duplicate-key expansion for each requested key."
       (let* ((params
               (append
                (list :keys (vconcat keys))
+               (when-let ((crossref-fields (refbox--crossref-field-names)))
+                 (list :crossref_fields (vconcat crossref-fields)))
                (when limit-per-key
                  (list :limit_per_key
                        (refbox-rpc--search-limit limit-per-key)))))
@@ -2752,19 +2754,21 @@ callable."
            when (or (equal kind "file")
                     (and lookup
                          (member lookup (refbox--file-field-names))))
-         append (refbox-resource--parse-file-field
-                 (refbox--resource-value resource))))
+        append (refbox-resource--parse-file-field
+                (refbox--resource-value resource))))
         (source-dirs (refbox-resource--source-dirs candidate resources)))
-    (or (refbox-resource--resolve-files-in-roots
-         field-files
-         source-dirs
-         nil
-         extensions)
-        (refbox-resource--resolve-files-in-roots
-         field-files
-         refbox-library-paths
-         refbox-library-paths-recursive
-         extensions))))
+    (delete-dups
+     (append
+      (refbox-resource--resolve-files-in-roots
+       field-files
+       source-dirs
+       nil
+       extensions)
+      (refbox-resource--resolve-files-in-roots
+       field-files
+       refbox-library-paths
+       refbox-library-paths-recursive
+       extensions)))))
 
 (defun refbox-resource-file-source-indexed-has-items (candidate resources)
   "Return non-nil when CANDIDATE has indexed file declarations."

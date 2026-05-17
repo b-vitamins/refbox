@@ -55,7 +55,7 @@
           "\\(?:"
           "{\\(?1:.*?\\)}"
           "\\|"
-          "\\(?1:[[:alnum:]_][[:alnum:]_]*\\(?:[:.#$%&+?<>~/-][[:alnum:]_]+\\)*\\)"
+          "\\(?1:[[:alnum:]_][[:alnum:]]*\\(?:[:.#$%&+?<>~/-][[:alnum:]]+\\)*\\)"
           "\\)")
   "Regular expression for a Pandoc citation key.
 
@@ -126,7 +126,7 @@ Captures the actual key in group 1.")
                           "; "))
          (body-begin (plist-get citation :body-begin))
          (body-end (plist-get citation :body-end))
-         (spans (refbox-markdown--key-spans citation)))
+         (end (plist-get citation :end)))
     (when keys
       (cond
        ((null existing)
@@ -139,12 +139,7 @@ Captures the actual key in group 1.")
         (goto-char body-end)
         (insert "; " text))
        (t
-        (goto-char
-         (or (cl-loop
-              for (_key begin end) in spans
-              when (and (<= begin (point)) (<= (point) end))
-              return end)
-             body-end))
+        (skip-chars-forward "^;]" end)
         (insert "; " text))))))
 
 (defun refbox-markdown--citation-at-point ()
@@ -214,6 +209,7 @@ Captures the actual key in group 1.")
 ;;;###autoload
 (defun refbox-markdown-key-at-point ()
   "Return the Markdown citation key at point with its bounds."
+  (interactive)
   (refbox-markdown--key-and-bounds-at-point))
 
 (defun refbox-markdown--completion-bounds ()
@@ -252,7 +248,12 @@ Captures the actual key in group 1.")
 When point is already in a citation, add selected keys to that
 citation instead of replacing it.  INVERT-PROMPT reverses
 `refbox-markdown-prompt-for-extra-arguments'."
-  (let ((citation (refbox-markdown--citation-at-point)))
+  (let* ((citation (refbox-markdown--citation-at-point))
+         (keys (if citation
+                   (refbox-markdown--new-keys
+                    keys
+                    (plist-get citation :keys))
+                 keys)))
     (when keys
       (if (and citation
                (/= (point) (plist-get citation :begin))
