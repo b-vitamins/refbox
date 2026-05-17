@@ -329,6 +329,10 @@ keeps long abstracts out of type-ahead completion results."
   :type '(repeat string)
   :group 'refbox)
 
+(defconst refbox--native-completion-field-names
+  '("author" "editor" "date" "year" "issued" "title" "tags" "keywords")
+  "Bibliography fields needed for daemon-shaped native completion rows.")
+
 (defcustom refbox-completion-ranked-min-input 8
   "Minimum alphanumeric input length before minibuffer completion uses ranking.
 
@@ -534,16 +538,20 @@ t is used as the default when no extension entry matches."
 
 (defun refbox--link-field-names ()
   "Return normalized bibliography field names configured as links."
-  (delete-dups
-   (cl-remove-if
-    #'refbox--blank-string-p
-    (mapcar (lambda (field)
-              (refbox--field-name-normalize
-               (cond
-                ((symbolp (car field)) (symbol-name (car field)))
-                ((stringp (car field)) (car field))
-                (t (format "%s" (car field))))))
-            refbox-link-fields))))
+  (refbox--dynamic-cache-get
+   'link-field-names
+   refbox-link-fields
+   (lambda ()
+     (delete-dups
+      (cl-remove-if
+       #'refbox--blank-string-p
+       (mapcar (lambda (field)
+                 (refbox--field-name-normalize
+                  (cond
+                   ((symbolp (car field)) (symbol-name (car field)))
+                   ((stringp (car field)) (car field))
+                   (t (format "%s" (car field))))))
+               refbox-link-fields))))))
 
 (defcustom refbox-notes-paths nil
   "Directories searched for per-reference note files."
@@ -859,6 +867,18 @@ candidate and exits the selector.")
           (refbox--candidate-value candidate :resource_kinds :resource-kinds))
        (refbox--candidate-resource-kinds candidate)))))
 
+(defun refbox--partial-reference-p (reference)
+  "Return non-nil when REFERENCE is a lightweight completion candidate."
+  (and (listp reference)
+       (plist-get reference :refbox_partial)))
+
+(defun refbox--complete-reference-p (reference)
+  "Return non-nil when REFERENCE already carries full entry metadata."
+  (and (listp reference)
+       (plist-member reference :key)
+       (plist-member reference :fields)
+       (not (refbox--partial-reference-p reference))))
+
 (defun refbox--candidate-field-table (candidate)
   "Return cached field lookup table for CANDIDATE."
   (when (and refbox--reference-field-cache (listp candidate))
@@ -998,7 +1018,10 @@ computed property such as indicators, or an indexed bibliography field."
    ((stringp citekey-or-entry)
     (refbox-get-entry citekey-or-entry))
    ((and (listp citekey-or-entry) (plist-member citekey-or-entry :key))
-    (refbox-reference-entry-alist citekey-or-entry))
+    (refbox-reference-entry-alist
+     (if (refbox--partial-reference-p citekey-or-entry)
+         (refbox-entry-by-key citekey-or-entry)
+       citekey-or-entry)))
    ((and (listp citekey-or-entry)
 	         (or (null citekey-or-entry) (consp (car citekey-or-entry))))
     citekey-or-entry)
@@ -1226,6 +1249,17 @@ plus the configured corpus."
                         (goto-char (point-min))
                         (search-forward key nil t))))))))))
 
+(defun refbox--candidate-cited-in-current-buffer-p (candidate)
+  "Return non-nil when CANDIDATE's direct key appears in the context buffer."
+  (let ((key (cond
+              ((stringp candidate) candidate)
+              ((and (listp candidate) (plist-member candidate :key))
+               (plist-get candidate :key)))))
+    (and (not (refbox--blank-string-p key))
+         (if refbox--dynamic-cache
+             (gethash key (refbox--current-citation-key-table))
+           (refbox-reference-cited-in-current-buffer-p key)))))
+
 (defun refbox--indicator-predicate (indicator)
   "Return INDICATOR's cached predicate."
   (or (refbox-indicator-compiledfunction indicator)
@@ -1257,6 +1291,64 @@ plus the configured corpus."
       (refbox-reference-cited-in-current-buffer-p candidate))
      (t refbox--indicator-unknown))))
 
+(defun refbox--indicator-builtin-kind (indicator)
+  "Return the built-in predicate kind used by INDICATOR, or nil."
+  (let ((function (refbox-indicator-function indicator)))
+    (cond
+     ((eq function #'refbox-has-files) 'files)
+     ((eq function #'refbox-has-links) 'links)
+     ((eq function #'refbox-has-notes) 'notes)
+     ((eq function #'refbox-is-cited) 'cited)
+     (t nil))))
+
+(defun refbox--builtin-indicators-p ()
+  "Return non-nil when all configured indicators use built-in predicates."
+  (and refbox-indicators
+       (cl-every #'refbox--indicator-builtin-kind refbox-indicators)))
+
+(defun refbox--builtin-reference-indicators (candidate)
+  "Return indicator text for built-in-backed custom indicator sets."
+  (let* ((indicator-kinds (mapcar #'refbox--indicator-builtin-kind
+                                  refbox-indicators))
+         (resource-kinds (refbox--candidate-resource-kind-list candidate))
+         (supplied (refbox--candidate-resource-kinds-supplied-p candidate))
+         (needs-files (memq 'files indicator-kinds))
+         (needs-links (memq 'links indicator-kinds))
+         (needs-notes (memq 'notes indicator-kinds))
+         (needs-cited (memq 'cited indicator-kinds))
+         (link-fields (and needs-links (refbox--link-field-names)))
+         (has-files
+          (and needs-files
+               (if supplied
+                   (member "file" resource-kinds)
+                 (refbox-reference-has-files-p candidate))))
+         (has-links
+          (and needs-links
+               (if supplied
+                   (cl-some (lambda (kind) (member kind resource-kinds))
+                            link-fields)
+                 (refbox-reference-has-links-p candidate))))
+         (has-notes
+          (and needs-notes
+               (refbox-note-source-has-items-with-predicate-p
+                candidate
+                (refbox-note-source--has-items-predicate))))
+         (is-cited
+          (and needs-cited
+               (refbox--candidate-cited-in-current-buffer-p candidate))))
+    (refbox--indicator-chunks-text
+     (cl-mapcar
+      (lambda (indicator kind)
+        (refbox--indicator-chunk
+         indicator
+         (pcase kind
+           ('files has-files)
+           ('links has-links)
+           ('notes has-notes)
+           ('cited is-cited))))
+      refbox-indicators
+      indicator-kinds))))
+
 (defun refbox--indicator-matched-p (indicator candidate)
   "Return non-nil when INDICATOR matches CANDIDATE."
   (let ((matched (refbox--indicator-builtin-match indicator candidate)))
@@ -1286,10 +1378,12 @@ plus the configured corpus."
    (lambda ()
      (if (refbox--default-reference-indicators-p)
          (refbox--default-reference-indicators candidate)
-       (refbox--indicator-chunks-text
-        (mapcar (lambda (indicator)
-                  (refbox--indicator-text indicator candidate))
-                refbox-indicators))))))
+       (if (refbox--builtin-indicators-p)
+           (refbox--builtin-reference-indicators candidate)
+         (refbox--indicator-chunks-text
+          (mapcar (lambda (indicator)
+                    (refbox--indicator-text indicator candidate))
+                  refbox-indicators)))))))
 
 (defun refbox--default-reference-indicators-p ()
   "Return non-nil when `refbox-indicators' has the default layout."
@@ -1323,6 +1417,7 @@ plus the configured corpus."
   (let* ((resource-kinds (refbox--candidate-resource-kind-list candidate))
          (supplied (refbox--candidate-resource-kinds-supplied-p candidate))
          (link-fields (refbox--link-field-names))
+         (note-predicate (refbox-note-source--has-items-predicate))
          (has-files
           (if supplied
               (member "file" resource-kinds)
@@ -1332,15 +1427,33 @@ plus the configured corpus."
               (cl-some (lambda (kind) (member kind resource-kinds))
                        link-fields)
             (refbox-reference-has-links-p candidate)))
-         (has-notes (refbox-reference-has-notes-p candidate)))
+         (has-notes
+          (refbox-note-source-has-items-with-predicate-p
+           candidate note-predicate))
+         (text
+          (concat
+           (or (if has-links
+                   (refbox-indicator-symbol refbox-indicator-links)
+                 (refbox-indicator-emptysymbol refbox-indicator-links))
+               "")
+           (or (refbox-indicator-padding refbox-indicator-links) "")
+           (or (if has-files
+                   (refbox-indicator-symbol refbox-indicator-files)
+                 (refbox-indicator-emptysymbol refbox-indicator-files))
+               "")
+           (or (refbox-indicator-padding refbox-indicator-files) "")
+           (or (if has-notes
+                   (refbox-indicator-symbol refbox-indicator-notes)
+                 (refbox-indicator-emptysymbol refbox-indicator-notes))
+               "")
+           (or (refbox-indicator-padding refbox-indicator-notes) "")
+           (or (if (refbox--candidate-cited-in-current-buffer-p candidate)
+                   (refbox-indicator-symbol refbox-indicator-cited)
+                 (refbox-indicator-emptysymbol refbox-indicator-cited))
+               "")
+           (or (refbox-indicator-padding refbox-indicator-cited) ""))))
     (refbox--finalize-indicator-text
-     (concat
-      (refbox--indicator-chunk refbox-indicator-links has-links)
-      (refbox--indicator-chunk refbox-indicator-files has-files)
-      (refbox--indicator-chunk refbox-indicator-notes has-notes)
-      (refbox--indicator-chunk
-       refbox-indicator-cited
-       (refbox-reference-cited-in-current-buffer-p candidate))))))
+     text)))
 
 (defun refbox-template-clean (value)
   "Return VALUE with common BibTeX wrapping and whitespace cleaned."
@@ -1578,6 +1691,14 @@ direct function transform."
      (refbox-template-field-names (refbox--template 'note))
      (refbox--crossref-field-names)
      refbox-additional-fields))))
+
+(defun refbox--completion-request-field-names ()
+  "Return fields to request for the current completion display path."
+  (if (refbox--native-completion-display-active-p)
+      (delete-dups
+       (append refbox--native-completion-field-names
+               (refbox--crossref-field-names)))
+    (refbox--completion-field-names)))
 
 (defun refbox-template--field-text (token candidate)
   "Return TOKEN text for CANDIDATE before width fitting."
@@ -1969,7 +2090,7 @@ direct function transform."
 
 (defun refbox-search-references
     (query &optional limit source-paths unranked field-names omit-resources search-fields
-           include-completion-display key-filter include-configured-sources)
+           include-completion-display key-filter include-configured-sources omit-fields)
   "Search indexed references for QUERY using bounded LIMIT.
 
 When SOURCE-PATHS is non-nil, restrict results to those bibliography
@@ -1989,7 +2110,10 @@ When SEARCH-FIELDS is non-nil, restrict native FTS matching to those
 index fields.
 
 When INCLUDE-COMPLETION-DISPLAY is non-nil, ask the daemon to include
-pre-shaped standard completion display columns."
+pre-shaped standard completion display columns.
+
+When OMIT-FIELDS is non-nil, keep bibliography fields out of the response;
+callers must hydrate selected candidates explicitly before field access."
   (let* ((parsed (refbox-search--parse-query query))
          (clean-query (plist-get parsed :query))
          (resource-kinds (plist-get parsed :resource-kinds))
@@ -2051,6 +2175,8 @@ pre-shaped standard completion display columns."
                              :include_field_sources :json-false))
                      (when include-completion-display
                        (list :include_completion_display t))
+                     (when omit-fields
+                       (list :include_fields :json-false))
                      (when (refbox--blank-string-p clean-query)
                        (list :allow_empty_query t))
                      (when unranked
@@ -2079,8 +2205,7 @@ interactive search paths should use `refbox-search-references'."
 
 REFERENCE may be a key string or a candidate plist carrying both key
 and source path."
-  (if (and (listp reference)
-           (plist-member reference :fields))
+  (if (refbox--complete-reference-p reference)
       reference
     (let* ((resolved (refbox-rpc-request
                       refbox-rpc-method-entry-by-key
@@ -2130,8 +2255,10 @@ LIMIT-PER-KEY bounds duplicate-key expansion for each requested key."
 (defun refbox--get-entry-candidate (reference)
   "Return REFERENCE as an indexed candidate, or nil when it is absent."
   (cond
-   ((and (listp reference) (plist-member reference :key))
+   ((refbox--complete-reference-p reference)
     reference)
+   ((and (listp reference) (plist-member reference :key))
+    (refbox-entry-by-key reference))
    ((stringp reference)
     (or (when-let ((context-map (refbox--context-reference-map
                                  (list reference))))
@@ -2205,7 +2332,9 @@ nil."
     (user-error "Pass explicit references; full-corpus resource materialization is not supported"))
    ((and (listp reference-or-references)
          (plist-member reference-or-references :key))
-    (list reference-or-references))
+    (if (refbox--complete-reference-p reference-or-references)
+        (list reference-or-references)
+      (refbox--resolved-reference-list (list reference-or-references))))
    ((listp reference-or-references)
     (refbox--resolved-reference-list
      (delete-dups (copy-sequence reference-or-references))))
@@ -3303,8 +3432,9 @@ callable."
 
 (defun refbox-note-source-file-has-items ()
   "Return a predicate checking for file-backed notes by key."
-  (lambda (key)
-    (not (null (refbox-note-files key)))))
+  (when refbox-notes-paths
+    (lambda (key)
+      (not (null (refbox-note-files key))))))
 
 (defun refbox-note-source-file-open (item)
   "Open file-backed note ITEM."
@@ -3443,13 +3573,19 @@ signal a user error; when it is explicitly nil, return nil."
 
 (defun refbox-note-source-has-items-p (reference)
   "Return non-nil when REFERENCE has active note source items."
-  (let ((keys (refbox-reference-related-keys reference))
-        (predicate (refbox-note-source--has-items-predicate)))
-    (and predicate
-         (cl-some
-          (lambda (key)
-            (refbox-note-source--key-has-items-p predicate key))
-          keys))))
+  (when-let ((predicate (refbox-note-source--has-items-predicate)))
+    (cl-some
+     (lambda (key)
+       (refbox-note-source--key-has-items-p predicate key))
+     (refbox-reference-related-keys reference))))
+
+(defun refbox-note-source-has-items-with-predicate-p (reference predicate)
+  "Return non-nil when PREDICATE reports note source items for REFERENCE."
+  (when predicate
+    (cl-some
+     (lambda (key)
+       (refbox-note-source--key-has-items-p predicate key))
+     (refbox-reference-related-keys reference))))
 
 (defun refbox-note-source-preload (references)
   "Preload active note source metadata for REFERENCES when supported."
@@ -4476,8 +4612,10 @@ public key-list contract."
     (mapcar
      (lambda (reference)
        (cond
-        ((and (listp reference) (plist-member reference :key))
+        ((refbox--complete-reference-p reference)
          reference)
+        ((and (listp reference) (plist-member reference :key))
+         (refbox-entry-by-key reference))
         ((stringp reference)
 	         (or (and context-map (gethash reference context-map))
 	             (or (and global-map (gethash reference global-map))
@@ -5250,12 +5388,6 @@ asks before replacing an existing file."
   "Return the display width available for a completion candidate after PREFIX."
   (max 20 (- (frame-width) (string-width (or prefix "")) 2)))
 
-(defun refbox--completion-add-face (text face)
-  "Return TEXT with FACE added without discarding existing field faces."
-  (let ((copy (copy-sequence text)))
-    (add-face-text-property 0 (length copy) face t copy)
-    copy))
-
 (defun refbox--completion-search-input (input)
   "Return the daemon search text derived from completion INPUT."
   (string-join
@@ -5288,6 +5420,10 @@ asks before replacing an existing file."
 (defun refbox--completion-style-sensitive-input-p (input)
   "Return non-nil when INPUT uses completion-style syntax."
   (not (null (refbox--completion-negative-components input))))
+
+(defun refbox--completion-native-style-only-p ()
+  "Return non-nil when the refbox category should trust native search."
+  (equal refbox-completion-category-styles '(basic)))
 
 (defun refbox--completion-visible-text (completion)
   "Return searchable visible text for COMPLETION."
@@ -5335,6 +5471,10 @@ asks before replacing an existing file."
     (refbox-note-source-preload candidates))
   candidates)
 
+(defun refbox--completion-partial-candidate (candidate)
+  "Mark CANDIDATE as lightweight completion metadata."
+  (append candidate (list :refbox_partial t)))
+
 (defun refbox--completion-candidate-display (candidate seen selection-map)
   "Return a propertized display string for CANDIDATE.
 
@@ -5347,18 +5487,16 @@ selection can still resolve to the candidate it came from."
     (let* ((prefix (refbox-reference-indicators candidate))
            (native-display (and (refbox--native-completion-display-active-p)
                                 (refbox--candidate-completion-display candidate)))
-           (base (refbox--completion-add-face
-                  (or (refbox--candidate-value native-display :main)
-                      (refbox-reference-format-main
-                       candidate
-                       (refbox--completion-display-width prefix)
-                       t))
-                  'refbox-highlight))
-           (suffix (refbox--completion-add-face
-                    (or (refbox--candidate-value native-display :suffix)
-                        (refbox-reference-format-suffix candidate))
-                    'refbox))
-           (text (concat base suffix))
+           (main (or (refbox--candidate-value native-display :main)
+                     (refbox-reference-format-main
+                      candidate
+                      (refbox--completion-display-width prefix)
+                      t)))
+           (suffix (or (refbox--candidate-value native-display :suffix)
+                       (refbox-reference-format-suffix candidate)))
+           (main-end (length main))
+           (text-end (+ main-end (length suffix)))
+           (text (concat main suffix))
            (visible-text (substring-no-properties text))
            (counter (1+ (or (gethash visible-text seen) 0)))
            (display (if (= counter 1)
@@ -5366,14 +5504,21 @@ selection can still resolve to the candidate it came from."
                       (concat text
                               (refbox--completion-hidden-identity
                                candidate counter)))))
+      (when (> main-end 0)
+        (add-face-text-property 0 main-end 'refbox-highlight t display))
+      (when (> text-end main-end)
+        (add-face-text-property main-end text-end 'refbox t display))
       (puthash visible-text counter seen)
       (puthash (substring-no-properties display) candidate selection-map)
-      (propertize display
-                  'refbox-candidate candidate
-                  'refbox-prefix prefix
-                  'refbox-visible-text visible-text
-                  'refbox-annotation suffix
-                  'refbox-affixation-suffix ""))))
+      (add-text-properties
+       0 (length display)
+       (list 'refbox-candidate candidate
+             'refbox-prefix prefix
+             'refbox-visible-text visible-text
+             'refbox-annotation suffix
+             'refbox-affixation-suffix "")
+       display)
+      display)))
 
 (defun refbox--completion-prefix-text (completion)
   "Return cached affixation prefix text for COMPLETION."
@@ -5395,8 +5540,10 @@ selection can still resolve to the candidate it came from."
     (let ((gc-cons-threshold
            (max gc-cons-threshold refbox--completion-gc-cons-threshold)))
       (refbox--with-dynamic-cache (plist-get state :cache)
-        (let ((seen (make-hash-table :test 'equal))
-              (selection-map (plist-get state :map)))
+        (let* ((seen (make-hash-table :test 'equal))
+               (selection-map (plist-get state :map))
+               (native-display (refbox--native-completion-display-active-p))
+               (field-names (refbox--completion-request-field-names)))
           (setf (plist-get state :input) input)
           (setf (plist-get state :candidates)
                 (refbox--completion-apply-input-filter
@@ -5405,17 +5552,22 @@ selection can still resolve to the candidate it came from."
                            (refbox--completion-candidate-display
                             candidate seen selection-map))
                          (refbox--completion-preload-candidates
-                          (refbox-search-references
-                           (refbox--completion-search-input input)
-                           (plist-get state :limit)
-                           (plist-get state :source-paths)
-                           (not (refbox--completion-ranked-input-p input))
-                           (refbox--completion-field-names)
-                           t
-                           refbox-completion-search-fields
-                           (refbox--native-completion-display-active-p)
-                           nil
-                           (plist-get state :include-configured-sources))))))))))
+                          (mapcar
+                           (if native-display
+                               #'refbox--completion-partial-candidate
+                             #'identity)
+                           (refbox-search-references
+                            (refbox--completion-search-input input)
+                            (plist-get state :limit)
+                            (plist-get state :source-paths)
+                            (not (refbox--completion-ranked-input-p input))
+                            field-names
+                            t
+                            refbox-completion-search-fields
+                            native-display
+                            nil
+                            (plist-get state :include-configured-sources)
+                            native-display))))))))))
   (plist-get state :candidates))
 
 (defun refbox--completion-filter (candidates predicate)
@@ -5436,11 +5588,14 @@ selection can still resolve to the candidate it came from."
                          predicate)))
         (cond
          ((eq action t)
-          (let ((styled (complete-with-action action candidates string predicate)))
-            (if (or styled
-                    (refbox--completion-style-sensitive-input-p string))
-                styled
-              candidates)))
+          (if (and (refbox--completion-native-style-only-p)
+                   (not (refbox--completion-style-sensitive-input-p string)))
+              candidates
+            (let ((styled (complete-with-action action candidates string predicate)))
+              (if (or styled
+                      (refbox--completion-style-sensitive-input-p string))
+                  styled
+                candidates))))
          ((eq action 'lambda)
           (cl-some (lambda (candidate)
                      (string= string (substring-no-properties candidate)))
@@ -5583,8 +5738,14 @@ decoration."
          (selection-key (substring-no-properties selection)))
     (cond
      ((and allow-empty (string-empty-p selection-key)) nil)
-     ((gethash selection-key (plist-get state :map)))
-     ((get-text-property 0 'refbox-candidate selection))
+     ((when-let ((candidate (gethash selection-key (plist-get state :map))))
+        (if (refbox--partial-reference-p candidate)
+            (refbox-entry-by-key candidate)
+          candidate)))
+     ((when-let ((candidate (get-text-property 0 'refbox-candidate selection)))
+        (if (refbox--partial-reference-p candidate)
+            (refbox-entry-by-key candidate)
+          candidate)))
      ((refbox--read-reference-key-fallback
        selection-key
        predicate

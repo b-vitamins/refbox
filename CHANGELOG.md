@@ -8,6 +8,9 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ### Changed
 - Updated `bibtex-parser` to 0.4.0.
+- Added SQLite hot-row caches for native completion display text and direct
+  resource-kind summaries, keeping type-ahead hydration off the full field and
+  resource tables in the common path.
 
 ### Fixed
 - Made create-note resource candidates for selected key strings display a
@@ -15,6 +18,12 @@ The format follows Keep a Changelog, and this project follows SemVer.
 - Kept custom completion indicators on the same bounded metadata path as the
   default indicators, avoiding per-row resource probes and excess display
   properties during type-ahead completion.
+- Deferred non-display field hydration for native completion rows until after
+  selection, keeping type-ahead requests to the fields needed to draw the
+  visible Citar-like candidate.
+- Omitted empty field/resource arrays from lightweight completion RPC payloads
+  and tightened built-in indicator rendering so custom Citar-style indicator
+  sets stay on the sub-millisecond rendering path.
 
 ## [0.5.2] - 2026-05-17
 

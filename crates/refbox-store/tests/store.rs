@@ -1,6 +1,6 @@
 use refbox_core::{FileParseStatus, IndexedFileMetadata, IndexedFileOrigin};
 use refbox_index::parse_bibliography_file;
-use refbox_store::{KeyScopeOptions, RefboxStore, SCHEMA_VERSION, SearchOptions};
+use refbox_store::{HydrateOptions, KeyScopeOptions, RefboxStore, SCHEMA_VERSION, SearchOptions};
 use rusqlite::Connection;
 use std::fs;
 use std::path::PathBuf;
@@ -83,8 +83,15 @@ fn crossref_inherited_fields_are_indexed_and_searchable() {
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].key, "paper2024");
 
+    let crossref_fields = crossref_field_names();
     let hydrated = store
-        .hydrate_search_results(results, &["crossref".to_string()], None, true, true, None)
+        .hydrate_search_results(
+            results,
+            HydrateOptions {
+                crossref_fields: &crossref_fields,
+                ..HydrateOptions::default()
+            },
+        )
         .expect("search results should hydrate");
     let child = &hydrated[0];
     assert!(
@@ -153,8 +160,15 @@ fn inserts_parsed_files_and_queries_records_back() {
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].key, "smith2020");
     assert_eq!(results[0].entry_type, "article");
+    let crossref_fields = crossref_field_names();
     let hydrated = store
-        .hydrate_search_results(results, &["crossref".to_string()], None, true, true, None)
+        .hydrate_search_results(
+            results,
+            HydrateOptions {
+                crossref_fields: &crossref_fields,
+                ..HydrateOptions::default()
+            },
+        )
         .expect("search results should hydrate");
     assert_eq!(hydrated.len(), 1);
     assert!(
@@ -170,27 +184,58 @@ fn inserts_parsed_files_and_queries_records_back() {
         .and_then(|results| {
             store.hydrate_search_results(
                 results,
-                &["crossref".to_string()],
-                None,
-                false,
-                true,
-                None,
+                HydrateOptions {
+                    crossref_fields: &crossref_fields,
+                    include_resources: false,
+                    ..HydrateOptions::default()
+                },
             )
         })
         .expect("lightweight search results should hydrate");
     assert_eq!(lightweight[0].resource_kinds, vec!["doi"]);
     assert!(lightweight[0].resources.is_empty());
 
+    let completion_only = store
+        .search("scalable", 5, SearchOptions::default())
+        .and_then(|results| {
+            store.hydrate_search_results(
+                results,
+                HydrateOptions {
+                    crossref_fields: &crossref_fields,
+                    field_names: Some(&[
+                        "author".to_string(),
+                        "date".to_string(),
+                        "title".to_string(),
+                    ]),
+                    include_resources: false,
+                    include_fields: false,
+                    include_completion_display: true,
+                    include_field_sources: false,
+                    ..HydrateOptions::default()
+                },
+            )
+        })
+        .expect("completion display results should hydrate");
+    assert!(completion_only[0].fields.is_empty());
+    assert_eq!(
+        completion_only[0]
+            .completion_display
+            .as_ref()
+            .expect("completion display should hydrate")
+            .title,
+        "Scalable Reference Indexing"
+    );
+
     let title_only = store
         .search("scalable", 5, SearchOptions::default())
         .and_then(|results| {
             store.hydrate_search_results(
                 results,
-                &["crossref".to_string()],
-                Some(&["title".to_string()]),
-                true,
-                true,
-                None,
+                HydrateOptions {
+                    crossref_fields: &crossref_fields,
+                    field_names: Some(&["title".to_string()]),
+                    ..HydrateOptions::default()
+                },
             )
         })
         .expect("filtered search results should hydrate");
@@ -207,11 +252,12 @@ fn inserts_parsed_files_and_queries_records_back() {
         .and_then(|results| {
             store.hydrate_search_results(
                 results,
-                &["crossref".to_string()],
-                Some(&["title".to_string()]),
-                true,
-                true,
-                Some(8),
+                HydrateOptions {
+                    crossref_fields: &crossref_fields,
+                    field_names: Some(&["title".to_string()]),
+                    field_value_char_limit: Some(8),
+                    ..HydrateOptions::default()
+                },
             )
         })
         .expect("capped search results should hydrate");
@@ -222,11 +268,13 @@ fn inserts_parsed_files_and_queries_records_back() {
         .and_then(|results| {
             store.hydrate_search_results(
                 results,
-                &["crossref".to_string()],
-                Some(&["title".to_string()]),
-                false,
-                false,
-                None,
+                HydrateOptions {
+                    crossref_fields: &crossref_fields,
+                    field_names: Some(&["title".to_string()]),
+                    include_resources: false,
+                    include_field_sources: false,
+                    ..HydrateOptions::default()
+                },
             )
         })
         .expect("source-free search results should hydrate");
@@ -1134,8 +1182,15 @@ fn resource_queries_inherit_crossref_resources() {
     let results = store
         .search("child", 5, SearchOptions::default())
         .expect("child search should work");
+    let crossref_fields = crossref_field_names();
     let hydrated = store
-        .hydrate_search_results(results, &["crossref".to_string()], None, true, true, None)
+        .hydrate_search_results(
+            results,
+            HydrateOptions {
+                crossref_fields: &crossref_fields,
+                ..HydrateOptions::default()
+            },
+        )
         .expect("hydrated search should include resources");
     let child = hydrated
         .iter()
@@ -1206,16 +1261,16 @@ fn crossref_resource_inheritance_prefers_same_source_parent() {
         .expect("crossref resource filter should use preferred parent");
     assert!(false_global_parent_results.is_empty());
 
+    let crossref_fields = crossref_field_names();
     let hydrated = store
         .hydrate_search_results(
             store
                 .search("child", 5, SearchOptions::default())
                 .expect("child search should work"),
-            &["crossref".to_string()],
-            None,
-            true,
-            true,
-            None,
+            HydrateOptions {
+                crossref_fields: &crossref_fields,
+                ..HydrateOptions::default()
+            },
         )
         .expect("hydrated child should use preferred parent resource kinds");
     let child = hydrated
@@ -1306,4 +1361,8 @@ fn unique_db_path(name: &str) -> PathBuf {
         .expect("system time should be after UNIX_EPOCH")
         .as_nanos();
     std::env::temp_dir().join(format!("{name}-{}-{unique}.sqlite", std::process::id()))
+}
+
+fn crossref_field_names() -> Vec<String> {
+    vec!["crossref".to_string()]
 }

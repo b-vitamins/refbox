@@ -55,7 +55,6 @@
                       refbox-template--fit
                       refbox--shorten-names-to-width
                       refbox--shorten-name
-                      refbox--completion-add-face
                       refbox--completion-affixation
                       refbox--indicator-text
                       refbox-reference-has-files-p

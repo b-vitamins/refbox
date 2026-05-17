@@ -11,7 +11,8 @@ use refbox_core::{
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use thiserror::Error;
 
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 12;
+const RESOURCE_KIND_SEPARATOR: char = '\x1f';
 const ENTRY_FTS_COLUMNS: &[&str] = &[
     "entry_key",
     "title",
@@ -127,6 +128,17 @@ pub struct SearchOptions<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct HydrateOptions<'a> {
+    pub crossref_fields: &'a [String],
+    pub field_names: Option<&'a [String]>,
+    pub include_resources: bool,
+    pub include_fields: bool,
+    pub include_completion_display: bool,
+    pub include_field_sources: bool,
+    pub field_value_char_limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct KeyScopeOptions<'a> {
     pub source_paths: &'a [String],
     pub include_configured_sources: bool,
@@ -156,6 +168,20 @@ impl Default for SearchOptions<'_> {
     }
 }
 
+impl Default for HydrateOptions<'_> {
+    fn default() -> Self {
+        Self {
+            crossref_fields: &[],
+            field_names: None,
+            include_resources: true,
+            include_fields: true,
+            include_completion_display: false,
+            include_field_sources: true,
+            field_value_char_limit: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct StoredSearchEntry {
     pub entry_id: i64,
@@ -164,8 +190,19 @@ pub struct StoredSearchEntry {
     pub entry_type: String,
     pub score: f64,
     pub fields: Vec<StoredField>,
+    pub completion_display: Option<StoredCompletionDisplay>,
     pub resource_kinds: Vec<String>,
     pub resources: Vec<StoredResource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredCompletionDisplay {
+    pub author: String,
+    pub date: String,
+    pub title: String,
+    pub tags: String,
+    pub resource_kinds: Vec<String>,
+    pub crossref_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -478,7 +515,7 @@ impl RefboxStore {
         }
         sql.push_str(" ORDER BY e.entry_key");
 
-        let mut statement = self.connection.prepare(&sql)?;
+        let mut statement = self.connection.prepare_cached(&sql)?;
         let mut rows = statement.query(params_from_iter(parameters))?;
         let mut keys = Vec::new();
         while let Some(row) = rows.next()? {
@@ -823,7 +860,7 @@ impl RefboxStore {
         sql.push_str(" LIMIT ?");
         sql.push_str(&next_param.to_string());
         parameters.push(&limit);
-        let mut statement = self.connection.prepare(&sql)?;
+        let mut statement = self.connection.prepare_cached(&sql)?;
         let results = statement
             .query_map(params_from_iter(parameters), |row| {
                 Ok(SearchResult {
@@ -849,7 +886,7 @@ impl RefboxStore {
             let ranking_window = limit.saturating_mul(16).max(1_000);
             let ranking_window = i64::try_from(ranking_window)
                 .map_err(|_| StoreError::LimitOutOfRange(ranking_window))?;
-            let mut statement = self.connection.prepare(
+            let mut statement = self.connection.prepare_cached(
                 "WITH hits AS (
                      SELECT entry_fts.rowid, entry_fts.rank AS score
                      FROM entry_fts
@@ -880,7 +917,7 @@ impl RefboxStore {
                 .map_err(StoreError::from);
         }
 
-        let mut statement = self.connection.prepare(
+        let mut statement = self.connection.prepare_cached(
             "SELECT e.id, f.path, e.entry_key, e.entry_type, entry_fts.rank AS score
              FROM entry_fts
              JOIN entries e ON e.id = entry_fts.rowid
@@ -906,11 +943,7 @@ impl RefboxStore {
     pub fn hydrate_search_results(
         &self,
         results: Vec<SearchResult>,
-        crossref_fields: &[String],
-        field_names: Option<&[String]>,
-        include_resources: bool,
-        include_field_sources: bool,
-        field_value_char_limit: Option<usize>,
+        options: HydrateOptions<'_>,
     ) -> Result<Vec<StoredSearchEntry>> {
         if results.is_empty() {
             return Ok(Vec::new());
@@ -920,24 +953,57 @@ impl RefboxStore {
             .iter()
             .map(|result| result.entry_id)
             .collect::<Vec<_>>();
-        let crossref_fields = normalized_crossref_fields(crossref_fields);
-        let field_names = normalized_requested_fields(field_names, &crossref_fields);
-        let mut fields_by_entry = self.fields_for_entries(
-            &entry_ids,
-            field_names.as_deref(),
-            include_field_sources,
-            field_value_char_limit,
-        )?;
-        let mut resources_by_entry = if include_resources {
+        let crossref_fields = normalized_crossref_fields(options.crossref_fields);
+        let field_names = normalized_requested_fields(options.field_names, &crossref_fields);
+        let needs_crossref_parent_fields = options.include_resources && !crossref_fields.is_empty();
+        let mut fields_by_entry = if options.include_fields || needs_crossref_parent_fields {
+            let internal_field_names = if options.include_fields {
+                field_names.as_deref()
+            } else {
+                Some(crossref_fields.as_slice())
+            };
+            self.fields_for_entries(
+                &entry_ids,
+                internal_field_names,
+                options.include_field_sources,
+                options.field_value_char_limit,
+            )?
+        } else {
+            HashMap::new()
+        };
+        let mut completion_display_by_entry = if options.include_completion_display {
+            self.completion_display_for_entries(&entry_ids)?
+        } else {
+            HashMap::new()
+        };
+        let mut resources_by_entry = if options.include_resources {
             self.direct_resources_for_entries(&results)?
         } else {
             HashMap::new()
         };
-        let mut resource_kinds_by_entry =
-            self.resource_kinds_for_entries(&entry_ids, &crossref_fields)?;
+        let use_completion_resource_cache = options.include_completion_display
+            && completion_display_by_entry.len() == entry_ids.len();
+        let mut resource_kinds_by_entry = if use_completion_resource_cache {
+            completion_display_by_entry
+                .iter()
+                .map(|(entry_id, display)| (*entry_id, display.resource_kinds.clone()))
+                .collect::<HashMap<_, _>>()
+        } else {
+            self.direct_resource_kinds_for_entries(&entry_ids)?
+        };
+        if inherited_resource_kinds_needed(
+            &crossref_fields,
+            use_completion_resource_cache.then_some(&completion_display_by_entry),
+        ) {
+            self.append_inherited_resource_kinds(
+                &entry_ids,
+                &crossref_fields,
+                &mut resource_kinds_by_entry,
+            )?;
+        }
         let crossref_field_set = crossref_fields.iter().cloned().collect::<HashSet<_>>();
 
-        if include_resources && !crossref_fields.is_empty() {
+        if options.include_resources && !crossref_fields.is_empty() {
             for result in &results {
                 let fields = fields_by_entry
                     .get(&result.entry_id)
@@ -967,6 +1033,7 @@ impl RefboxStore {
             .into_iter()
             .map(|result| {
                 let fields = fields_by_entry.remove(&result.entry_id).unwrap_or_default();
+                let completion_display = completion_display_by_entry.remove(&result.entry_id);
                 let resources = resources_by_entry
                     .remove(&result.entry_id)
                     .unwrap_or_default();
@@ -979,12 +1046,50 @@ impl RefboxStore {
                     key: result.key,
                     entry_type: result.entry_type,
                     score: result.score,
-                    fields,
+                    fields: if options.include_fields {
+                        fields
+                    } else {
+                        Vec::new()
+                    },
+                    completion_display,
                     resource_kinds,
                     resources,
                 }
             })
             .collect())
+    }
+
+    fn completion_display_for_entries(
+        &self,
+        entry_ids: &[i64],
+    ) -> Result<HashMap<i64, StoredCompletionDisplay>> {
+        if entry_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let sql = format!(
+            "SELECT entry_id, author, date, title, tags, resource_kinds, crossref_key
+             FROM entry_completion_display
+             WHERE entry_id IN ({})",
+            placeholders(entry_ids.len()),
+        );
+        let mut statement = self.connection.prepare_cached(&sql)?;
+        let rows = statement
+            .query_map(params_from_iter(entry_ids.iter()), |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    StoredCompletionDisplay {
+                        author: row.get(1)?,
+                        date: row.get(2)?,
+                        title: row.get(3)?,
+                        tags: row.get(4)?,
+                        resource_kinds: decode_resource_kinds(row.get(5)?),
+                        crossref_key: row.get(6)?,
+                    },
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows.into_iter().collect())
     }
 
     fn fields_for_entries(
@@ -1047,7 +1152,7 @@ impl RefboxStore {
             }
         }
         sql.push_str(" ORDER BY entry_id, id");
-        let mut statement = self.connection.prepare(&sql)?;
+        let mut statement = self.connection.prepare_cached(&sql)?;
         let mut fields_by_entry: HashMap<i64, Vec<StoredField>> = HashMap::new();
         let fields = statement
             .query_map(params_from_iter(parameters), stored_field_from_row)?
@@ -1094,7 +1199,7 @@ impl RefboxStore {
              ORDER BY entry_id, id",
             placeholders(entry_ids.len()),
         );
-        let mut statement = self.connection.prepare(&sql)?;
+        let mut statement = self.connection.prepare_cached(&sql)?;
         let mut resources_by_entry: HashMap<i64, Vec<StoredResource>> = HashMap::new();
         let rows = statement
             .query_map(params_from_iter(entry_ids.iter()), stored_resource_row)?
@@ -1125,10 +1230,9 @@ impl RefboxStore {
         Ok(resources_by_entry)
     }
 
-    fn resource_kinds_for_entries(
+    fn direct_resource_kinds_for_entries(
         &self,
         entry_ids: &[i64],
-        crossref_fields: &[String],
     ) -> Result<HashMap<i64, Vec<String>>> {
         if entry_ids.is_empty() {
             return Ok(HashMap::new());
@@ -1142,7 +1246,7 @@ impl RefboxStore {
              ORDER BY entry_id, kind",
             placeholders(entry_ids.len()),
         );
-        let mut statement = self.connection.prepare(&sql)?;
+        let mut statement = self.connection.prepare_cached(&sql)?;
         let rows = statement
             .query_map(params_from_iter(entry_ids.iter()), |row| {
                 Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
@@ -1152,67 +1256,78 @@ impl RefboxStore {
         for (entry_id, kind) in rows {
             kinds_by_entry.entry(entry_id).or_default().push(kind);
         }
-        if !crossref_fields.is_empty() {
-            let sql = format!(
-                "SELECT child.id, pr.kind
-                 FROM entries child
-                 JOIN files child_file ON child_file.id = child.file_id
-                 JOIN fields cf ON cf.entry_id = child.id
-                 JOIN entries parent
-                   ON parent.entry_key = trim(trim(cf.value), '{{}}\"')
-                 JOIN resources pr ON pr.entry_id = parent.id
-                 WHERE child.id IN ({})
-                   AND cf.lookup_name IN ({})
-                   AND parent.id = COALESCE(
-                       (
-                           SELECT local_parent.id
-                           FROM entries local_parent
-                           JOIN files local_parent_file
-                             ON local_parent_file.id = local_parent.file_id
-                           WHERE local_parent.entry_key = parent.entry_key
-                             AND local_parent_file.path = child_file.path
-                           ORDER BY local_parent_file.source_order, local_parent_file.path, local_parent.id
-                           LIMIT 1
-                       ),
-                       (
-                           SELECT global_parent.id
-                           FROM entries global_parent
-                           JOIN files global_parent_file
-                             ON global_parent_file.id = global_parent.file_id
-                           WHERE global_parent.entry_key = parent.entry_key
-                           ORDER BY global_parent_file.source_order, global_parent_file.path, global_parent.id
-                           LIMIT 1
-                       )
-                   )
-                 GROUP BY child.id, pr.kind
-                 ORDER BY child.id, pr.kind",
-                placeholders(entry_ids.len()),
-                placeholders_offset(entry_ids.len(), crossref_fields.len()),
-            );
-            let mut parameters: Vec<&dyn rusqlite::ToSql> = entry_ids
-                .iter()
-                .map(|entry_id| entry_id as &dyn rusqlite::ToSql)
-                .collect();
-            parameters.extend(
-                crossref_fields
-                    .iter()
-                    .map(|field| field as &dyn rusqlite::ToSql),
-            );
-            let mut statement = self.connection.prepare(&sql)?;
-            let rows = statement
-                .query_map(params_from_iter(parameters), |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-                })?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            for (entry_id, kind) in rows {
-                kinds_by_entry.entry(entry_id).or_default().push(kind);
-            }
-            for kinds in kinds_by_entry.values_mut() {
-                kinds.sort();
-                kinds.dedup();
-            }
-        }
         Ok(kinds_by_entry)
+    }
+
+    fn append_inherited_resource_kinds(
+        &self,
+        entry_ids: &[i64],
+        crossref_fields: &[String],
+        kinds_by_entry: &mut HashMap<i64, Vec<String>>,
+    ) -> Result<()> {
+        if entry_ids.is_empty() || crossref_fields.is_empty() {
+            return Ok(());
+        }
+
+        let sql = format!(
+            "SELECT child.id, pr.kind
+             FROM entries child
+             JOIN files child_file ON child_file.id = child.file_id
+             JOIN fields cf ON cf.entry_id = child.id
+             JOIN entries parent
+               ON parent.entry_key = trim(trim(cf.value), '{{}}\"')
+             JOIN resources pr ON pr.entry_id = parent.id
+             WHERE child.id IN ({})
+               AND cf.lookup_name IN ({})
+               AND parent.id = COALESCE(
+                   (
+                       SELECT local_parent.id
+                       FROM entries local_parent
+                       JOIN files local_parent_file
+                         ON local_parent_file.id = local_parent.file_id
+                       WHERE local_parent.entry_key = parent.entry_key
+                         AND local_parent_file.path = child_file.path
+                       ORDER BY local_parent_file.source_order, local_parent_file.path, local_parent.id
+                       LIMIT 1
+                   ),
+                   (
+                       SELECT global_parent.id
+                       FROM entries global_parent
+                       JOIN files global_parent_file
+                         ON global_parent_file.id = global_parent.file_id
+                       WHERE global_parent.entry_key = parent.entry_key
+                       ORDER BY global_parent_file.source_order, global_parent_file.path, global_parent.id
+                       LIMIT 1
+                   )
+               )
+             GROUP BY child.id, pr.kind
+             ORDER BY child.id, pr.kind",
+            placeholders(entry_ids.len()),
+            placeholders_offset(entry_ids.len(), crossref_fields.len()),
+        );
+        let mut parameters: Vec<&dyn rusqlite::ToSql> = entry_ids
+            .iter()
+            .map(|entry_id| entry_id as &dyn rusqlite::ToSql)
+            .collect();
+        parameters.extend(
+            crossref_fields
+                .iter()
+                .map(|field| field as &dyn rusqlite::ToSql),
+        );
+        let mut statement = self.connection.prepare_cached(&sql)?;
+        let rows = statement
+            .query_map(params_from_iter(parameters), |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for (entry_id, kind) in rows {
+            kinds_by_entry.entry(entry_id).or_default().push(kind);
+        }
+        for kinds in kinds_by_entry.values_mut() {
+            kinds.sort();
+            kinds.dedup();
+        }
+        Ok(())
     }
 
     fn resource_owner_by_entry_id(&self, entry_id: i64) -> Result<Option<ResourceOwner>> {
@@ -1469,6 +1584,8 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (8, MIGRATION_008),
     (9, MIGRATION_009),
     (10, MIGRATION_010),
+    (11, MIGRATION_011),
+    (12, MIGRATION_012),
 ];
 
 const MIGRATION_001: &str = r#"
@@ -1768,6 +1885,93 @@ ALTER TABLE files ADD COLUMN source_order INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS files_origin_order_idx ON files(origin, source_order, path);
 "#;
 
+const MIGRATION_011: &str = r#"
+CREATE TABLE IF NOT EXISTS entry_completion_display (
+    entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
+    author TEXT NOT NULL,
+    date TEXT NOT NULL,
+    title TEXT NOT NULL,
+    tags TEXT NOT NULL
+);
+
+INSERT OR REPLACE INTO entry_completion_display(entry_id, author, date, title, tags)
+SELECT
+    e.id,
+    COALESCE(
+        (
+            SELECT value
+            FROM fields
+            WHERE entry_id = e.id
+              AND lookup_name IN ('author', 'editor')
+            ORDER BY CASE lookup_name WHEN 'author' THEN 0 WHEN 'editor' THEN 1 ELSE 2 END, id
+            LIMIT 1
+        ),
+        ''
+    ),
+    COALESCE(
+        (
+            SELECT value
+            FROM fields
+            WHERE entry_id = e.id
+              AND lookup_name IN ('date', 'year', 'issued')
+            ORDER BY CASE lookup_name WHEN 'date' THEN 0 WHEN 'year' THEN 1 WHEN 'issued' THEN 2 ELSE 3 END, id
+            LIMIT 1
+        ),
+        ''
+    ),
+    COALESCE(
+        (
+            SELECT value
+            FROM fields
+            WHERE entry_id = e.id
+              AND lookup_name = 'title'
+            ORDER BY id
+            LIMIT 1
+        ),
+        ''
+    ),
+    COALESCE(
+        (
+            SELECT value
+            FROM fields
+            WHERE entry_id = e.id
+              AND lookup_name IN ('tags', 'keywords')
+            ORDER BY CASE lookup_name WHEN 'tags' THEN 0 WHEN 'keywords' THEN 1 ELSE 2 END, id
+            LIMIT 1
+        ),
+        ''
+    )
+FROM entries e;
+"#;
+
+const MIGRATION_012: &str = r#"
+ALTER TABLE entry_completion_display ADD COLUMN resource_kinds TEXT NOT NULL DEFAULT '';
+ALTER TABLE entry_completion_display ADD COLUMN crossref_key TEXT;
+
+UPDATE entry_completion_display
+SET resource_kinds = COALESCE(
+        (
+            SELECT group_concat(kind, char(31))
+            FROM (
+                SELECT kind
+                FROM resources
+                WHERE entry_id = entry_completion_display.entry_id
+                GROUP BY kind
+                ORDER BY kind
+            )
+        ),
+        ''
+    ),
+    crossref_key = (
+        SELECT value
+        FROM fields
+        WHERE entry_id = entry_completion_display.entry_id
+          AND lookup_name = 'crossref'
+        ORDER BY id
+        LIMIT 1
+    );
+"#;
+
 fn insert_file_rows(
     connection: &Connection,
     file: &BibliographyFile,
@@ -1933,6 +2137,7 @@ fn insert_entry(connection: &Connection, file_id: i64, entry: &BibliographyEntry
     }
 
     insert_fts_row(connection, entry_id, entry)?;
+    insert_completion_display_row(connection, entry_id, entry)?;
     Ok(entry_id)
 }
 
@@ -1975,35 +2180,71 @@ fn insert_diagnostic(
 }
 
 fn insert_fts_row(connection: &Connection, entry_id: i64, entry: &BibliographyEntry) -> Result<()> {
+    let entry_key = entry.id.key.as_str();
+    let title = field_values(entry, &["title", "shorttitle"]);
+    let names = field_values(entry, &["author", "editor", "translator"]);
+    let date = entry
+        .dates
+        .iter()
+        .map(|date| date.raw.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let venue = field_values(
+        entry,
+        &[
+            "journaltitle",
+            "journal",
+            "booktitle",
+            "container-title",
+            "venue",
+            "publisher",
+        ],
+    );
+    let keywords = field_values(entry, &["keywords", "tags", "mendeley-tags"]);
+    let identifiers = field_values(
+        entry,
+        &[
+            "doi", "url", "pmid", "pmcid", "isbn", "issn", "eprint", "arxiv", "crossref",
+        ],
+    );
+
     execute_cached(
         connection,
         "INSERT INTO entry_fts(rowid, entry_key, title, names, date, venue, abstract, keywords, identifiers)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             entry_id,
-            entry.id.key,
-            field_values(entry, &["title", "shorttitle"]),
-            field_values(entry, &["author", "editor", "translator"]),
-            entry.dates.iter().map(|date| date.raw.as_str()).collect::<Vec<_>>().join(" "),
-            field_values(
-                entry,
-                &[
-                    "journaltitle",
-                    "journal",
-                    "booktitle",
-                    "container-title",
-                    "venue",
-                    "publisher",
-                ],
-            ),
+            entry_key,
+            title,
+            names,
+            date,
+            venue,
             field_values(entry, &["abstract", "annotation", "annote"]),
-            field_values(entry, &["keywords", "tags", "mendeley-tags"]),
-            field_values(
-                entry,
-                &[
-                    "doi", "url", "pmid", "pmcid", "isbn", "issn", "eprint", "arxiv", "crossref",
-                ],
-            ),
+            keywords,
+            identifiers,
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_completion_display_row(
+    connection: &Connection,
+    entry_id: i64,
+    entry: &BibliographyEntry,
+) -> Result<()> {
+    execute_cached(
+        connection,
+        "INSERT INTO entry_completion_display(
+             entry_id, author, date, title, tags, resource_kinds, crossref_key
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            entry_id,
+            first_field_value(entry, &["author", "editor"]),
+            first_field_value(entry, &["date", "year", "issued"]),
+            first_field_value(entry, &["title"]),
+            first_field_value(entry, &["tags", "keywords"]),
+            entry_resource_kind_summary(entry),
+            optional_first_field_value(entry, &["crossref"]),
         ],
     )?;
     Ok(())
@@ -2152,20 +2393,24 @@ fn fts_query_from_user_input_with_mode(
 }
 
 fn fts_query_field_filter(search_fields: &[String]) -> Option<String> {
-    if search_fields.is_empty() {
-        return None;
-    }
-
-    let fields = search_fields
-        .iter()
-        .map(|field| field.trim().to_ascii_lowercase())
-        .filter(|field| ENTRY_FTS_COLUMNS.contains(&field.as_str()))
-        .collect::<Vec<_>>();
+    let fields = fts_query_columns(search_fields);
     if fields.is_empty() {
         None
     } else {
         Some(fields.join(" "))
     }
+}
+
+fn fts_query_columns(search_fields: &[String]) -> Vec<String> {
+    if search_fields.is_empty() {
+        return Vec::new();
+    }
+
+    search_fields
+        .iter()
+        .map(|field| field.trim().to_ascii_lowercase())
+        .filter(|field| ENTRY_FTS_COLUMNS.contains(&field.as_str()))
+        .collect::<Vec<_>>()
 }
 
 fn levenshtein_at_most(left: &str, right: &str, max_distance: usize) -> bool {
@@ -2238,6 +2483,31 @@ fn normalized_requested_fields(
         fields.sort();
         fields.dedup();
         fields
+    })
+}
+
+fn inherited_resource_kinds_needed(
+    crossref_fields: &[String],
+    completion_display_by_entry: Option<&HashMap<i64, StoredCompletionDisplay>>,
+) -> bool {
+    if crossref_fields.is_empty() {
+        return false;
+    }
+
+    let Some(completion_display_by_entry) = completion_display_by_entry else {
+        return true;
+    };
+
+    if crossref_fields.len() != 1 || crossref_fields[0] != "crossref" {
+        return true;
+    }
+
+    completion_display_by_entry.values().any(|display| {
+        display
+            .crossref_key
+            .as_deref()
+            .and_then(clean_bibliography_scalar)
+            .is_some()
     })
 }
 
@@ -2524,6 +2794,49 @@ fn field_values(entry: &BibliographyEntry, names: &[&str]) -> String {
         .map(|field| field.value.as_str())
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn first_field_value(entry: &BibliographyEntry, names: &[&str]) -> String {
+    entry
+        .fields
+        .iter()
+        .find(|field| names.contains(&field.lookup_name.as_str()))
+        .map(|field| field.value.clone())
+        .unwrap_or_default()
+}
+
+fn optional_first_field_value(entry: &BibliographyEntry, names: &[&str]) -> Option<String> {
+    entry
+        .fields
+        .iter()
+        .find(|field| names.contains(&field.lookup_name.as_str()))
+        .map(|field| field.value.clone())
+}
+
+fn entry_resource_kind_summary(entry: &BibliographyEntry) -> String {
+    let mut kinds = entry
+        .resources
+        .iter()
+        .map(|resource| resource_kind_name(resource.kind).to_string())
+        .collect::<Vec<_>>();
+    kinds.sort();
+    kinds.dedup();
+    encode_resource_kinds(&kinds)
+}
+
+fn encode_resource_kinds(kinds: &[String]) -> String {
+    kinds.join(&RESOURCE_KIND_SEPARATOR.to_string())
+}
+
+fn decode_resource_kinds(encoded: String) -> Vec<String> {
+    if encoded.is_empty() {
+        Vec::new()
+    } else {
+        encoded
+            .split(RESOURCE_KIND_SEPARATOR)
+            .map(ToOwned::to_owned)
+            .collect()
+    }
 }
 
 fn metadata_from_file(file: &BibliographyFile) -> IndexedFileMetadata {

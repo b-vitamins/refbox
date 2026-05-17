@@ -19,8 +19,7 @@ const SEARCH_LIMIT: usize = 20;
 const CAPF_LIMIT: usize = 50;
 const COMPLETION_FIELD_VALUE_LIMIT: usize = 1024;
 const COMPLETION_FIELDS: &[&str] = &[
-    "author", "editor", "date", "year", "issued", "title", "=key=", "id", "=type=", "tags",
-    "keywords", "crossref",
+    "author", "editor", "date", "year", "issued", "title", "tags", "keywords", "crossref",
 ];
 const COMPLETION_SEARCH_FIELDS: &[&str] = &[
     "entry_key",
@@ -441,6 +440,7 @@ fn main() -> Result<()> {
                 "limit": CAPF_LIMIT,
                 "ranked": false,
                 "include_resources": false,
+                "include_fields": false,
                 "include_field_sources": false,
                 "include_completion_display": true,
                 "field_names": completion_fields,

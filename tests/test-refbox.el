@@ -968,9 +968,11 @@
                          '("crossref")))
           (should (equal (append (plist-get params :search_fields) nil)
                          refbox-completion-search-fields))
-          (should (eq (plist-get params :include_resources) :json-false)))
+          (should (eq (plist-get params :include_resources) :json-false))
+          (should-not (plist-member params :include_fields)))
         (should (string-match-p "smith2020" candidate-string))
         (should (equal (plist-get candidate :key) "smith2020"))
+        (should-not (plist-get candidate :refbox_partial))
         (should (eq (get-text-property 0 'face candidate-string)
                     'refbox-highlight))
         (should
@@ -986,6 +988,49 @@
                  "L F"
                  (nth 1 affixation)))
         (should (string-empty-p (nth 2 affixation)))))))
+
+(ert-deftest refbox-test-native_completion_requests_only_display_fields ()
+  "Native completion should defer non-display fields until selection."
+  (let ((calls nil))
+    (cl-letf (((symbol-function 'refbox-rpc-request)
+               (lambda (method params)
+                 (push (list method params) calls)
+                 (should (equal method refbox-rpc-method-search-entries))
+                 (list :entries (list refbox-test-reference-candidate)))))
+      (let* ((state (refbox--completion-state 7))
+             (table (refbox--completion-table state))
+             (candidates (funcall table "alpha" nil t))
+             (candidate (get-text-property 0 'refbox-candidate (car candidates)))
+             (params (cadar calls)))
+        (should (equal (append (plist-get params :field_names) nil)
+                       (append refbox--native-completion-field-names
+                               (refbox--crossref-field-names))))
+        (should (eq (plist-get params :include_completion_display) t))
+        (should (eq (plist-get params :include_fields) :json-false))
+        (should (plist-get candidate :refbox_partial))))))
+
+(ert-deftest refbox-test-read_reference_hydrates_partial_completion_candidate ()
+  "Selected lightweight completion candidates should hydrate before returning."
+  (let* ((state (refbox--completion-state 7))
+         (partial '(:key "smith2020"
+                    :source_path "/tmp/main.bib"
+                    :fields nil
+                    :refbox_partial t))
+         (full '(:key "smith2020"
+                 :source_path "/tmp/main.bib"
+                 :fields ((:lookup_name "title" :value "Full Title")))))
+    (puthash "visible row" partial (plist-get state :map))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (&rest _args) "visible row"))
+              ((symbol-function 'refbox--sync-current-bibliography-buffer-if-needed)
+               #'ignore)
+              ((symbol-function 'refbox-entry-by-key)
+               (lambda (reference)
+                 (should (eq reference partial))
+                 full)))
+      (should (eq (refbox--read-reference-from-state
+                   "Reference: " nil nil nil state)
+                  full)))))
 
 (ert-deftest refbox-test-default_indicator_order_matches_citar ()
   "Default indicators should preserve Citar's link/file/note/cited order."
@@ -1035,8 +1080,37 @@
      (string-match-p
       "L"
       (substring-no-properties
+      (refbox-reference-indicators
+       '(:key "gamma" :resource_kinds ["eprint"])))))))
+
+(ert-deftest refbox-test-custom_builtin_indicators_use_batched_fast_path ()
+  "Custom symbols backed by built-in predicates should keep one-pass matching."
+  (let* ((note-checks 0)
+         (refbox-indicators
+          (list
+           (refbox-indicator-create
+            :symbol "N" :function #'refbox-has-notes :tag "has:notes")
+           (refbox-indicator-create
+            :symbol "P" :function #'refbox-has-files :tag "has:files")
+           (refbox-indicator-create
+            :symbol "L" :function #'refbox-has-links :tag "has:links")))
+         (refbox-notes-source 'mock)
+         (refbox-notes-sources
+          `((mock
+             :items ,#'ignore
+             :hasitems ,(lambda ()
+                          (lambda (_key)
+                            (setq note-checks (1+ note-checks))
+                            t))
+             :open ,#'ignore))))
+    (should (refbox--builtin-indicators-p))
+    (should
+     (string-prefix-p
+      "N P L"
+      (substring-no-properties
        (refbox-reference-indicators
-        '(:key "gamma" :resource_kinds ["eprint"])))))))
+        '(:key "alpha" :resource_kinds ["file" "doi"])))))
+    (should (= note-checks 1))))
 
 (ert-deftest refbox-test-completion-uses_daemon_shaped_default_display ()
   "Default completion display should use daemon-shaped rows when present."
@@ -1240,6 +1314,7 @@
 (ert-deftest refbox-test-completion-delegates_visible_text_to_completion_styles ()
   "The minibuffer table should let completion styles filter display strings."
   (let ((refbox-templates '((main . "%{key} %{title}")))
+        (refbox-completion-category-styles '(substring basic))
         (completion-styles '(substring basic)))
     (cl-letf (((symbol-function 'refbox-search-references)
                (lambda (_query &rest _args)
@@ -1252,6 +1327,24 @@
              (candidates (funcall table "doe" nil t)))
         (should (= (length candidates) 1))
         (should (string-match-p "doe2021" (car candidates)))))))
+
+(ert-deftest refbox-test-completion-basic_category_skips_global_styles ()
+  "The native basic category should not run global completion styles again."
+  (let ((refbox-completion-category-styles '(basic))
+        (completion-styles '(orderless basic))
+        (called nil))
+    (cl-letf (((symbol-function 'refbox-search-references)
+               (lambda (_query &rest _args)
+                 (list refbox-test-reference-candidate)))
+              ((symbol-function 'complete-with-action)
+               (lambda (&rest _args)
+                 (setq called t)
+                 nil)))
+      (let* ((state (refbox--completion-state 10))
+             (table (refbox--completion-table state))
+             (candidates (funcall table "alpha" nil t)))
+        (should (= (length candidates) 1))
+        (should-not called)))))
 
 (ert-deftest refbox-test-completion-keeps_native_matches_when_styles_reject_display ()
   "Native search hits should remain visible for non-prefix typeahead input."
@@ -1845,6 +1938,9 @@
     (cl-letf (((symbol-function 'refbox-rpc-request)
                (lambda (_method _params)
                  (list :entries (list alpha beta))))
+              ((symbol-function 'refbox-entry-by-key)
+               (lambda (candidate)
+                 (plist-put (copy-sequence candidate) :refbox_partial nil)))
               ((symbol-function 'completing-read)
                (lambda (_prompt collection predicate &rest _args)
                  (car (all-completions "beta" collection predicate)))))
@@ -2327,6 +2423,11 @@
              :hasitems ,(lambda () nil)
              :open ,#'ignore))))
     (should-not (refbox-reference-has-notes-p candidate))))
+
+(ert-deftest refbox-test-file_note_predicate_skips_empty_note_paths ()
+  "File-backed note indicators should be free when no note paths are configured."
+  (let ((refbox-notes-paths nil))
+    (should-not (refbox-note-source-file-has-items))))
 
 (ert-deftest refbox-test-note_predicate_hydrates_key_references ()
   "Note predicates should check cross-reference keys from hydrated references."

@@ -22,8 +22,8 @@ use refbox_rpc::{
     StatusResponse, SyncFileRequest, SyncResponse, clamp_limit,
 };
 use refbox_store::{
-    KeyScopeOptions, RefboxStore, SearchOptions, SearchResult, StoredEntry, StoredField,
-    StoredSearchEntry,
+    HydrateOptions, KeyScopeOptions, RefboxStore, SearchOptions, SearchResult, StoredEntry,
+    StoredField, StoredSearchEntry,
 };
 use serde::de::DeserializeOwned;
 
@@ -231,12 +231,13 @@ impl Daemon {
     }
 
     fn entry_search_item(entry: StoredSearchEntry) -> EntrySearchItem {
-        Self::entry_search_item_with_display(entry, false)
+        Self::entry_search_item_with_display(entry, false, true)
     }
 
     fn entry_search_item_with_display(
         entry: StoredSearchEntry,
         include_completion_display: bool,
+        include_fields: bool,
     ) -> EntrySearchItem {
         let completion_display =
             include_completion_display.then(|| completion_display_item(&entry));
@@ -246,7 +247,11 @@ impl Daemon {
             source_path: entry.file_path,
             entry_type: entry.entry_type,
             score: entry.score,
-            fields: entry.fields.into_iter().map(field_item).collect(),
+            fields: if include_fields {
+                entry.fields.into_iter().map(field_item).collect()
+            } else {
+                Vec::new()
+            },
             resource_kinds: entry.resource_kinds,
             resources: entry.resources.into_iter().map(resource_item).collect(),
             completion_display,
@@ -316,6 +321,7 @@ impl Daemon {
                 let search_fields = request.search_fields.unwrap_or_default();
                 let field_names = request.field_names;
                 let include_resources = request.include_resources.unwrap_or(true);
+                let include_fields = request.include_fields.unwrap_or(true);
                 let include_field_sources = request.include_field_sources.unwrap_or(true);
                 let include_completion_display =
                     request.include_completion_display.unwrap_or(false);
@@ -341,16 +347,24 @@ impl Daemon {
                     .store
                     .hydrate_search_results(
                         search_results,
-                        &crossref_fields,
-                        field_names.as_deref(),
-                        include_resources,
-                        include_field_sources,
-                        field_value_char_limit,
+                        HydrateOptions {
+                            crossref_fields: &crossref_fields,
+                            field_names: field_names.as_deref(),
+                            include_resources,
+                            include_fields,
+                            include_completion_display,
+                            include_field_sources,
+                            field_value_char_limit,
+                        },
                     )
                     .map_err(store_error)?
                     .into_iter()
                     .map(|entry| {
-                        Self::entry_search_item_with_display(entry, include_completion_display)
+                        Self::entry_search_item_with_display(
+                            entry,
+                            include_completion_display,
+                            include_fields,
+                        )
                     })
                     .collect();
                 self.to_value(SearchEntriesResponse { entries })
@@ -372,15 +386,15 @@ impl Daemon {
                         score: 0.0,
                     })
                     .collect();
+                let crossref_fields = default_crossref_fields();
                 let entries = self
                     .store
                     .hydrate_search_results(
                         search_results,
-                        &default_crossref_fields(),
-                        None,
-                        true,
-                        true,
-                        None,
+                        HydrateOptions {
+                            crossref_fields: &crossref_fields,
+                            ..HydrateOptions::default()
+                        },
                     )
                     .map_err(store_error)?
                     .into_iter()
@@ -440,11 +454,10 @@ impl Daemon {
                     .store
                     .hydrate_search_results(
                         search_results,
-                        &crossref_fields,
-                        None,
-                        true,
-                        true,
-                        None,
+                        HydrateOptions {
+                            crossref_fields: &crossref_fields,
+                            ..HydrateOptions::default()
+                        },
                     )
                     .map_err(store_error)?
                     .into_iter()
@@ -948,12 +961,25 @@ fn entry_item(entry: StoredEntry) -> EntryItem {
 }
 
 fn completion_display_item(entry: &StoredSearchEntry) -> EntryCompletionDisplayItem {
-    let author = first_clean_field(&entry.fields, &["author", "editor"])
-        .map(|value| shorten_names_to_width(&value, 30))
-        .unwrap_or_default();
-    let date = first_clean_field(&entry.fields, &["date", "year", "issued"]).unwrap_or_default();
-    let title = first_clean_field(&entry.fields, &["title"]).unwrap_or_default();
-    let tags = first_clean_field(&entry.fields, &["tags", "keywords"]).unwrap_or_default();
+    let (author, date, title, tags) = if let Some(display) = &entry.completion_display {
+        (
+            clean_bibliography_value(&display.author)
+                .map(|value| shorten_names_to_width(&value, 30))
+                .unwrap_or_default(),
+            clean_bibliography_value(&display.date).unwrap_or_default(),
+            clean_bibliography_value(&display.title).unwrap_or_default(),
+            clean_bibliography_value(&display.tags).unwrap_or_default(),
+        )
+    } else {
+        (
+            first_clean_field(&entry.fields, &["author", "editor"])
+                .map(|value| shorten_names_to_width(&value, 30))
+                .unwrap_or_default(),
+            first_clean_field(&entry.fields, &["date", "year", "issued"]).unwrap_or_default(),
+            first_clean_field(&entry.fields, &["title"]).unwrap_or_default(),
+            first_clean_field(&entry.fields, &["tags", "keywords"]).unwrap_or_default(),
+        )
+    };
 
     EntryCompletionDisplayItem {
         main: format!(
@@ -1155,12 +1181,7 @@ mod tests {
             }),
         )));
         assert_eq!(lightweight_search["entries"][0]["key"], "a2020");
-        assert!(
-            lightweight_search["entries"][0]["resources"]
-                .as_array()
-                .expect("resources array")
-                .is_empty()
-        );
+        assert!(lightweight_search["entries"][0].get("resources").is_none());
         assert!(
             lightweight_search["entries"][0]["fields"][0]
                 .get("source")
@@ -1178,10 +1199,13 @@ mod tests {
                 "query": "alpha",
                 "limit": 500,
                 "include_resources": false,
+                "include_fields": false,
                 "include_field_sources": false,
                 "include_completion_display": true,
             }),
         )));
+        assert!(completion_search["entries"][0].get("fields").is_none());
+        assert!(completion_search["entries"][0].get("resources").is_none());
         assert!(
             completion_search["entries"][0]["completion_display"]["main"]
                 .as_str()

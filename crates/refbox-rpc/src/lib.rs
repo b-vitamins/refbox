@@ -191,6 +191,7 @@ pub struct SearchEntriesRequest {
     pub search_fields: Option<Vec<String>>,
     pub field_names: Option<Vec<String>>,
     pub field_value_char_limit: Option<usize>,
+    pub include_fields: Option<bool>,
     pub include_field_sources: Option<bool>,
     pub include_completion_display: Option<bool>,
     pub allow_empty_query: Option<bool>,
@@ -230,8 +231,10 @@ pub struct EntrySearchItem {
     pub source_path: String,
     pub entry_type: String,
     pub score: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<EntryFieldItem>,
     pub resource_kinds: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resources: Vec<ResourceItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completion_display: Option<EntryCompletionDisplayItem>,
