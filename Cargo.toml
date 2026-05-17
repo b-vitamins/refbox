@@ -20,7 +20,7 @@ license = "GPL-3.0-or-later"
 
 [workspace.dependencies]
 anyhow = "1.0.100"
-bibtex-parser = "0.3.1"
+bibtex-parser = "0.4.0"
 clap = { version = "4.5.48", features = ["derive"] }
 globset = "0.4.18"
 serde = { version = "1.0.219", features = ["derive"] }

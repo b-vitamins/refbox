@@ -82,9 +82,9 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "bibtex-parser"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0e46d34c7455408137a3051659cc603a1ceefb6757afd0864483f29eae0b34f"
+checksum = "f4408a7734ea81096f09a97829359c1f5392b4cc4ed6eb5b6018a9a417a31cdd"
 dependencies = [
  "ahash",
  "itoa",

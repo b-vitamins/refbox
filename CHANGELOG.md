@@ -6,6 +6,9 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+### Changed
+- Updated `bibtex-parser` to 0.4.0.
+
 ### Fixed
 - Made create-note resource candidates for selected key strings display a
   visible note-source label instead of rendering as a blank completion row.
