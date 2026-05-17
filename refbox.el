@@ -67,6 +67,11 @@
   "Face for highlighted refbox text."
   :group 'refbox)
 
+(defface refbox-match
+  '((t :inherit match))
+  "Face for search matches in refbox completion candidates."
+  :group 'refbox)
+
 (defface refbox-title
   '((t :inherit font-lock-function-name-face))
   "Face for reference titles."
@@ -332,6 +337,9 @@ keeps long abstracts out of type-ahead completion results."
 (defconst refbox--native-completion-field-names
   '("author" "editor" "date" "year" "issued" "title" "tags" "keywords")
   "Bibliography fields needed for daemon-shaped native completion rows.")
+
+(defconst refbox--native-completion-main-display-width 92
+  "Display width of the default native completion main columns.")
 
 (defcustom refbox-completion-ranked-min-input 8
   "Minimum alphanumeric input length before minibuffer completion uses ranking.
@@ -5461,6 +5469,36 @@ asks before replacing an existing file."
    'invisible t
    'refbox-internal-identity t))
 
+(defun refbox--completion-fit-display-width (text width)
+  "Return TEXT fitted to WIDTH display columns."
+  (truncate-string-to-width text width 0 ?\s nil))
+
+(defun refbox--completion-match-components (input)
+  "Return literal visible-text match components for completion INPUT."
+  (let* ((query (plist-get
+                 (refbox-search--parse-query
+                  (refbox--completion-search-input input))
+                 :query)))
+    (delete-dups
+     (cl-remove-if
+      #'refbox--blank-string-p
+      (split-string-and-unquote query)))))
+
+(defun refbox--completion-apply-match-highlights (display visible-end input)
+  "Apply refbox match highlighting to DISPLAY before VISIBLE-END."
+  (let ((case-fold-search t))
+    (dolist (component (refbox--completion-match-components input))
+      (let ((regexp (regexp-quote component))
+            (start 0))
+        (while (and (< start visible-end)
+                    (string-match regexp display start))
+          (let ((begin (match-beginning 0))
+                (end (min (match-end 0) visible-end)))
+            (when (< begin visible-end)
+              (add-face-text-property begin end 'refbox-match nil display))
+            (setq start (max (1+ begin) (match-end 0))))))))
+  display)
+
 (defun refbox--completion-preload-candidates (candidates)
   "Preload optional per-page metadata for completion CANDIDATES."
   (when (and candidates
@@ -5475,23 +5513,29 @@ asks before replacing an existing file."
   "Mark CANDIDATE as lightweight completion metadata."
   (append candidate (list :refbox_partial t)))
 
-(defun refbox--completion-candidate-display (candidate seen selection-map)
+(defun refbox--completion-candidate-display
+    (candidate seen selection-map &optional input)
   "Return a propertized display string for CANDIDATE.
 
 SEEN tracks visible duplicate rows in the current result page.  SELECTION-MAP
 is retained across minibuffer input changes so a final plain-string
-selection can still resolve to the candidate it came from."
+selection can still resolve to the candidate it came from.  INPUT is the
+current minibuffer text, used only for visible match highlighting."
   (let ((refbox--reference-field-cache
          (or refbox--reference-field-cache
              (make-hash-table :test 'eq))))
     (let* ((prefix (refbox-reference-indicators candidate))
            (native-display (and (refbox--native-completion-display-active-p)
                                 (refbox--candidate-completion-display candidate)))
-           (main (or (refbox--candidate-value native-display :main)
-                     (refbox-reference-format-main
-                      candidate
-                      (refbox--completion-display-width prefix)
-                      t)))
+           (native-main (refbox--candidate-value native-display :main))
+           (main (if native-main
+                     (refbox--completion-fit-display-width
+                      native-main
+                      refbox--native-completion-main-display-width)
+                   (refbox-reference-format-main
+                    candidate
+                    (refbox--completion-display-width prefix)
+                    t)))
            (suffix (or (refbox--candidate-value native-display :suffix)
                        (refbox-reference-format-suffix candidate)))
            (main-end (length main))
@@ -5508,6 +5552,8 @@ selection can still resolve to the candidate it came from."
         (add-face-text-property 0 main-end 'refbox-highlight t display))
       (when (> text-end main-end)
         (add-face-text-property main-end text-end 'refbox t display))
+      (when input
+        (refbox--completion-apply-match-highlights display text-end input))
       (puthash visible-text counter seen)
       (puthash (substring-no-properties display) candidate selection-map)
       (add-text-properties
@@ -5550,7 +5596,7 @@ selection can still resolve to the candidate it came from."
                  input
                  (mapcar (lambda (candidate)
                            (refbox--completion-candidate-display
-                            candidate seen selection-map))
+                            candidate seen selection-map input))
                          (refbox--completion-preload-candidates
                           (mapcar
                            (if native-display

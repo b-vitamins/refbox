@@ -32,6 +32,16 @@
   (should-not (refbox-rpc-live-p))
   (should-not refbox--connection))
 
+(defun refbox-test-face-includes-p (face-property face)
+  "Return non-nil when FACE-PROPERTY contains FACE."
+  (cond
+   ((eq face-property face) t)
+   ((listp face-property)
+    (cl-some (lambda (item)
+               (or (eq item face)
+                   (and (listp item) (memq face item))))
+             face-property))))
+
 (ert-deftest refbox-test-rpc-command-construction ()
   "Daemon command construction should use validated user options."
   (let* ((root (make-temp-file "refbox-root-" t))
@@ -1123,8 +1133,52 @@
          (selection-map (make-hash-table :test 'equal))
          (display (refbox--completion-candidate-display
                    candidate seen selection-map)))
-    (should (string-match-p "Native MainNative Suffix" display))
+    (should (string-match-p "Native Main" display))
+    (should (string-match-p "Native Suffix" display))
+    (should
+     (=
+      (string-width (substring display
+                               0
+                               (string-match-p "Native Suffix" display)))
+      refbox--native-completion-main-display-width))
     (should-not (string-match-p "Alpha Reference Title" display))))
+
+(ert-deftest refbox-test-completion_highlights_native_title_matches ()
+  "Native completion rows should highlight visible title terms themselves."
+  (let* ((candidate (append
+                     (copy-tree refbox-test-reference-candidate)
+                     (list :completion_display
+                           '(:main "Hoover, Krotov                2025     Dense Associative Memory with Energy"
+                             :suffix "          hoover2025dense article"))))
+         (seen (make-hash-table :test 'equal))
+         (selection-map (make-hash-table :test 'equal))
+         (display (refbox--completion-candidate-display
+                   candidate seen selection-map "associative memory"))
+         (case-fold-search t))
+    (dolist (term '("Associative" "Memory"))
+      (let ((pos (string-match-p term display)))
+        (should pos)
+        (should (refbox-test-face-includes-p
+                 (get-text-property pos 'face display)
+                 'refbox-match))))))
+
+(ert-deftest refbox-test-completion_normalizes_native_main_display_width ()
+  "Native main rows should be re-fitted with Emacs display-width rules."
+  (let* ((candidate (append
+                     (copy-tree refbox-test-reference-candidate)
+                     (list :completion_display
+                           (list :main (concat (make-string 91 ?x) "漢")
+                                 :suffix "Suffix"))))
+         (seen (make-hash-table :test 'equal))
+         (selection-map (make-hash-table :test 'equal))
+         (display (refbox--completion-candidate-display
+                   candidate seen selection-map)))
+    (should
+     (=
+      (string-width (substring display
+                               0
+                               (string-match-p "Suffix" display)))
+      refbox--native-completion-main-display-width))))
 
 (ert-deftest refbox-test-completion-hides_duplicate_source_identity ()
   "Duplicate rows should not expose source paths in the visible display."

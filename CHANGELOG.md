@@ -6,6 +6,14 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+### Fixed
+- Highlighted visible title and suffix matches in native reference completion
+  rows instead of relying on completion styles that are bypassed for
+  daemon-ranked `basic` matching.
+- Re-fitted daemon-shaped native completion main columns with Emacs display
+  width rules before appending suffix columns, preserving alignment for
+  variable-width glyphs and wide characters.
+
 ## [0.6.0] - 2026-05-18
 
 ### Changed
