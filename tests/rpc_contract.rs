@@ -5,9 +5,10 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use refbox_rpc::{
-    METHOD_DIAGNOSTICS, METHOD_DUPLICATE_GROUPS, METHOD_ENTRIES_BY_KEYS, METHOD_ENTRY_BY_KEY,
-    METHOD_LIST_ENTRIES, METHOD_RAW_ENTRY, METHOD_RESOURCES_BY_KEY, METHOD_SEARCH_ENTRIES,
-    METHOD_SOURCE_LOCATION, METHOD_STATUS, METHOD_SYNC_FILE, METHOD_SYNC_FULL,
+    METHOD_CLOSE_KEYS, METHOD_DIAGNOSTICS, METHOD_DUPLICATE_GROUPS, METHOD_ENTRIES_BY_KEYS,
+    METHOD_ENTRY_BY_KEY, METHOD_LIST_ENTRIES, METHOD_RAW_ENTRY, METHOD_RESOURCES_BY_KEY,
+    METHOD_SEARCH_ENTRIES, METHOD_SOURCE_LOCATION, METHOD_STATUS, METHOD_SYNC_FILE,
+    METHOD_SYNC_FULL,
 };
 use serde_json::{Value, json};
 
@@ -32,17 +33,21 @@ fn stdio_rpc_contract_covers_success_and_error_shapes() {
         "duplicates-d.bib",
         "@book{zdup2021,\n  title = {Second Duplicate Book},\n  date = {2021}\n}\n",
     );
+    project.write(
+        "close.bib",
+        "@article{alphb2020,\n  title = {Close Key}\n}\n",
+    );
     project.write("malformed.bib", include_str!("fixtures/malformed.bib"));
     let mut rpc = RpcProcess::spawn(project.root.clone(), project.path("index.sqlite"));
 
     let sync = rpc.result(1, METHOD_SYNC_FULL, json!({}));
-    assert_eq!(sync["discovered_file_count"], 7);
+    assert_eq!(sync["discovered_file_count"], 8);
     assert!(sync["indexed_entry_count"].as_u64().expect("entry count") >= 7);
     assert!(sync["diagnostic_count"].as_u64().expect("diagnostics") >= 1);
 
     let status = rpc.result(2, METHOD_STATUS, json!({}));
     assert_eq!(status["schema_version"], 10);
-    assert_eq!(status["counts"]["file_count"], 7);
+    assert_eq!(status["counts"]["file_count"], 8);
     assert!(status["counts"]["entry_count"].as_u64().expect("entries") >= 7);
 
     let scoped_search = rpc.result(
@@ -99,8 +104,19 @@ fn stdio_rpc_contract_covers_success_and_error_shapes() {
             .is_empty()
     );
 
+    let close_keys = rpc.result(
+        43,
+        METHOD_CLOSE_KEYS,
+        json!({
+            "key": "alpha2020",
+            "max_distance": 1,
+            "limit": 10,
+        }),
+    );
+    assert_eq!(close_keys["keys"], json!(["alphb2020"]));
+
     let xref_entries = rpc.result(
-        42,
+        44,
         METHOD_ENTRIES_BY_KEYS,
         json!({
             "keys": ["xchild2021"],

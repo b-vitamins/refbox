@@ -68,6 +68,13 @@ The format follows Keep a Changelog, and this project follows SemVer.
 - Matched Citar's citeproc formatter contract by returning citeproc's formatted bibliography string directly.
 - Matched Citar's template formatter by preserving text properties attached to field placeholders.
 - Matched Citar's template width parsing for empty, zero, zero-padded, and nonnumeric width markers.
+- Matched Citar's CAPF return contract by exposing annotation and completion-exit hooks directly.
+- Matched Citar's Org citation style previews and keymap activation side effects.
+- Matched Citar's Org citation style variant expansion order and shape.
+- Matched Citar's Org activation typo suggestions with a bounded daemon edit-distance query.
+- Matched Citar's Org citation reference shifting rewrite behavior for prefix and suffix text.
+- Removed extra Org style minibuffer history state so style selection follows Citar's prompt contract.
+- Matched Citar's Org citation-at-point boundary checks when reusing parsed citation elements.
 - Trimmed the default reference and citation action keymaps to Citar's visible bindings.
 - Pushed exact-key hydration limits into store queries instead of materializing every duplicate-key entry before truncating.
 - Matched Citar's reference action argument contract by passing programmatic nil references through instead of prompting.

@@ -1,6 +1,6 @@
 use refbox_core::{FileParseStatus, IndexedFileMetadata, IndexedFileOrigin};
 use refbox_index::parse_bibliography_file;
-use refbox_store::{RefboxStore, SCHEMA_VERSION, SearchOptions};
+use refbox_store::{KeyScopeOptions, RefboxStore, SCHEMA_VERSION, SearchOptions};
 use rusqlite::Connection;
 use std::fs;
 use std::path::PathBuf;
@@ -835,6 +835,62 @@ fn local_files_are_only_visible_when_requested() {
         .expect("local-only search should work");
     assert_eq!(local_only.len(), 1);
     assert_eq!(local_only[0].key, "local");
+}
+
+#[test]
+fn close_keys_match_edit_distance_and_source_scope() {
+    let mut store = RefboxStore::open_in_memory().expect("store should open");
+    let configured = parse_bibliography_file(
+        "refs/global.bib",
+        r#"@article{alpha2020, title = {Alpha}}
+@article{alphi2020, title = {Typo}}
+@article{omega2020, title = {Far}}
+"#,
+    );
+    let local = parse_bibliography_file(
+        "notes/local.bib",
+        r#"@article{alphe2020, title = {Local Typo}}
+"#,
+    );
+    let local_metadata = test_metadata(&local.path, 0, IndexedFileOrigin::Local);
+
+    store
+        .insert_file(&configured)
+        .expect("configured file should insert");
+    store
+        .insert_file_with_metadata(&local, &local_metadata)
+        .expect("local file should insert");
+
+    let configured_only = store
+        .close_keys("alpha2020", 1, 10, KeyScopeOptions::default())
+        .expect("close keys should query");
+    assert_eq!(configured_only, vec!["alphi2020"]);
+
+    let configured_and_local = store
+        .close_keys(
+            "alpha2020",
+            1,
+            10,
+            KeyScopeOptions {
+                source_paths: &["notes/local.bib".to_string()],
+                include_configured_sources: true,
+            },
+        )
+        .expect("scoped close keys should query");
+    assert_eq!(configured_and_local, vec!["alphe2020", "alphi2020"]);
+
+    let local_only = store
+        .close_keys(
+            "alpha2020",
+            1,
+            10,
+            KeyScopeOptions {
+                source_paths: &["notes/local.bib".to_string()],
+                include_configured_sources: false,
+            },
+        )
+        .expect("local close keys should query");
+    assert_eq!(local_only, vec!["alphe2020"]);
 }
 
 #[test]

@@ -12,6 +12,7 @@ pub const METHOD_SYNC_FILE: &str = "refbox/syncFile";
 pub const METHOD_INDEXED_FILES: &str = "refbox/indexedFiles";
 pub const METHOD_SEARCH_ENTRIES: &str = "refbox/searchEntries";
 pub const METHOD_LIST_ENTRIES: &str = "refbox/listEntries";
+pub const METHOD_CLOSE_KEYS: &str = "refbox/closeKeys";
 pub const METHOD_ENTRY_BY_KEY: &str = "refbox/entryByKey";
 pub const METHOD_ENTRIES_BY_KEYS: &str = "refbox/entriesByKeys";
 pub const METHOD_RESOURCES_BY_KEY: &str = "refbox/resourcesByKey";
@@ -206,6 +207,20 @@ pub struct SearchEntriesResponse {
 pub struct ListEntriesRequest {
     pub limit: Option<usize>,
     pub offset: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloseKeysRequest {
+    pub key: String,
+    pub max_distance: Option<usize>,
+    pub limit: Option<usize>,
+    pub source_paths: Option<Vec<String>>,
+    pub include_configured_sources: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloseKeysResponse {
+    pub keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

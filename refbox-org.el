@@ -58,6 +58,7 @@
 (declare-function org-roam-ref-add "org-roam" (ref))
 (declare-function embark-act "embark" (&optional target type action))
 (defvar org-cite-basic-mouse-over-key-face)
+(defvar org-cite-basic-max-key-distance)
 
 (defgroup refbox-org nil
   "Org citation integration for refbox."
@@ -86,9 +87,6 @@ Each function receives the citation datum."
   :type '(repeat function)
   :group 'refbox-org)
 
-(defvar refbox-org-style-history nil
-  "Minibuffer history for Org citation styles.")
-
 (defconst refbox-org--key-regexp "[[:alnum:]_:.#$%&+?<>~/=-]+"
   "Regexp matching a refbox citation key in Org buffers.")
 
@@ -97,18 +95,22 @@ Each function receives the citation datum."
     ("/b" . "de Villiers et al, 2019")
     ("/c" . "(De Villiers et al, 2019)")
     ("/bc" . "de Villiers et al, 2019")
+    ;; Text style.
     ("text" . "de Villiers et al (2019)")
     ("text/c" . "De Villiers et al (2019)")
     ("text/f" . "de Villiers, Smith, Doa, and Jones (2019)")
     ("text/cf" . "De Villiers, Smith, Doa, and Jones (2019)")
+    ;; Author style.
     ("author" . "de Villiers et al")
     ("author/c" . "De Villiers et al")
     ("author/f" . "de Villiers, Smith, Doa, and Jones")
     ("author/cf" . "De Villiers, Smith, Doa, and Jones")
+    ;; Locators style.
+    ("locators" . "(p23)")
     ("locators" . "p23")
+    ;; Noauthor style.
     ("noauthor" . "(2019)")
-    ("noauthor/b" . "2019")
-    ("nocite" . "No bibliography citation"))
+    ("noauthor/b" . "2019"))
   "Example previews for common Org citation styles.")
 
 (defvar refbox-org-citation-map
@@ -169,12 +171,12 @@ When MULTIPLE is non-nil, return a list of keys.  Otherwise return one key."
         (let ((style-name (if (string= "nil" (car style)) "/" (car style))))
           (push style-name styles)
           (dolist (variant variants)
-            (let ((variant-name (format "%s" (or (cadr variant) (car variant)))))
-              (push (concat style-name
-                            (unless (string= "/" style-name) "/")
-                            (string-remove-prefix "/" variant-name))
+            (let ((style (concat style-name
+                                 (unless (string= "/" style-name) "/")
+                                 (cadr variant))))
+              (push style
                     styles))))))
-    (delete-dups (nreverse styles))))
+    styles))
 
 (defun refbox-org--style-candidate (style)
   "Return STYLE as a propertized completion candidate."
@@ -228,15 +230,11 @@ When TRANSFORM is non-nil, return the displayed candidate."
                  "Styles: "
                  (lambda (string predicate action)
                    (if (eq action 'metadata)
-                       '(metadata
-                         (annotation-function . refbox-org--style-annotation)
-                         (group-function . refbox-org--style-group))
+                      '(metadata
+                        (annotation-function . refbox-org--style-annotation)
+                        (group-function . refbox-org--style-group))
                      (complete-with-action
-                      action candidates string predicate)))
-                 nil
-                 nil
-                 nil
-                 'refbox-org-style-history))
+                      action candidates string predicate)))))
          (style (string-trim style)))
     (cond
      ((string= style "/") "")
@@ -334,11 +332,14 @@ citation formatter."
 
 (defun refbox-org--citation-at-point (&optional datum)
   "Return the Org citation at point or in DATUM."
-  (let ((context (or datum (org-element-context))))
-    (pcase (org-element-type context)
-      ('citation context)
-      ('citation-reference (org-element-parent context))
-      (_ nil))))
+  (let ((element (or datum (org-element-context))))
+    (while (and element
+                (not (eq 'citation (org-element-type element))))
+      (setq element (org-element-property :parent element)))
+    (when-let ((bounds (and element (org-cite-boundaries element))))
+      (when (and (>= (point) (car bounds))
+                 (<= (point) (cdr bounds)))
+        element))))
 
 ;;;###autoload
 (defun refbox-org-citation-at-point (&optional datum)
@@ -398,11 +399,6 @@ With FORCE, force creation of a new ID."
     (ignore-errors (refbox-org--id-get-create))
     (when (fboundp 'org-roam-ref-add)
       (ignore-errors (org-roam-ref-add (concat "@" key))))))
-
-(defun refbox-org--reference-or-error ()
-  "Return the citation reference at point or signal a user error."
-  (or (refbox-org-reference-at-point)
-      (user-error "Point is not on an Org citation reference")))
 
 (defun refbox-org--citation-or-error ()
   "Return the citation at point or signal a user error."
@@ -475,19 +471,6 @@ every reference in that citation."
     (kill-region (org-element-begin context)
                  (org-element-end context))))
 
-(defun refbox-org--reference-strings (references)
-  "Return raw strings for REFERENCES."
-  (mapcar
-   (lambda (reference)
-     (replace-regexp-in-string
-	      ";\\'"
-	      ""
-	      (string-trim
-       (buffer-substring-no-properties
-        (org-element-begin reference)
-        (org-element-end reference)))))
-   references))
-
 (defun refbox-org-cite-swap (i j list)
   "Swap indexes I and J in LIST and return LIST."
   (let ((item-i (nth i list)))
@@ -495,52 +478,60 @@ every reference in that citation."
     (setf (nth j list) item-i))
   list)
 
-(defun refbox-org--shift-reference (direction)
-  "Shift citation reference at point in DIRECTION.
+(defun refbox-org--get-ref-index (references reference)
+  "Return index of REFERENCE within REFERENCES."
+  (seq-position
+   references
+   reference
+   (lambda (left right)
+     (equal (org-element-property :begin left)
+            (org-element-property :begin right)))))
 
-DIRECTION is -1 for left and 1 for right."
-  (let* ((reference (refbox-org--reference-or-error))
-         (citation (org-element-parent reference))
+(defun refbox-org--shift-reference (datum direction)
+  "Shift citation reference DATUM in DIRECTION."
+  (let* ((citation (if (eq 'citation (org-element-type datum))
+                       datum
+                     (org-element-property :parent datum)))
+         (reference (when (eq 'citation-reference (org-element-type datum))
+                      datum))
+         (point-offset
+          (- (point) (org-element-property :begin reference)))
          (references (org-cite-get-references citation))
-         (reference-begin (org-element-begin reference))
-         (point-offset (- (point) reference-begin))
-         (index (cl-position-if
-                 (lambda (candidate)
-                   (= reference-begin (org-element-begin candidate)))
-                 references)))
+         (index (refbox-org--get-ref-index references reference)))
     (when (= 1 (length references))
       (error "You only have one reference; you cannot shift this"))
-    (unless index
+    (when (or (and (equal index 0)
+                   (equal direction 'left))
+              (and (equal (1+ index) (length references))
+                   (equal direction 'right)))
+      (error "You cannot shift the reference in this direction"))
+    (when (null index)
       (error "Nothing to shift here"))
-    (let ((target (+ index direction)))
-      (unless (and (>= target 0) (< target (length references)))
-        (error "You cannot shift the reference in this direction"))
-      (let ((citation-begin (org-element-begin citation))
-            (strings (refbox-org--reference-strings references))
-            (begin (org-element-contents-begin citation))
-            (end (org-element-contents-end citation)))
-        (cl-rotatef (nth index strings) (nth target strings))
-        (delete-region begin end)
-        (goto-char begin)
-        (insert (string-join strings "; "))
-        (goto-char citation-begin)
-        (when-let* ((updated-citation (refbox-org--citation-at-point))
-                    (updated-reference
-                     (nth target (org-cite-get-references updated-citation))))
-          (goto-char (+ (org-element-begin updated-reference)
-                        point-offset)))))))
+    (let* ((begin (org-element-property :contents-begin citation))
+           (end (org-element-property :contents-end citation))
+           (new-index (if (eq 'left direction) (1- index) (1+ index))))
+      (cl--set-buffer-substring
+       begin
+       end
+       (org-element-interpret-data
+        (refbox-org-cite-swap index new-index references)))
+      (goto-char
+       (+ (org-element-property
+           :begin
+           (nth new-index (org-cite-get-references citation)))
+          point-offset)))))
 
 ;;;###autoload
 (defun refbox-org-shift-reference-left ()
   "Shift the Org citation reference at point left."
   (interactive)
-  (refbox-org--shift-reference -1))
+  (refbox-org--shift-reference (org-element-context) 'left))
 
 ;;;###autoload
 (defun refbox-org-shift-reference-right ()
   "Shift the Org citation reference at point right."
   (interactive)
-  (refbox-org--shift-reference 1))
+  (refbox-org--shift-reference (org-element-context) 'right))
 
 ;;;###autoload
 (defun refbox-org-follow (datum arg)
@@ -625,22 +616,29 @@ DIRECTION is -1 for left and 1 for right."
     table))
 
 (defun refbox-org--activation-close-keys (key)
-  "Return bounded Refbox-backed suggestions for unknown KEY."
+  "Return bounded Refbox-backed edit-distance suggestions for unknown KEY."
   (condition-case nil
-      (let ((keys (mapcar
-                   #'refbox--reference-key
-                   (refbox-search-references
-                    key
-                    5
-                    (refbox-org-local-bib-files)
-                    nil
-                    '("key")
-                    t
-                    '("key")
-                    nil
-                    nil
-                    t))))
-        (delete key (delete-dups (delq nil keys))))
+      (let* ((source-paths
+              (refbox--normalize-bibliography-source-paths
+               (refbox-org-local-bib-files)))
+             (max-distance
+              (if (boundp 'org-cite-basic-max-key-distance)
+                  org-cite-basic-max-key-distance
+                2)))
+        (when source-paths
+          (refbox--ensure-source-paths-indexed source-paths))
+        (refbox--listify
+         (plist-get
+          (refbox-rpc-request
+           refbox-rpc-method-close-keys
+           (append
+            (list :key key
+                  :max_distance max-distance
+                  :limit refbox-completion-limit)
+            (when source-paths
+              (list :source_paths (vconcat source-paths)))
+            (list :include_configured_sources t)))
+          :keys)))
     (error nil)))
 
 (defun refbox-org--set-basic-keymap (begin end replacement)
@@ -698,11 +696,7 @@ DIRECTION is -1 for left and 1 for right."
 (defun refbox-org-activate-keymap (citation)
   "Activate Org CITATION with refbox keymap text properties."
   (pcase-let ((`(,begin . ,end) (org-cite-boundaries citation)))
-    (add-text-properties
-     begin end
-     `(keymap ,refbox-org-citation-map
-       face refbox-org-highlight
-       help-echo "refbox Org citation"))))
+    (put-text-property begin end 'keymap refbox-org-citation-map)))
 
 ;;;###autoload
 (defun refbox-org-activate (citation)

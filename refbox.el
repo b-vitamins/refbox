@@ -2329,6 +2329,10 @@ whose cdr is passed as additional arguments."
               (refbox-capf--candidate-annotation candidate)
             "")))))
 
+(defun refbox-capf--exit (_string _status)
+  "Completion exit function matching Citar's no-op insertion hook."
+  (insert))
+
 (defun refbox-capf-at-bounds (bounds &optional source-paths include-configured-sources)
   "Return CAPF data for BOUNDS using optional SOURCE-PATHS."
   (when bounds
@@ -2339,6 +2343,8 @@ whose cdr is passed as additional arguments."
             refbox-capf-limit
             source-paths
             include-configured-sources))
+          :annotation-function #'refbox-capf-annotate
+          :exit-function #'refbox-capf--exit
           :exclusive 'no)))
 
 ;;;###autoload

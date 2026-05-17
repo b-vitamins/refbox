@@ -152,6 +152,16 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
       (should (equal (refbox-org-select-style) "text"))
       (should (equal targets-seen '(csl))))))
 
+(ert-deftest refbox-org-test-flat_styles_match_citar_expansion ()
+  "Style expansion should follow Citar's Org style variant contract."
+  (cl-letf (((symbol-function 'org-cite-supported-styles)
+             (lambda (&optional targets)
+               (should (equal targets '(csl)))
+               '((("author" "a") ("caps" "c"))
+                 (("nil") ("caps" "c") ("bare" "b"))))))
+    (should (equal (refbox-org--flat-styles '(csl))
+                   '("/b" "/c" "/" "author/c" "author")))))
+
 (ert-deftest refbox-org-test-empty_style_selection_matches_citar ()
   "Empty style completion should return the empty string."
   (cl-letf (((symbol-function 'org-cite-supported-styles)
@@ -183,7 +193,15 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
   (should (string-match-p
            "De Villiers"
            (substring-no-properties
-            (refbox-org--style-annotation "author/cf")))))
+            (refbox-org--style-annotation "author/cf"))))
+  (should (string-match-p
+           "(p23)"
+           (substring-no-properties
+            (refbox-org--style-annotation "locators"))))
+  (should (string-match-p
+           "\\` *\\'"
+           (substring-no-properties
+            (refbox-org--style-annotation "nocite")))))
 
 (ert-deftest refbox-org-test-delete-and-kill-citation-elements ()
   "Deletion and kill commands should follow Citar's Org datum behavior."
@@ -208,12 +226,17 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
   (refbox-org-test-with-buffer "[cite:@alpha; @be|ta; @gamma]"
     (refbox-org-shift-reference-left)
     (should (equal (buffer-string)
-                   "[cite:@beta; @alpha; @gamma]"))
+                   "[cite: @beta;@alpha; @gamma;]"))
     (should (equal (car (refbox-org-key-at-point)) "beta")))
   (refbox-org-test-with-buffer "[cite:@alpha; @be|ta; @gamma]"
     (refbox-org-shift-reference-right)
     (should (equal (buffer-string)
-                   "[cite:@alpha; @gamma; @beta]"))
+                   "[cite:@alpha; @gamma; @beta;]"))
+    (should (equal (car (refbox-org-key-at-point)) "beta")))
+  (refbox-org-test-with-buffer "[cite:see @alpha p. 1; also @be|ta p. 2]"
+    (refbox-org-shift-reference-left)
+    (should (equal (buffer-string)
+                   "[cite: also @beta p. 2;see @alpha p. 1;]"))
     (should (equal (car (refbox-org-key-at-point)) "beta"))))
 
 (ert-deftest refbox-org-test-shift_errors_match_citar ()
@@ -287,7 +310,13 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
     (should (equal (car (refbox-org-citation-at-point)) '("alpha")))
     (should (eq (org-element-type (refbox-org--citation-at-point)) 'citation))
     (should (eq (org-element-type (refbox-org-reference-at-point))
-                'citation-reference))))
+                'citation-reference)))
+  (refbox-org-test-with-buffer "[cite:@alpha] |"
+    (let ((citation (save-excursion
+                      (goto-char (point-min))
+                      (refbox-org--citation-at-point))))
+      (should citation)
+      (should-not (refbox-org--citation-at-point citation)))))
 
 (ert-deftest refbox-org-test-key-at-point_requires_actual_reference ()
   "Citation command/style positions should not masquerade as a key."
@@ -328,6 +357,16 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
       (should (eq (get-text-property (point) 'keymap)
                   refbox-org-citation-map)))))
 
+(ert-deftest refbox-org-test-activation-keymap_only_sets_keymap ()
+  "The keymap activation hook should not add refbox-only faces or tooltips."
+  (refbox-org-test-with-buffer "[cite:|@alpha]"
+    (let ((citation (refbox-org--citation-at-point)))
+      (refbox-org-activate-keymap citation)
+      (should (eq (get-text-property (point) 'keymap)
+                  refbox-org-citation-map))
+      (should-not (get-text-property (point) 'face))
+      (should-not (get-text-property (point) 'help-echo)))))
+
 (ert-deftest refbox-org-test-citation_keymap_matches_citar_bindings ()
   "Org citation keymap should expose Citar's citation editing bindings."
   (should (eq (lookup-key refbox-org-citation-map (kbd "<mouse-1>"))
@@ -352,13 +391,18 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
            '((preview . "%{author}: %{title}")))
           alpha-position
           missing-position
-          calls)
+          calls
+          close-key-calls)
       (cl-letf (((symbol-function 'refbox-search-references)
                  (lambda (query &rest args)
                    (push (cons query args) calls)
-                   (if (string-empty-p query)
-                       (list (refbox-org-test-search-candidate "alpha" nil))
-                     (list (refbox-org-test-search-candidate "alpine" nil))))))
+                   (should (string-empty-p query))
+                   (list (refbox-org-test-search-candidate "alpha" nil))))
+                ((symbol-function 'refbox-rpc-request)
+                 (lambda (method params)
+                   (push (list method params) close-key-calls)
+                   (should (equal method refbox-rpc-method-close-keys))
+                   '(:keys ("alpine")))))
         (let ((citation (refbox-org--citation-at-point)))
           (refbox-org-cite-basic-activate citation)
           (goto-char (point-min))
@@ -379,7 +423,14 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                    "alpine"
                    (get-text-property missing-position 'help-echo)))
           (should (equal (mapcar #'car (nreverse calls))
-                         '("" "missing"))))))))
+                         '("")))
+          (let ((params (cadar close-key-calls)))
+            (should (equal (plist-get params :key) "missing"))
+            (should (equal (plist-get params :max_distance) 2))
+            (should (equal (plist-get params :limit)
+                           refbox-completion-limit))
+            (should (eq (plist-get params :include_configured_sources)
+                        t))))))))
 
 (ert-deftest refbox-org-test-basic_activation_prefers_local_duplicate_keys ()
   "Activation previews should prefer current-buffer local bibliography entries."

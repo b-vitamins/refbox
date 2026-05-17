@@ -1144,6 +1144,20 @@
     (should (assq 'company-docsig (cdr metadata)))
     (should-not (assq 'affixation-function (cdr metadata)))))
 
+(ert-deftest refbox-test-capf_return_exposes_citar_properties ()
+  "CAPF return data should expose Citar-compatible annotation and exit hooks."
+  (let* ((capf (refbox-capf-at-bounds (cons 1 1)))
+         (properties (nthcdr 3 capf)))
+    (should (eq (plist-get properties :annotation-function)
+                #'refbox-capf-annotate))
+    (should (eq (plist-get properties :exit-function)
+                #'refbox-capf--exit))
+    (with-temp-buffer
+      (insert "key")
+      (goto-char (point-min))
+      (funcall (plist-get properties :exit-function) "smith2020" 'finished)
+      (should (equal (buffer-string) "key")))))
+
 (ert-deftest refbox-test-capf_hydrates_only_annotation_fields ()
   "CAPF search should not hydrate minibuffer display fields."
   (let ((calls nil))

@@ -7,22 +7,23 @@ use clap::{ArgAction, Parser, Subcommand};
 use refbox_core::PingInfo;
 use refbox_index::{DiscoveryPolicy, SyncEngine, SyncStatus};
 use refbox_rpc::{
-    DiagnosticItem, DiagnosticsResponse, DuplicateGroupItem, DuplicateGroupsResponse, EmptyParams,
-    EntriesByKeysRequest, EntriesResponse, EntryByKeyRequest, EntryCompletionDisplayItem,
-    EntryFieldItem, EntryItem, EntryRefItem, EntrySearchItem, IndexedFilesResponse, JsonRpcError,
-    JsonRpcErrorObject, JsonRpcRequest, JsonRpcResponse, LibraryFilesByKeysRequest,
-    LibraryFilesResponse, LimitRequest, ListEntriesRequest, METHOD_DIAGNOSTICS,
-    METHOD_DUPLICATE_GROUPS, METHOD_ENTRIES_BY_KEYS, METHOD_ENTRY_BY_KEY, METHOD_INDEXED_FILES,
-    METHOD_LIBRARY_FILES_BY_KEYS, METHOD_LIST_ENTRIES, METHOD_PING, METHOD_RAW_ENTRY,
-    METHOD_RESOLVE_FILES, METHOD_RESOURCES_BY_KEY, METHOD_RESOURCES_BY_KEYS, METHOD_SEARCH_ENTRIES,
-    METHOD_SOURCE_LOCATION, METHOD_STATUS, METHOD_SYNC_FILE, METHOD_SYNC_FULL, RawEntryRequest,
-    RawEntryResponse, ResolveFilesRequest, ResourceItem, ResourcesByKeyRequest,
-    ResourcesByKeysRequest, ResourcesResponse, SearchEntriesRequest, SearchEntriesResponse,
-    SourceLocationRequest, SourceLocationResponse, StatusResponse, SyncFileRequest, SyncResponse,
-    clamp_limit,
+    CloseKeysRequest, CloseKeysResponse, DiagnosticItem, DiagnosticsResponse, DuplicateGroupItem,
+    DuplicateGroupsResponse, EmptyParams, EntriesByKeysRequest, EntriesResponse, EntryByKeyRequest,
+    EntryCompletionDisplayItem, EntryFieldItem, EntryItem, EntryRefItem, EntrySearchItem,
+    IndexedFilesResponse, JsonRpcError, JsonRpcErrorObject, JsonRpcRequest, JsonRpcResponse,
+    LibraryFilesByKeysRequest, LibraryFilesResponse, LimitRequest, ListEntriesRequest,
+    METHOD_CLOSE_KEYS, METHOD_DIAGNOSTICS, METHOD_DUPLICATE_GROUPS, METHOD_ENTRIES_BY_KEYS,
+    METHOD_ENTRY_BY_KEY, METHOD_INDEXED_FILES, METHOD_LIBRARY_FILES_BY_KEYS, METHOD_LIST_ENTRIES,
+    METHOD_PING, METHOD_RAW_ENTRY, METHOD_RESOLVE_FILES, METHOD_RESOURCES_BY_KEY,
+    METHOD_RESOURCES_BY_KEYS, METHOD_SEARCH_ENTRIES, METHOD_SOURCE_LOCATION, METHOD_STATUS,
+    METHOD_SYNC_FILE, METHOD_SYNC_FULL, RawEntryRequest, RawEntryResponse, ResolveFilesRequest,
+    ResourceItem, ResourcesByKeyRequest, ResourcesByKeysRequest, ResourcesResponse,
+    SearchEntriesRequest, SearchEntriesResponse, SourceLocationRequest, SourceLocationResponse,
+    StatusResponse, SyncFileRequest, SyncResponse, clamp_limit,
 };
 use refbox_store::{
-    RefboxStore, SearchOptions, SearchResult, StoredEntry, StoredField, StoredSearchEntry,
+    KeyScopeOptions, RefboxStore, SearchOptions, SearchResult, StoredEntry, StoredField,
+    StoredSearchEntry,
 };
 use serde::de::DeserializeOwned;
 
@@ -386,6 +387,27 @@ impl Daemon {
                     .map(Self::entry_search_item)
                     .collect();
                 self.to_value(SearchEntriesResponse { entries })
+            }
+            METHOD_CLOSE_KEYS => {
+                let request: CloseKeysRequest = parse_params(params)?;
+                let limit = clamp_limit(request.limit);
+                let source_paths = request.source_paths.unwrap_or_default();
+                let include_configured_sources = request
+                    .include_configured_sources
+                    .unwrap_or(source_paths.is_empty());
+                let keys = self
+                    .store
+                    .close_keys(
+                        &request.key,
+                        request.max_distance.unwrap_or(2),
+                        limit,
+                        KeyScopeOptions {
+                            source_paths: &source_paths,
+                            include_configured_sources,
+                        },
+                    )
+                    .map_err(store_error)?;
+                self.to_value(CloseKeysResponse { keys })
             }
             METHOD_ENTRY_BY_KEY => {
                 let request: EntryByKeyRequest = parse_params(params)?;
@@ -1207,6 +1229,30 @@ mod tests {
 
         let status = result(daemon.handle_request(request(METHOD_STATUS, json!({}))));
         assert_eq!(status["counts"]["entry_count"], 1);
+    }
+
+    #[test]
+    fn daemon_close_keys_uses_edit_distance() {
+        let project = TestProject::new("daemon-close-keys");
+        project.write(
+            "refs/main.bib",
+            "@article{alpha2020, title = {Alpha}}\n\
+             @article{alphi2020, title = {Typo}}\n\
+             @article{omega2020, title = {Far}}\n",
+        );
+        let mut daemon = Daemon::new(project.policy(), project.path("index.sqlite"))
+            .expect("daemon should start");
+
+        result(daemon.handle_request(request(METHOD_SYNC_FULL, json!({}))));
+        let close = result(daemon.handle_request(request(
+            METHOD_CLOSE_KEYS,
+            json!({
+                "key": "alpha2020",
+                "max_distance": 1,
+                "limit": 10,
+            }),
+        )));
+        assert_eq!(close["keys"], json!(["alphi2020"]));
     }
 
     #[test]

@@ -126,6 +126,21 @@ pub struct SearchOptions<'a> {
     pub ranked: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct KeyScopeOptions<'a> {
+    pub source_paths: &'a [String],
+    pub include_configured_sources: bool,
+}
+
+impl Default for KeyScopeOptions<'_> {
+    fn default() -> Self {
+        Self {
+            source_paths: &[],
+            include_configured_sources: true,
+        }
+    }
+}
+
 impl Default for SearchOptions<'_> {
     fn default() -> Self {
         Self {
@@ -398,6 +413,84 @@ impl RefboxStore {
             .query_map(params![limit, offset], stored_entry_from_row)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(entries)
+    }
+
+    pub fn close_keys(
+        &self,
+        key: &str,
+        max_distance: usize,
+        limit: usize,
+        options: KeyScopeOptions<'_>,
+    ) -> Result<Vec<String>> {
+        if key.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let key_len = key.chars().count();
+        let min_len = i64::try_from(key_len.saturating_sub(max_distance))
+            .map_err(|_| StoreError::LimitOutOfRange(key_len))?;
+        let max_len = i64::try_from(key_len.saturating_add(max_distance))
+            .map_err(|_| StoreError::LimitOutOfRange(key_len.saturating_add(max_distance)))?;
+        let source_paths = options
+            .source_paths
+            .iter()
+            .map(|path| path.trim())
+            .filter(|path| !path.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+
+        let mut parameters: Vec<&dyn rusqlite::ToSql> = vec![&min_len, &max_len];
+        let next_param = 3;
+        let mut sql = String::from(
+            "SELECT DISTINCT e.entry_key
+             FROM entries e
+             JOIN files f ON f.id = e.file_id
+             WHERE length(e.entry_key) BETWEEN ?1 AND ?2",
+        );
+        if options.include_configured_sources {
+            if source_paths.is_empty() {
+                sql.push_str(" AND f.origin = 'configured'");
+            } else {
+                let placeholders = (0..source_paths.len())
+                    .map(|index| format!("?{}", index + next_param))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                sql.push_str(" AND (f.origin = 'configured' OR f.path IN (");
+                sql.push_str(&placeholders);
+                sql.push_str("))");
+                for path in &source_paths {
+                    parameters.push(path);
+                }
+            }
+        } else if source_paths.is_empty() {
+            sql.push_str(" AND 0 = 1");
+        } else {
+            let placeholders = (0..source_paths.len())
+                .map(|index| format!("?{}", index + next_param))
+                .collect::<Vec<_>>()
+                .join(", ");
+            sql.push_str(" AND f.path IN (");
+            sql.push_str(&placeholders);
+            sql.push(')');
+            for path in &source_paths {
+                parameters.push(path);
+            }
+        }
+        sql.push_str(" ORDER BY e.entry_key");
+
+        let mut statement = self.connection.prepare(&sql)?;
+        let mut rows = statement.query(params_from_iter(parameters))?;
+        let mut keys = Vec::new();
+        while let Some(row) = rows.next()? {
+            let candidate: String = row.get(0)?;
+            if candidate != key && levenshtein_at_most(&candidate, key, max_distance) {
+                keys.push(candidate);
+                if keys.len() >= limit {
+                    break;
+                }
+            }
+        }
+        Ok(keys)
     }
 
     pub fn fields_for_entry(&self, entry_id: i64) -> Result<Vec<StoredField>> {
@@ -2011,6 +2104,40 @@ fn fts_query_field_filter(search_fields: &[String]) -> Option<String> {
     } else {
         Some(fields.join(" "))
     }
+}
+
+fn levenshtein_at_most(left: &str, right: &str, max_distance: usize) -> bool {
+    let left = left.chars().collect::<Vec<_>>();
+    let right = right.chars().collect::<Vec<_>>();
+    if left.len().abs_diff(right.len()) > max_distance {
+        return false;
+    }
+    if left.is_empty() {
+        return right.len() <= max_distance;
+    }
+    if right.is_empty() {
+        return left.len() <= max_distance;
+    }
+
+    let mut previous = (0..=right.len()).collect::<Vec<_>>();
+    let mut current = vec![0; right.len() + 1];
+    for (left_index, left_char) in left.iter().enumerate() {
+        current[0] = left_index + 1;
+        let mut row_min = current[0];
+        for (right_index, right_char) in right.iter().enumerate() {
+            let deletion = previous[right_index + 1] + 1;
+            let insertion = current[right_index] + 1;
+            let substitution = previous[right_index] + usize::from(left_char != right_char);
+            let value = deletion.min(insertion).min(substitution);
+            current[right_index + 1] = value;
+            row_min = row_min.min(value);
+        }
+        if row_min > max_distance {
+            return false;
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[right.len()] <= max_distance
 }
 
 fn placeholders(count: usize) -> String {
