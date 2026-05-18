@@ -370,6 +370,7 @@ long-form tags used by commands and indicator definitions."
   (tag nil)
   (symbol nil)
   (padding " ")
+  (width nil)
   (emptysymbol " ")
   (function nil)
   (compiledfunction nil))
@@ -410,7 +411,11 @@ long-form tags used by commands and indicator definitions."
   "Reference indicators rendered in completion candidates.
 
 Each item is a `refbox-indicator' whose function returns a predicate
-accepting a reference key or candidate."
+accepting a reference key or candidate.  The optional width slot reserves
+a fixed display width for that indicator's whole slot, including padding.
+When width is nil, Refbox reserves the maximum display width of the
+indicator's symbol and empty-symbol chunks so every slot stays aligned
+when different candidates have different resources."
   :type 'sexp
   :group 'refbox)
 
@@ -1368,18 +1373,82 @@ plus the configured corpus."
           (funcall predicate candidate))
       matched)))
 
+(defun refbox--indicator-slot-width (indicator)
+  "Return display columns reserved for INDICATOR's fixed slot."
+  (let ((width (refbox-indicator-width indicator)))
+    (cond
+     ((null width)
+      (let ((padding (or (refbox-indicator-padding indicator) "")))
+        (max
+         (string-width
+          (concat (or (refbox-indicator-symbol indicator) "") padding))
+         (string-width
+          (concat (or (refbox-indicator-emptysymbol indicator) "")
+                  padding)))))
+     ((and (integerp width) (>= width 0))
+      width)
+     (t
+      (user-error
+       "refbox indicator width must be a non-negative integer: %S"
+       width)))))
+
+(defun refbox--indicator-propertize-slot-width (text width)
+  "Return TEXT marked as an indicator chunk of display WIDTH."
+  (when (> (length text) 0)
+    (put-text-property 0 (length text)
+                       'refbox-indicator-width width
+                       text))
+  text)
+
+(defun refbox--indicator-chunk (indicator matched)
+  "Return INDICATOR chunk for MATCHED.
+
+The returned chunk carries its fixed slot width as a text property so
+`refbox--indicator-chunks-text' can align every indicator slot separately."
+  (let* ((width (refbox--indicator-slot-width indicator))
+         (text
+          (concat (or (if matched
+                          (refbox-indicator-symbol indicator)
+                        (refbox-indicator-emptysymbol indicator))
+                      "")
+                  (or (refbox-indicator-padding indicator) ""))))
+    (when (and (= (length text) 0) (> width 0))
+      (setq text " "))
+    (refbox--indicator-propertize-slot-width text width)))
+
 (defun refbox--indicator-text (indicator candidate)
   "Return INDICATOR text for CANDIDATE."
-  (let* ((matched (refbox--indicator-matched-p indicator candidate))
-         (symbol (if matched
-                     (refbox-indicator-symbol indicator)
-                   (refbox-indicator-emptysymbol indicator)))
-         (padding (refbox-indicator-padding indicator)))
-    (concat (or symbol "") (or padding ""))))
+  (refbox--indicator-chunk
+   indicator
+   (refbox--indicator-matched-p indicator candidate)))
+
+(defun refbox--indicator-chunk-width (chunk)
+  "Return the fixed display slot width carried by CHUNK."
+  (or (and (> (length chunk) 0)
+           (get-text-property 0 'refbox-indicator-width chunk))
+      (string-width chunk)))
+
+(defun refbox--finalize-indicator-chunk (chunk align-to)
+  "Return CHUNK with its trailing padding aligned to ALIGN-TO."
+  (let ((text (copy-sequence chunk)))
+    (when (and (= (length text) 0) (> align-to 0))
+      (setq text " "))
+    (when (> (length text) 0)
+      (put-text-property
+       (1- (length text)) (length text)
+       'display
+       (list 'space :align-to align-to)
+       text))
+    text))
 
 (defun refbox--indicator-chunks-text (chunks)
-  "Return CHUNKS as indicator text with reserved display width."
-  (refbox--finalize-indicator-text (apply #'concat chunks)))
+  "Return CHUNKS as indicator text with fixed per-slot display widths."
+  (let ((align-to 0)
+        rendered)
+    (dolist (chunk chunks)
+      (setq align-to (+ align-to (refbox--indicator-chunk-width chunk)))
+      (push (refbox--finalize-indicator-chunk chunk align-to) rendered))
+    (apply #'concat (nreverse rendered))))
 
 (defun refbox-reference-indicators (candidate)
   "Return configured indicator text for CANDIDATE."
@@ -1404,25 +1473,6 @@ plus the configured corpus."
        (eq (nth 3 refbox-indicators) refbox-indicator-cited)
        (null (nthcdr 4 refbox-indicators))))
 
-(defun refbox--indicator-chunk (indicator matched)
-  "Return INDICATOR chunk for MATCHED."
-  (concat (or (if matched
-                  (refbox-indicator-symbol indicator)
-                (refbox-indicator-emptysymbol indicator))
-              "")
-          (or (refbox-indicator-padding indicator) "")))
-
-(defun refbox--finalize-indicator-text (text)
-  "Reserve display width for the last character of indicator TEXT."
-  (let ((pos (length text)))
-    (when (> pos 0)
-      (put-text-property
-       (1- pos) pos
-       'display
-       (list 'space :align-to (string-width text))
-       text)))
-  text)
-
 (defun refbox--default-reference-indicators (candidate)
   "Return default indicator text for CANDIDATE without generic dispatch."
   (let* ((resource-kinds (refbox--candidate-resource-kind-list candidate))
@@ -1441,30 +1491,14 @@ plus the configured corpus."
          (has-notes
           (refbox-note-source-has-items-with-predicate-p
            candidate note-predicate))
-         (text
-          (concat
-           (or (if has-links
-                   (refbox-indicator-symbol refbox-indicator-links)
-                 (refbox-indicator-emptysymbol refbox-indicator-links))
-               "")
-           (or (refbox-indicator-padding refbox-indicator-links) "")
-           (or (if has-files
-                   (refbox-indicator-symbol refbox-indicator-files)
-                 (refbox-indicator-emptysymbol refbox-indicator-files))
-               "")
-           (or (refbox-indicator-padding refbox-indicator-files) "")
-           (or (if has-notes
-                   (refbox-indicator-symbol refbox-indicator-notes)
-                 (refbox-indicator-emptysymbol refbox-indicator-notes))
-               "")
-           (or (refbox-indicator-padding refbox-indicator-notes) "")
-           (or (if (refbox--candidate-cited-in-current-buffer-p candidate)
-                   (refbox-indicator-symbol refbox-indicator-cited)
-                 (refbox-indicator-emptysymbol refbox-indicator-cited))
-               "")
-           (or (refbox-indicator-padding refbox-indicator-cited) ""))))
-    (refbox--finalize-indicator-text
-     text)))
+         (is-cited
+          (refbox--candidate-cited-in-current-buffer-p candidate)))
+    (refbox--indicator-chunks-text
+     (list
+      (refbox--indicator-chunk refbox-indicator-links has-links)
+      (refbox--indicator-chunk refbox-indicator-files has-files)
+      (refbox--indicator-chunk refbox-indicator-notes has-notes)
+      (refbox--indicator-chunk refbox-indicator-cited is-cited)))))
 
 (defun refbox-template-clean (value)
   "Return VALUE with common BibTeX wrapping and whitespace cleaned."

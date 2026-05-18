@@ -1374,6 +1374,119 @@
     (should (get-text-property (1- (length unmatched-text))
                                'display unmatched-text))))
 
+(ert-deftest refbox-test-reference_indicators_reserve_each_slot ()
+  "Indicator slots should not shift when earlier indicators are absent."
+  (cl-labels ((alignments
+               (text)
+               (cl-loop for index below (length text)
+                        for display = (get-text-property index 'display text)
+                        when display
+                        collect display)))
+    (let* ((refbox-indicators
+            (list
+             (refbox-indicator-create
+              :symbol "XX"
+              :emptysymbol ""
+              :padding " "
+              :function (lambda ()
+                          (lambda (candidate)
+                            (equal (refbox-reference-field candidate "key")
+                                   "wide2020"))))
+             (refbox-indicator-create
+              :symbol "Y"
+              :emptysymbol ""
+              :padding " "
+              :width 4
+              :function (lambda ()
+                          (lambda (candidate)
+                            (equal (refbox-reference-field candidate "key")
+                                   "wide2020"))))
+             (refbox-indicator-create
+              :symbol "Z"
+              :emptysymbol ""
+              :padding ""
+              :width 2
+              :function (lambda ()
+                          (lambda (candidate)
+                            (equal (refbox-reference-field candidate "key")
+                                   "wide2020"))))))
+           (matched '(:key "wide2020" :fields nil :resources nil))
+           (unmatched '(:key "thin2020" :fields nil :resources nil))
+           (matched-text (refbox-reference-indicators matched))
+           (unmatched-text (refbox-reference-indicators unmatched)))
+      (should (equal (alignments matched-text)
+                     '((space :align-to 3)
+                       (space :align-to 7)
+                       (space :align-to 9))))
+      (should (equal (alignments unmatched-text)
+                     '((space :align-to 3)
+                       (space :align-to 7)
+                       (space :align-to 9))))
+      (should (= (get-text-property 0 'refbox-indicator-width matched-text)
+                 3))
+      (should (= (get-text-property 0 'refbox-indicator-width unmatched-text)
+                 3)))))
+
+(ert-deftest refbox-test-default_reference_indicators_reserve_each_slot ()
+  "Default fast-path indicators should use the same fixed slot renderer."
+  (cl-labels ((alignments
+               (text)
+               (cl-loop for index below (length text)
+                        for display = (get-text-property index 'display text)
+                        when display
+                        collect display)))
+    (let* ((refbox-indicator-links
+            (refbox-indicator-create
+             :symbol "LL"
+             :emptysymbol ""
+             :padding " "
+             :function #'refbox-has-links
+             :tag "has:links"))
+           (refbox-indicator-files
+            (refbox-indicator-create
+             :symbol "F"
+             :emptysymbol ""
+             :padding ""
+             :width 2
+             :function #'refbox-has-files
+             :tag "has:files"))
+           (refbox-indicator-notes
+            (refbox-indicator-create
+             :symbol "N"
+             :emptysymbol ""
+             :padding ""
+             :width 2
+             :function #'refbox-has-notes
+             :tag "has:notes"))
+           (refbox-indicator-cited
+            (refbox-indicator-create
+             :symbol "C"
+             :emptysymbol ""
+             :padding ""
+             :width 2
+             :function #'refbox-is-cited
+             :tag "is:cited"))
+           (refbox-indicators
+            (list refbox-indicator-links
+                  refbox-indicator-files
+                  refbox-indicator-notes
+                  refbox-indicator-cited))
+           (refbox-link-fields '((doi . "https://doi.org/%s")))
+           (refbox-notes-source 'mock)
+           (refbox-notes-sources
+            '((mock :items ignore :hasitems (lambda () nil) :open ignore)))
+           (candidate '(:key "alpha"
+                        :resource_kinds ["doi"]
+                        :fields nil
+                        :resources nil))
+           (text (refbox-reference-indicators candidate)))
+      (should (refbox--default-reference-indicators-p))
+      (should (equal (alignments text)
+                     '((space :align-to 3)
+                       (space :align-to 5)
+                       (space :align-to 7)
+                       (space :align-to 9)))))))
+
 (ert-deftest refbox-test-completion-uses_completion_limit_by_default ()
   "Minibuffer completion should request the configured completion page size."
   (let ((refbox-completion-limit 87)
