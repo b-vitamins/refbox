@@ -6,6 +6,13 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-05-19
+
+### Fixed
+- Reserved Refbox completion indicator slots independently, keeping icon
+  gutters and following columns aligned when candidates expose different
+  combinations of files, links, notes, and citation status.
+
 ## [0.6.4] - 2026-05-19
 
 ### Fixed
