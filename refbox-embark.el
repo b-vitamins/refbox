@@ -51,6 +51,7 @@
 (defvar embark-keymap-alist)
 (defvar embark-multitarget-actions)
 (defvar embark-target-injection-hooks)
+(defvar embark-default-action-overrides)
 
 (defgroup refbox-embark nil
   "Embark integration for refbox."
@@ -150,6 +151,20 @@
 (defvar refbox-embark--target-injection-hooks
   '((refbox-embark-insert-edit embark--ignore-target))
   "Embark target injection hooks installed by `refbox-embark-mode'.")
+
+(defconst refbox-embark--absent-default-action-override
+  (make-symbol "refbox-embark-absent-default-action-override")
+  "Sentinel used for absent Embark default-action overrides.")
+
+(defvar refbox-embark--saved-default-action-overrides nil
+  "Embark default-action overrides replaced by `refbox-embark-mode'.")
+
+(defvar refbox-embark--default-action-overrides
+  '((refbox-reference . refbox-embark-run-default-action)
+    (refbox-key . refbox-embark-run-default-action)
+    (refbox-citation . refbox-embark-run-default-action)
+    (refbox-resource . refbox-embark-open-resource))
+  "Embark default actions installed by `refbox-embark-mode'.")
 
 (defun refbox-embark--target-string (reference)
   "Return an Embark target string for REFERENCE."
@@ -463,6 +478,50 @@
   (interactive "sResource: ")
   (refbox--open-resource-choice (refbox-embark-resource-choice target)))
 
+(defun refbox-embark--install-default-action-overrides ()
+  "Install Refbox Embark default-action overrides.
+
+The previous values are saved once so disabling `refbox-embark-mode'
+can restore user configuration."
+  (when (boundp 'embark-default-action-overrides)
+    (unless refbox-embark--saved-default-action-overrides
+      (setq refbox-embark--saved-default-action-overrides
+            (mapcar
+             (lambda (entry)
+               (let* ((category (car entry))
+                      (current (assq category
+                                     embark-default-action-overrides)))
+                 (cons category
+                       (if current
+                           (cdr current)
+                         refbox-embark--absent-default-action-override))))
+             refbox-embark--default-action-overrides)))
+    (pcase-dolist (`(,category . ,action)
+                   refbox-embark--default-action-overrides)
+      (setf (alist-get category embark-default-action-overrides)
+            action))))
+
+(defun refbox-embark--restore-default-action-overrides ()
+  "Restore Embark default-action overrides replaced by Refbox.
+
+If a user changed an override after Refbox installed it, leave the
+user's new value alone."
+  (when (boundp 'embark-default-action-overrides)
+    (pcase-dolist (`(,category . ,previous)
+                   refbox-embark--saved-default-action-overrides)
+      (let* ((current (assq category embark-default-action-overrides))
+             (installed
+              (alist-get category
+                         refbox-embark--default-action-overrides)))
+        (when (and current (eq (cdr current) installed))
+          (if (eq previous
+                  refbox-embark--absent-default-action-override)
+              (setq embark-default-action-overrides
+                    (assq-delete-all category
+                                     embark-default-action-overrides))
+            (setcdr current previous))))))
+  (setq refbox-embark--saved-default-action-overrides nil))
+
 (defun refbox-embark--enable ()
   "Install refbox target finders and keymaps in Embark."
   (unless (require 'embark nil t)
@@ -479,6 +538,7 @@
   (pcase-dolist (`(,category . ,map) refbox-embark--keymap-alist)
     (setf (alist-get category embark-keymap-alist)
           (refbox-embark--category-keymap category (symbol-value map))))
+  (refbox-embark--install-default-action-overrides)
   (when (boundp 'embark-multitarget-actions)
     (dolist (action refbox-embark--multitarget-actions)
       (add-to-list 'embark-multitarget-actions action)))
@@ -492,6 +552,7 @@
 
 (defun refbox-embark--disable ()
   "Remove refbox target finders and keymaps from Embark."
+  (refbox-embark--restore-default-action-overrides)
   (dolist (finder refbox-embark--target-finders)
     (remove-hook 'embark-target-finders finder))
   (when (boundp 'embark-candidate-collectors)
