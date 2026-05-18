@@ -707,6 +707,9 @@ candidate and exits the selector.")
 (defvar refbox--source-path-freshness (make-hash-table :test 'equal)
   "Freshness cache for local bibliography source files.")
 
+(defvar refbox--library-files-cache-only nil
+  "Non-nil means library file key lookup must not populate cold caches.")
+
 (defvar refbox-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "a") #'refbox-add-file-to-library)
@@ -2771,8 +2774,32 @@ whose cdr is passed as additional arguments."
                       :roots (vconcat roots)
                       :recursive t)
                 (when extensions
-                  (list :extensions (vconcat extensions)))))
+                  (list :extensions (vconcat extensions)))
+                (when refbox--library-files-cache-only
+                  (list :cache_only t))))
               :files))))))))))
+
+(defun refbox-resource--resolve-field-files (files source-dirs extensions)
+  "Resolve declared FILES in library roots, falling back to SOURCE-DIRS.
+
+This preserves Citar's library-then-bibliography order without expanding
+recursive library directories in Emacs."
+  (delete-dups
+   (apply
+    #'append
+    (mapcar
+     (lambda (file)
+       (or (refbox-resource--resolve-files-in-roots
+            (list file)
+            refbox-library-paths
+            refbox-library-paths-recursive
+            extensions)
+           (refbox-resource--resolve-files-in-roots
+            (list file)
+            source-dirs
+            nil
+            extensions)))
+     files))))
 
 (defun refbox-resource--normalized-roots (roots)
   "Return existing ROOTS as absolute directory names."
@@ -2908,25 +2935,31 @@ already exists in the dynamic cache."
   "Return files in ROOTS associated with KEYS."
   (pcase-let ((`(,keys ,roots ,extensions)
                (refbox-resource--normalize-file-search keys roots extensions)))
-    (refbox--dynamic-cache-get
-     'resource-files-for-keys
-     (list keys roots recursive extensions additional-sep)
-     (lambda ()
-       (when (and keys roots)
-         (refbox--listify
-          (plist-get
-           (refbox-rpc-request
-            refbox-rpc-method-library-files-by-keys
-            (append
-             (list :keys (vconcat keys)
-                   :roots (vconcat roots))
-             (when recursive
-               (list :recursive t))
-             (when extensions
-               (list :extensions (vconcat extensions)))
-             (when additional-sep
-               (list :additional_separator additional-sep))))
-           :files)))))))
+    (cl-labels
+        ((request ()
+           (when (and keys roots)
+             (refbox--listify
+              (plist-get
+               (refbox-rpc-request
+                refbox-rpc-method-library-files-by-keys
+                (append
+                 (list :keys (vconcat keys)
+                       :roots (vconcat roots))
+                 (when recursive
+                   (list :recursive t))
+                 (when extensions
+                   (list :extensions (vconcat extensions)))
+                 (when additional-sep
+                   (list :additional_separator additional-sep))
+                 (when refbox--library-files-cache-only
+                   (list :cache_only t))))
+               :files)))))
+      (if refbox--library-files-cache-only
+          (request)
+        (refbox--dynamic-cache-get
+         'resource-files-for-keys
+         (list keys roots recursive extensions additional-sep)
+         #'request)))))
 
 (defun refbox-resource--files-for-keys-cheap
     (keys roots recursive extensions additional-sep)
@@ -3029,31 +3062,45 @@ callable."
                (delete-dups
                 (apply #'append
                        (mapcar #'refbox-resource--parse-file-field
-                               field-values)))))
-         (dirs (delete-dups
-                (append
-                 (refbox-resource--library-dirs)
-                 (refbox-resource--source-dirs candidate resources))))
-         (found-files
-          (refbox-resource--find-files-in-dirs field-files dirs nil))
-         (files
-          (if refbox-library-file-extensions
-              (refbox-resource--find-files-in-dirs
-               field-files
-               dirs
-               refbox-library-file-extensions)
-            found-files)))
-    (when (and field-values (null files))
+                               field-values))))))
+    (cond
+     ((null field-values)
+      nil)
+     ((null field-files)
       (refbox-resource-file-source--parse-diagnostics
        (refbox--reference-key candidate)
        field-values
        field-files)
-      (refbox-resource-file-source--resolution-diagnostics
-       (refbox--reference-key candidate)
-       field-files
-       found-files
-       files))
-    files))
+      nil)
+     (t
+      (let* ((source-dirs (refbox-resource--source-dirs candidate resources))
+             (files
+              (if refbox-library-file-extensions
+                  (refbox-resource--resolve-field-files
+                   field-files
+                   source-dirs
+                   refbox-library-file-extensions)
+                (refbox-resource--resolve-field-files
+                 field-files
+                 source-dirs
+                 nil))))
+        (when (null files)
+          (let ((found-files
+                 (and refbox-library-file-extensions
+                      (refbox-resource--resolve-field-files
+                       field-files
+                       source-dirs
+                       nil))))
+            (refbox-resource-file-source--parse-diagnostics
+             (refbox--reference-key candidate)
+             field-values
+             field-files)
+            (refbox-resource-file-source--resolution-diagnostics
+             (refbox--reference-key candidate)
+             field-files
+             found-files
+             files)))
+        files)))))
 
 (defun refbox-resource-file-source-indexed-items (keys)
   "Return files declared by indexed resources for KEYS as a hash table."
@@ -4099,7 +4146,7 @@ When INCLUDE-CREATE is non-nil, include note creation choices."
 ;;;###autoload
 (defun refbox-open-files (references)
   "Open a file resource for REFERENCES."
-  (interactive (list (refbox-select-refs)))
+  (interactive (list (refbox-select-references)))
   (let* ((references (and references
                           (refbox--contextual-reference-list references)))
          (choices (refbox--file-choices references))
@@ -4117,7 +4164,7 @@ When INCLUDE-CREATE is non-nil, include note creation choices."
 ;;;###autoload
 (defun refbox-attach-files (references)
   "Attach a file resource for REFERENCES to an outgoing MIME message."
-  (interactive (list (refbox-select-ref)))
+  (interactive (list (refbox-select-reference)))
   (let* ((references (and references
                           (refbox--contextual-reference-list references)))
          (choices (refbox--file-choices references))
@@ -4136,7 +4183,7 @@ When INCLUDE-CREATE is non-nil, include note creation choices."
 ;;;###autoload
 (defun refbox-open-links (references)
   "Open a link resource for REFERENCES."
-  (interactive (list (refbox-select-refs)))
+  (interactive (list (refbox-select-references)))
   (let* ((references (and references
                           (refbox--contextual-reference-list references)))
          (choices (refbox--link-choices references))
@@ -4155,7 +4202,7 @@ When INCLUDE-CREATE is non-nil, include note creation choices."
 ;;;###autoload
 (defun refbox-open-notes (references)
   "Open or create a note for REFERENCES."
-  (interactive (list (refbox-select-refs)))
+  (interactive (list (refbox-select-references)))
   (let* ((references (and references
                           (refbox--contextual-reference-list references)))
          (choices
@@ -4190,7 +4237,7 @@ When INCLUDE-CREATE is non-nil, include note creation choices."
 
 KEY may be a reference key string or an indexed candidate.  ENTRY, when
 non-nil, is a bibliography entry alist used as candidate metadata."
-  (interactive (list (refbox-select-ref)))
+  (interactive (list (refbox-select-reference)))
   (refbox-note-source-create
    (cond
     ((and (listp key) (plist-member key :key)) key)
@@ -4205,8 +4252,9 @@ non-nil, is a bibliography entry alist used as candidate metadata."
 ;;;###autoload
 (defun refbox-open (references)
   "Open a file, link, or note associated with REFERENCES."
-  (interactive (list (refbox-select-refs)))
-  (let* ((references (and references
+  (interactive (list (refbox-select-references)))
+  (let* ((refbox--library-files-cache-only t)
+         (references (and references
                           (refbox--contextual-reference-list references)))
          (choices
           (append
@@ -4496,7 +4544,7 @@ report if the effective limit is invalid."
 ;;;###autoload
 (defun refbox-open-entry (reference)
   "Open REFERENCE's bibliography entry using `refbox-open-entry-function'."
-  (interactive (list (refbox-select-ref)))
+  (interactive (list (refbox-select-reference)))
   (if (eq refbox-open-entry-function #'refbox-open-entry-in-file)
       (refbox-open-entry-in-file reference)
     (funcall refbox-open-entry-function

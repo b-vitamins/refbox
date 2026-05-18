@@ -303,6 +303,7 @@ pub struct ResolveFilesRequest {
     pub roots: Vec<String>,
     pub recursive: Option<bool>,
     pub extensions: Option<Vec<String>>,
+    pub cache_only: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -312,6 +313,7 @@ pub struct LibraryFilesByKeysRequest {
     pub recursive: Option<bool>,
     pub extensions: Option<Vec<String>>,
     pub additional_separator: Option<String>,
+    pub cache_only: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Component, Path, PathBuf};
 
@@ -205,6 +205,32 @@ struct Daemon {
     db: PathBuf,
     store: RefboxStore,
     sync: SyncEngine,
+    file_lookup_cache: HashMap<FileLookupCacheKey, FileLookupIndex>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct FileLookupCacheKey {
+    roots: Vec<PathBuf>,
+    recursive: bool,
+    extensions: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct FileLookupIndex {
+    entries: Vec<(PathBuf, String)>,
+}
+
+impl FileLookupIndex {
+    fn push(&mut self, path: PathBuf) {
+        let Some(stem) = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(str::to_owned)
+        else {
+            return;
+        };
+        self.entries.push((path, stem));
+    }
 }
 
 impl Daemon {
@@ -217,6 +243,7 @@ impl Daemon {
             db,
             store,
             sync,
+            file_lookup_cache: HashMap::new(),
         })
     }
 
@@ -256,6 +283,112 @@ impl Daemon {
             resources: entry.resources.into_iter().map(resource_item).collect(),
             completion_display,
         }
+    }
+
+    fn file_lookup_index(&mut self, key: FileLookupCacheKey) -> &FileLookupIndex {
+        self.file_lookup_cache
+            .entry(key.clone())
+            .or_insert_with(|| build_file_lookup_index(&key))
+    }
+
+    fn resolve_files(&mut self, request: ResolveFilesRequest) -> Vec<String> {
+        let files = normalize_nonempty_strings(request.files);
+        if files.is_empty() {
+            return Vec::new();
+        }
+
+        let roots = normalize_existing_dirs(request.roots);
+        let extensions = normalize_extensions_vec(request.extensions);
+        let extension_set = extension_set(extensions.as_ref());
+        let recursive = request.recursive.unwrap_or(false);
+        let cache_only = request.cache_only.unwrap_or(false);
+        let mut found = Vec::new();
+        let mut seen = HashSet::new();
+        let mut relative_files = Vec::new();
+
+        for file in files {
+            let path = PathBuf::from(file);
+            if path.is_absolute() {
+                push_regular_file(&mut found, &mut seen, &path, extension_set.as_ref());
+            } else {
+                relative_files.push(path);
+            }
+        }
+
+        if relative_files.is_empty() || roots.is_empty() {
+            return found;
+        }
+
+        for root in &roots {
+            for relative in &relative_files {
+                push_regular_file(
+                    &mut found,
+                    &mut seen,
+                    &root.join(relative),
+                    extension_set.as_ref(),
+                );
+            }
+        }
+
+        if recursive {
+            let relative_scan_files = relative_files
+                .iter()
+                .filter(|relative| !path_has_parent_dir(relative))
+                .collect::<Vec<_>>();
+            if !relative_scan_files.is_empty() {
+                let cache_key = FileLookupCacheKey {
+                    roots,
+                    recursive: true,
+                    extensions,
+                };
+                if cache_only && !self.file_lookup_cache.contains_key(&cache_key) {
+                    return found;
+                }
+                let index = self.file_lookup_index(cache_key);
+                for (path, _) in &index.entries {
+                    if relative_scan_files
+                        .iter()
+                        .any(|relative| path.ends_with(relative))
+                    {
+                        push_unique_path(&mut found, &mut seen, path);
+                    }
+                }
+            }
+        }
+
+        found
+    }
+
+    fn library_files_by_keys(&mut self, request: LibraryFilesByKeysRequest) -> Vec<String> {
+        let keys = normalize_nonempty_strings(request.keys)
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let roots = normalize_existing_dirs(request.roots);
+        if keys.is_empty() || roots.is_empty() {
+            return Vec::new();
+        }
+
+        let recursive = request.recursive.unwrap_or(false);
+        let additional_separator = request.additional_separator;
+        let cache_key = FileLookupCacheKey {
+            roots,
+            recursive,
+            extensions: normalize_extensions_vec(request.extensions),
+        };
+        if request.cache_only.unwrap_or(false) && !self.file_lookup_cache.contains_key(&cache_key) {
+            return Vec::new();
+        }
+        let index = self.file_lookup_index(cache_key);
+        let mut found = Vec::new();
+        let mut seen = HashSet::new();
+
+        for (path, stem) in &index.entries {
+            if keyed_file_stem_matches(stem, &keys, additional_separator.as_deref()) {
+                push_unique_path(&mut found, &mut seen, path);
+            }
+        }
+
+        found
     }
 
     fn dispatch(
@@ -496,15 +629,13 @@ impl Daemon {
             }
             METHOD_RESOLVE_FILES => {
                 let request: ResolveFilesRequest = parse_params(params)?;
-                self.to_value(LibraryFilesResponse {
-                    files: resolve_files(request),
-                })
+                let files = self.resolve_files(request);
+                self.to_value(LibraryFilesResponse { files })
             }
             METHOD_LIBRARY_FILES_BY_KEYS => {
                 let request: LibraryFilesByKeysRequest = parse_params(params)?;
-                self.to_value(LibraryFilesResponse {
-                    files: library_files_by_keys(request),
-                })
+                let files = self.library_files_by_keys(request);
+                self.to_value(LibraryFilesResponse { files })
             }
             METHOD_RAW_ENTRY => {
                 let request: RawEntryRequest = parse_params(params)?;
@@ -715,106 +846,17 @@ fn parse_params<T: DeserializeOwned>(
         .map_err(|error| JsonRpcError::new(JsonRpcErrorObject::invalid_params(error.to_string())))
 }
 
-fn resolve_files(request: ResolveFilesRequest) -> Vec<String> {
-    let files = normalize_nonempty_strings(request.files);
-    if files.is_empty() {
-        return Vec::new();
-    }
-
-    let roots = normalize_existing_dirs(request.roots);
-    let extensions = normalize_extensions(request.extensions);
-    let recursive = request.recursive.unwrap_or(false);
-    let mut found = Vec::new();
-    let mut seen = HashSet::new();
-    let mut relative_files = Vec::new();
-
-    for file in files {
-        let path = PathBuf::from(file);
-        if path.is_absolute() {
-            push_regular_file(&mut found, &mut seen, &path, extensions.as_ref());
-        } else {
-            relative_files.push(path);
-        }
-    }
-
-    if relative_files.is_empty() {
-        return found;
-    }
-    if roots.is_empty() {
-        return found;
-    }
-
-    for root in roots {
-        if recursive {
-            for relative in &relative_files {
-                push_regular_file(
-                    &mut found,
-                    &mut seen,
-                    &root.join(relative),
-                    extensions.as_ref(),
-                );
+fn build_file_lookup_index(key: &FileLookupCacheKey) -> FileLookupIndex {
+    let extension_set = extension_set(key.extensions.as_ref());
+    let mut index = FileLookupIndex::default();
+    for root in &key.roots {
+        scan_regular_files(root, key.recursive, |path| {
+            if extension_allowed(&path, extension_set.as_ref()) {
+                index.push(path);
             }
-            scan_regular_files(&root, true, |path| {
-                if relative_files
-                    .iter()
-                    .filter(|relative| !path_has_parent_dir(relative))
-                    .any(|relative| path.ends_with(relative))
-                    && extension_allowed(&path, extensions.as_ref())
-                {
-                    push_unique_path(&mut found, &mut seen, &path);
-                }
-            });
-        } else {
-            for relative in &relative_files {
-                push_regular_file(
-                    &mut found,
-                    &mut seen,
-                    &root.join(relative),
-                    extensions.as_ref(),
-                );
-            }
-        }
+        });
     }
-
-    found
-}
-
-fn library_files_by_keys(request: LibraryFilesByKeysRequest) -> Vec<String> {
-    let keys = normalize_nonempty_strings(request.keys)
-        .into_iter()
-        .collect::<HashSet<_>>();
-    let roots = normalize_existing_dirs(request.roots);
-    if keys.is_empty() || roots.is_empty() {
-        return Vec::new();
-    }
-
-    let extensions = normalize_extensions(request.extensions);
-    let recursive = request.recursive.unwrap_or(false);
-    let additional_separator = request.additional_separator;
-    let mut found = Vec::new();
-    let mut seen = HashSet::new();
-
-    for root in roots {
-        if recursive {
-            scan_regular_files(&root, true, |path| {
-                if extension_allowed(&path, extensions.as_ref())
-                    && keyed_file_matches(&path, &keys, additional_separator.as_deref())
-                {
-                    push_unique_path(&mut found, &mut seen, &path);
-                }
-            });
-        } else {
-            scan_regular_files(&root, false, |path| {
-                if extension_allowed(&path, extensions.as_ref())
-                    && keyed_file_matches(&path, &keys, additional_separator.as_deref())
-                {
-                    push_unique_path(&mut found, &mut seen, &path);
-                }
-            });
-        }
-    }
-
-    found
+    index
 }
 
 fn normalize_nonempty_strings(values: Vec<String>) -> Vec<String> {
@@ -840,10 +882,18 @@ fn normalize_existing_dirs(roots: Vec<String>) -> Vec<PathBuf> {
     dirs
 }
 
-fn normalize_extensions(extensions: Option<Vec<String>>) -> Option<HashSet<String>> {
+fn normalize_extensions_vec(extensions: Option<Vec<String>>) -> Option<Vec<String>> {
     extensions.and_then(|extensions| {
-        (!extensions.is_empty()).then(|| extensions.into_iter().collect::<HashSet<_>>())
+        let extensions = extensions
+            .into_iter()
+            .filter(|extension| !extension.is_empty())
+            .collect::<BTreeSet<_>>();
+        (!extensions.is_empty()).then(|| extensions.into_iter().collect())
     })
+}
+
+fn extension_set(extensions: Option<&Vec<String>>) -> Option<HashSet<String>> {
+    extensions.map(|extensions| extensions.iter().cloned().collect())
 }
 
 fn push_regular_file(
@@ -877,20 +927,17 @@ fn extension_allowed(path: &Path, extensions: Option<&HashSet<String>>) -> bool 
     }
 }
 
-fn keyed_file_matches(
-    path: &Path,
+fn keyed_file_stem_matches(
+    stem: &str,
     keys: &HashSet<String>,
     additional_separator: Option<&str>,
 ) -> bool {
-    let Some(base) = path.file_stem().and_then(|base| base.to_str()) else {
-        return false;
-    };
-    if keys.contains(base) {
+    if keys.contains(stem) {
         return true;
     }
     additional_separator.is_some_and(|separator| {
         keys.iter().any(|key| {
-            base.strip_prefix(key)
+            stem.strip_prefix(key)
                 .is_some_and(|suffix| separator.is_empty() || suffix.starts_with(separator))
         })
     })
@@ -1439,6 +1486,36 @@ mod tests {
         )));
         assert_eq!(absolute["files"], json!([declared.to_string_lossy()]));
 
+        daemon.file_lookup_cache.clear();
+        let cache_only_resolved = result(daemon.handle_request(request(
+            METHOD_RESOLVE_FILES,
+            json!({
+                "files": ["declared.pdf"],
+                "roots": [project.path("library")],
+                "recursive": true,
+                "extensions": ["pdf"],
+                "cache_only": true,
+            }),
+        )));
+        assert_eq!(
+            cache_only_resolved["files"],
+            json!([declared.to_string_lossy()])
+        );
+        assert_eq!(daemon.file_lookup_cache.len(), 0);
+
+        let cache_only_keyed_files = result(daemon.handle_request(request(
+            METHOD_LIBRARY_FILES_BY_KEYS,
+            json!({
+                "keys": ["smith2020"],
+                "roots": [project.path("library")],
+                "recursive": true,
+                "extensions": ["pdf"],
+                "cache_only": true,
+            }),
+        )));
+        assert_eq!(cache_only_keyed_files["files"], json!([]));
+        assert_eq!(daemon.file_lookup_cache.len(), 0);
+
         let keyed_files = result(daemon.handle_request(request(
             METHOD_LIBRARY_FILES_BY_KEYS,
             json!({
@@ -1453,6 +1530,7 @@ mod tests {
             keyed_files["files"],
             json!([keyed.to_string_lossy(), keyed_extra.to_string_lossy()])
         );
+        assert_eq!(daemon.file_lookup_cache.len(), 1);
 
         let keyed_uppercase_files = result(daemon.handle_request(request(
             METHOD_LIBRARY_FILES_BY_KEYS,
@@ -1486,6 +1564,7 @@ mod tests {
                 keyed_extra.to_string_lossy()
             ])
         );
+        assert_eq!(daemon.file_lookup_cache.len(), 2);
     }
 
     #[test]

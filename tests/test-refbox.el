@@ -2267,6 +2267,13 @@
                             (should (equal (plist-get params :additional_separator)
                                            "-"))
                             (list :files (list library-paper library-extra)))
+                           ((pred (equal refbox-rpc-method-resolve-files))
+                            (should (equal (append (plist-get params :files) nil)
+                                           '("paper.pdf")))
+                            (if (equal (append (plist-get params :roots) nil)
+                                       (list (file-name-as-directory refs)))
+                                (list :files (list paper))
+                              (list :files nil)))
                            (_ (error "unexpected method: %s" method))))))
               (should
                (equal (mapcar #'file-name-nondirectory
@@ -2306,6 +2313,35 @@
                        (lambda (&rest _args)
                          (error "unexpected RPC"))))
               (should (refbox-reference-has-files-p candidate)))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-library_file_lookup_can_use_daemon_cache_only ()
+  "Default open may ask the daemon for cached library matches only."
+  (let* ((root (make-temp-file "refbox-cache-only-files-" t))
+         (paper (expand-file-name "smith2020.pdf" root))
+         calls)
+    (unwind-protect
+        (let ((refbox-library-paths (list root))
+              (refbox-library-file-extensions '("pdf")))
+          (with-temp-file paper)
+          (cl-letf (((symbol-function 'refbox-rpc-request)
+                     (lambda (method params)
+                       (should (eq method refbox-rpc-method-library-files-by-keys))
+                       (push params calls)
+                       (if (plist-get params :cache_only)
+                           (list :files nil)
+                         (list :files (list paper))))))
+            (let ((refbox--library-files-cache-only t))
+              (let ((table (refbox-resource-file-source-library-items
+                            '("smith2020"))))
+                (should-not (gethash "smith2020" table))))
+            (let ((table (refbox-resource-file-source-library-items
+                          '("smith2020"))))
+              (should (equal (gethash "smith2020" table)
+                             (list paper))))
+            (should (= (length calls) 2))
+            (should (plist-get (cadr calls) :cache_only))
+            (should-not (plist-get (car calls) :cache_only))))
       (delete-directory root t))))
 
 (ert-deftest refbox-test-recursive_file_index_preserves_citar_order ()
@@ -2587,6 +2623,56 @@
                        (lambda (&rest _args)
                          (error "unexpected RPC"))))
               (should (refbox-reference-has-files-p candidate)))))
+      (delete-directory root t))))
+
+(ert-deftest refbox-test-indexed_file_lookup_skips_library_walk_without_file_resources ()
+  "Link-only resources must not force recursive library discovery."
+  (let ((candidate
+         '(:key "alpha"
+           :fields nil
+           :resources ((:kind "doi"
+                        :lookup_name "doi"
+                        :value "10.1000/example")))))
+    (cl-letf (((symbol-function 'refbox-resource--library-dirs)
+               (lambda ()
+                 (error "library directories should not be listed")))
+              ((symbol-function 'refbox-resource--source-dirs)
+               (lambda (&rest _)
+                 (error "source directories should not be listed"))))
+      (should-not
+       (refbox-resource-file-source--indexed-items-for-candidate
+        candidate
+        (refbox--candidate-resources candidate))))))
+
+(ert-deftest refbox-test-indexed_file_lookup_uses_daemon_cache_only ()
+  "Default open must not cold-scan recursive library roots for file fields."
+  (let* ((root (make-temp-file "refbox-field-cache-only-" t))
+         (library (expand-file-name "library" root))
+         (refs (expand-file-name "refs" root))
+         (candidate
+          (list :key "alpha"
+                :source_path (expand-file-name "main.bib" refs)
+                :resources
+                '((:kind "file"
+                   :lookup_name "file"
+                   :value "alpha.pdf")))))
+    (unwind-protect
+        (progn
+          (make-directory library t)
+          (make-directory refs t)
+          (let ((refbox-library-paths (list library))
+                (refbox-library-paths-recursive t)
+                (refbox-library-file-extensions '("pdf"))
+                (refbox--library-files-cache-only t))
+            (cl-letf (((symbol-function 'refbox-rpc-request)
+                       (lambda (method params)
+                         (should (eq method refbox-rpc-method-resolve-files))
+                         (should (eq (plist-get params :cache_only) t))
+                         (list :files nil))))
+              (should-not
+               (refbox-resource-file-source--indexed-items-for-candidate
+                candidate
+                (refbox--candidate-resources candidate))))))
       (delete-directory root t))))
 
 (ert-deftest refbox-test-note-filename-uses-existing-or-default_path ()
@@ -4791,6 +4877,37 @@
     (should (eq (lookup-key refbox-citation-map (kbd (car binding)))
                 (cdr binding))))
   (should-not (lookup-key refbox-citation-map (kbd "b"))))
+
+(ert-deftest refbox-test-open_interactive_keeps_selected_candidate_metadata ()
+  "Opening from completion should not throw away the selected candidate."
+  (let* ((candidate '(:key "alpha" :fields nil :resources nil))
+         (choice (list :type 'link :reference candidate :target "https://example.test"))
+         contextual-references
+         opened-choice)
+    (cl-letf (((symbol-function 'refbox-select-references)
+               (lambda (&rest _args)
+                 (list candidate)))
+              ((symbol-function 'refbox-select-refs)
+               (lambda (&rest _args)
+                 (error "resource commands should select candidates, not keys")))
+              ((symbol-function 'refbox--contextual-reference-list)
+               (lambda (references)
+                 (setq contextual-references references)
+                 references))
+              ((symbol-function 'refbox--file-choices)
+               (lambda (_references) nil))
+              ((symbol-function 'refbox--link-choices)
+               (lambda (references)
+                 (should (eq (car references) candidate))
+                 (list choice)))
+              ((symbol-function 'refbox--note-choices)
+               (lambda (_references &optional _include-create) nil))
+              ((symbol-function 'refbox--open-resource-choice)
+               (lambda (choice)
+                 (setq opened-choice choice))))
+      (call-interactively #'refbox-open)
+      (should (equal contextual-references (list candidate)))
+      (should (eq opened-choice choice)))))
 
 (ert-deftest refbox-test-insert-preset_allows_freeform_searches ()
   "Preset insertion should not require the input to match configured presets."
