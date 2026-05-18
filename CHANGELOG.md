@@ -6,6 +6,16 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-05-18
+
+### Fixed
+- Kept generic `refbox-open` from performing cold recursive library scans after
+  selecting a reference, avoiding RET stalls on large recursive library roots
+  while leaving explicit file lookup commands able to populate the daemon cache.
+- Preserved selected completion candidate metadata for resource commands, so
+  opening files, links, notes, entries, and note creation can use the bounded
+  post-selection payload instead of rehydrating keys unnecessarily.
+
 ## [0.6.2] - 2026-05-18
 
 ### Fixed
