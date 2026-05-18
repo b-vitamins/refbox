@@ -6,6 +6,11 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+### Fixed
+- Restart the Emacs JSON-RPC daemon when the configured `refbox` executable is
+  rebuilt, preventing stale deleted binaries from keeping old slow completion
+  behavior alive in long-running Emacs sessions.
+
 ## [0.6.1] - 2026-05-18
 
 ### Fixed

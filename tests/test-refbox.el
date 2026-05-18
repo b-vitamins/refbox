@@ -107,6 +107,45 @@
                                "--exclude-glob" "**/.#*"))))
       (delete-directory root t))))
 
+(ert-deftest refbox-test-rpc-configuration-tracks_server_executable_identity ()
+  "Rebuilt daemon executables should force Emacs to reconnect."
+  (let* ((root (make-temp-file "refbox-root-" t))
+         (program (expand-file-name "refbox-test-server" root))
+         (replacement (expand-file-name "refbox-test-server.new" root))
+         (db (expand-file-name "refbox.sqlite" root)))
+    (unwind-protect
+        (let (first-signature second-signature)
+          (with-temp-file program
+            (insert "#!/bin/sh\nexit 0\n"))
+          (set-file-modes program #o755)
+          (let ((refbox-server-program program)
+                (refbox-bibliography-roots (list root))
+                (refbox-database-file db))
+            (setq first-signature
+                  (plist-get (refbox-rpc--configuration)
+                             :program-signature))
+            (should (equal (refbox-rpc--command)
+                           (list program
+                                 "serve"
+                                 "--db" db
+                                 "--root" root
+                                 "--extension" "bib"
+                                 "--extension" "bibtex"))))
+          (with-temp-file replacement
+            (insert "#!/bin/sh\nprintf rebuilt\n"))
+          (set-file-modes replacement #o755)
+          (rename-file replacement program t)
+          (let ((refbox-server-program program)
+                (refbox-bibliography-roots (list root))
+                (refbox-database-file db))
+            (setq second-signature
+                  (plist-get (refbox-rpc--configuration)
+                             :program-signature)))
+          (should first-signature)
+          (should second-signature)
+          (should-not (equal first-signature second-signature)))
+      (delete-directory root t))))
+
 (ert-deftest refbox-test-configuration-errors-are-direct ()
   "Configuration validation should report actionable user errors."
   (let* ((root (make-temp-file "refbox-root-" t))

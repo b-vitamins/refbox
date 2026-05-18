@@ -223,6 +223,16 @@ configured."
       (user-error "refbox database directory is not writable: %s" parent))
     db))
 
+(defun refbox-rpc--program-signature (program)
+  "Return a restart-relevant file signature for executable PROGRAM."
+  (let ((attributes (file-attributes program 'integer)))
+    (unless attributes
+      (user-error "refbox server executable not found: %s" program))
+    (list :path program
+          :inode (file-attribute-inode-number attributes)
+          :mtime (file-attribute-modification-time attributes)
+          :size (file-attribute-size attributes))))
+
 (defun refbox-rpc--search-limit (&optional limit)
   "Return LIMIT clamped to configured refbox search bounds."
   (let ((limit (or limit refbox-search-default-limit))
@@ -236,10 +246,12 @@ configured."
 (defun refbox-rpc--configuration ()
   "Return the connection-relevant refbox daemon configuration."
   (let ((roots (refbox-rpc--bibliography-roots))
-        (files (refbox-rpc--bibliography-files)))
+        (files (refbox-rpc--bibliography-files))
+        (program (refbox-rpc--resolve-server-program)))
     (unless (or roots files)
       (user-error "`refbox-bibliography-roots' or `refbox-bibliography' must configure a corpus"))
-    (list :program (refbox-rpc--resolve-server-program)
+    (list :program program
+          :program-signature (refbox-rpc--program-signature program)
           :db (refbox-rpc--database-file)
           :roots roots
           :files files
