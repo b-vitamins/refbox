@@ -6,6 +6,14 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-05-19
+
+### Fixed
+- Installed deterministic Embark default actions for Refbox reference,
+  citation, key, and resource targets, so `embark-dwim`/RET follows
+  `refbox-default-action` instead of falling through to an arbitrary action
+  such as note opening.
+
 ## [0.6.3] - 2026-05-18
 
 ### Fixed
