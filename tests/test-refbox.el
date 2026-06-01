@@ -1386,6 +1386,34 @@
         (should (equal (plist-get params :include_resources) :json-false))
         (should-not (plist-member params :include_completion_display))))))
 
+(ert-deftest refbox-test-capf_filters_unrelated_backend_rows ()
+  "CAPF should not show backend rows that do not match the typed key text."
+  (let* ((unrelated
+          (copy-tree refbox-test-reference-candidate))
+         (matched
+          (copy-tree refbox-test-reference-candidate))
+         calls)
+    (setq unrelated
+          (plist-put unrelated :key "a1997when"))
+    (setq matched
+          (plist-put
+           (plist-put matched :key "lecun2022path")
+           :fields
+           '((:raw_name "author" :lookup_name "author" :value "{LeCun, Yann}")
+             (:raw_name "title" :lookup_name "title"
+              :value "{A Path Towards Autonomous Machine Intelligence}"))))
+    (cl-letf (((symbol-function 'refbox-rpc-request)
+               (lambda (method params)
+                 (push (list method params) calls)
+                 (should (equal method refbox-rpc-method-search-entries))
+                 (list :entries (list unrelated matched)))))
+      (let* ((table (refbox-capf--completion-table (refbox-capf--state 12)))
+             (candidates (funcall table "lecun" nil t))
+             (params (cadar calls)))
+        (should (equal (mapcar #'substring-no-properties candidates)
+                       '("lecun2022path")))
+        (should (equal (plist-get params :query) "lecun"))))))
+
 (ert-deftest refbox-test-reference_indicators_reserve_absent_slots ()
   "Indicator prefixes should stay width-stable when indicators are absent."
   (let* ((refbox-indicators
@@ -3429,6 +3457,53 @@
         (should (string-match-p "new:smith2020" label))
         (should (equal (funcall group-function completion-label t)
                        completion-label))))))
+
+(ert-deftest refbox-test-create_note_choices_hydrate_partial_reference_plists ()
+  "Create-note choices from Embark key targets should use indexed metadata."
+  (let* ((candidate (copy-tree refbox-test-reference-candidate))
+         (partial '(:key "smith2020"))
+         (refbox-notes-source 'mock)
+         (refbox-notes-sources
+          '((mock :name "Slipbox Notes"
+                  :items (lambda (_keys)
+                           (make-hash-table :test 'equal))
+                  :hasitems ignore
+                  :open ignore
+                  :create ignore
+                  :create-label (lambda (key _reference)
+                                  (format "new:%s" key))))))
+    (cl-letf (((symbol-function 'refbox--get-entry-candidate)
+               (lambda (reference)
+                 (when (equal (refbox--reference-key reference) "smith2020")
+                   candidate))))
+      (let* ((choice (car (refbox--note-choices (list partial) t)))
+             (label (plist-get choice :label)))
+        (should (eq (plist-get choice :type) 'create-note))
+        (should (eq (plist-get choice :reference) candidate))
+        (should (string-match-p "Alpha Reference Title" label))
+        (should-not (string-match-p "\\`[^[:alnum:]]*\\'" label))))))
+
+(ert-deftest refbox-test-create_note_hydrates_partial_reference_plists ()
+  "Note creation should not pass key-only plists to note sources."
+  (let* ((candidate (copy-tree refbox-test-reference-candidate))
+         (partial '(:key "smith2020"))
+         created)
+    (let ((refbox-notes-source 'mock)
+          (refbox-notes-sources
+           `((mock
+              :items ,#'ignore
+              :hasitems ,#'ignore
+              :open ,#'ignore
+              :create ,(lambda (key entry)
+                         (setq created (list key entry)))))))
+      (cl-letf (((symbol-function 'refbox--get-entry-candidate)
+                 (lambda (reference)
+                   (when (equal (refbox--reference-key reference) "smith2020")
+                     candidate))))
+        (refbox-create-note partial)))
+    (should (equal (car created) "smith2020"))
+    (should (equal (refbox-get-value "title" (cadr created))
+                   "{Alpha Reference Title}"))))
 
 (ert-deftest refbox-test-resource_open_prompt_uses_this_command_like_citar ()
   "Single-resource prompting should follow `this-command'."

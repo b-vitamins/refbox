@@ -38,12 +38,11 @@
        map)
       nil)))
 
-(defun refbox-embark-test--assert-menu-action (map key label command)
-  "Assert MAP binds KEY to COMMAND with Embark display LABEL."
+(defun refbox-embark-test--assert-action (map key command)
+  "Assert MAP binds KEY directly to COMMAND."
   (let ((binding (refbox-embark-test--raw-binding map key)))
-    (should (eq (car-safe binding) 'menu-item))
-    (should (equal (cadr binding) label))
-    (should (eq (nth 2 binding) command))
+    (should-not (eq (car-safe binding) 'menu-item))
+    (should (eq binding command))
     (should (eq (lookup-key map (kbd key)) command))))
 
 (defun refbox-embark-test-candidate (key source-path)
@@ -279,30 +278,25 @@
         (should (= (cdddr target) (point-max)))))))
 
 (ert-deftest refbox-embark-test-action_keymaps_use_human_labels ()
-  "Action keymaps should expose Citar-style labels to Embark."
-  (refbox-embark-test--assert-menu-action
-   refbox-embark-map "c" "insert citation" #'refbox-embark-insert-citation)
-  (refbox-embark-test--assert-menu-action
-   refbox-embark-map "n" "open notes" #'refbox-embark-open-notes)
-  (refbox-embark-test--assert-menu-action
-   refbox-embark-map "RET" "run default action"
-   #'refbox-run-default-action)
+  "Action keymaps should expose direct commands to Embark."
+  (refbox-embark-test--assert-action
+   refbox-embark-map "c" #'refbox-insert-citation)
+  (refbox-embark-test--assert-action
+   refbox-embark-map "n" #'refbox-open-notes)
+  (refbox-embark-test--assert-action
+   refbox-embark-map "RET" #'refbox-run-default-action)
   (dolist (key '("A" "B" "s" "C"))
     (should-not (lookup-key refbox-embark-map (kbd key))))
-  (refbox-embark-test--assert-menu-action
-   refbox-embark-citation-map "i" "insert or edit"
-   #'refbox-embark-insert-edit)
-  (refbox-embark-test--assert-menu-action
-   refbox-embark-citation-map "f" "open library files"
-   #'refbox-embark-open-files)
-  (refbox-embark-test--assert-menu-action
-   refbox-embark-citation-map "r" "copy reference"
-   #'refbox-embark-copy-reference)
+  (refbox-embark-test--assert-action
+   refbox-embark-citation-map "i" #'refbox-insert-edit)
+  (refbox-embark-test--assert-action
+   refbox-embark-citation-map "f" #'refbox-open-files)
+  (refbox-embark-test--assert-action
+   refbox-embark-citation-map "r" #'refbox-copy-reference)
   (dolist (key '("a" "A" "b" "B" "s" "C"))
     (should-not (lookup-key refbox-embark-citation-map (kbd key))))
-  (refbox-embark-test--assert-menu-action
-   refbox-embark-resource-map "RET" "open resource"
-   refbox-embark--open-resource-action))
+  (refbox-embark-test--assert-action
+   refbox-embark-resource-map "RET" #'refbox-open-resource))
 
 (ert-deftest refbox-embark-test-resource_action_is_noninteractive ()
   "Resource actions should keep Embark's propertized target intact."
@@ -312,17 +306,15 @@
                    :label "create alpha"))
          (target (refbox-embark--resource-target-string choice))
          opened)
-    (should-not (commandp refbox-embark--open-resource-action))
     (cl-letf (((symbol-function 'refbox--open-resource-choice)
                (lambda (choice)
                  (setq opened choice)
                  :opened)))
-      (should (eq (funcall refbox-embark--open-resource-action target)
+      (should (eq (refbox-open-resource target)
                   :opened))
       (should (equal opened choice))
       (should-error
-       (funcall refbox-embark--open-resource-action
-                (substring-no-properties target))
+       (refbox-open-resource (substring-no-properties target))
        :type 'user-error))))
 
 (ert-deftest refbox-embark-test-setup-registers-finders-and-keymaps ()
@@ -363,7 +355,7 @@
     (should (eq (lookup-key (refbox-embark-test--registered-keymap
                              'refbox-reference)
                             (kbd "o"))
-                #'refbox-embark-open))
+                #'refbox-open))
     (should (eq (lookup-key (refbox-embark-test--registered-keymap
                              'refbox-reference)
                             (kbd "RET"))
@@ -371,23 +363,23 @@
     (should (eq (lookup-key (refbox-embark-test--registered-keymap
                              'refbox-reference)
                             (kbd "c"))
-                #'refbox-embark-insert-citation))
+                #'refbox-insert-citation))
     (should (eq (lookup-key (refbox-embark-test--registered-keymap
                              'refbox-reference)
                             (kbd "k"))
-                #'refbox-embark-insert-keys))
+                #'refbox-insert-keys))
     (should (eq (lookup-key (refbox-embark-test--registered-keymap
                              'refbox-reference)
                             (kbd "r"))
-                #'refbox-embark-copy-reference))
+                #'refbox-copy-reference))
     (should (eq (lookup-key (refbox-embark-test--registered-keymap
                              'refbox-reference)
                             (kbd "R"))
-                #'refbox-embark-insert-reference))
+                #'refbox-insert-reference))
     (should (eq (lookup-key (refbox-embark-test--registered-keymap
                              'refbox-resource)
                             (kbd "RET"))
-                refbox-embark--open-resource-action))
+                #'refbox-open-resource))
     (should (eq (lookup-key (refbox-embark-test--registered-keymap
                              'refbox-reference)
                             (kbd "g"))
@@ -404,11 +396,11 @@
     (should (eq (lookup-key (refbox-embark-test--registered-keymap
                              'refbox-key)
                             (kbd "i"))
-                #'refbox-embark-insert-edit))
+                #'refbox-insert-edit))
     (should (eq (lookup-key (refbox-embark-test--registered-keymap
                              'refbox-key)
                             (kbd "r"))
-                #'refbox-embark-copy-reference))
+                #'refbox-copy-reference))
     (should (eq (lookup-key (refbox-embark-test--registered-keymap
                              'refbox-key)
                             (kbd "RET"))
@@ -416,30 +408,30 @@
     (should (eq (lookup-key (refbox-embark-test--registered-keymap
                              'refbox-citation)
                             (kbd "i"))
-                #'refbox-embark-insert-edit))
+                #'refbox-insert-edit))
     (dolist (category '(refbox-key refbox-citation))
       (dolist (key '("a" "A" "b" "B" "s" "C"))
         (should-not (lookup-key (refbox-embark-test--registered-keymap
                                  category)
                                 (kbd key)))))
     (should (eq (lookup-key refbox-embark-map (kbd "e"))
-                #'refbox-embark-open-entry))
+                #'refbox-open-entry))
     (should (eq (lookup-key refbox-embark-map (kbd "b"))
-                #'refbox-embark-insert-bibtex))
+                #'refbox-insert-bibtex))
     (dolist (key '("A" "B" "s" "C"))
       (should-not (lookup-key refbox-embark-map (kbd key))))
     (should-not (lookup-key refbox-embark-map (kbd "z")))
     (should-not (lookup-key refbox-embark-citation-map (kbd "z")))
-    (should (memq #'refbox-embark-insert-citation
+    (should (memq #'refbox-insert-citation
                   embark-multitarget-actions))
     (should (memq #'refbox-run-default-action
                   embark-multitarget-actions))
-    (should (memq #'refbox-embark-copy-reference
+    (should (memq #'refbox-copy-reference
                   embark-multitarget-actions))
     (should (memq #'refbox-embark-copy-references
                   embark-multitarget-actions))
     (should (memq #'embark--ignore-target
-                  (alist-get 'refbox-embark-insert-edit
+                  (alist-get 'refbox-insert-edit
                              embark-target-injection-hooks)))))
 
 (ert-deftest refbox-embark-test-mode_can_disable_registered_surface ()
@@ -462,7 +454,7 @@
     (should (memq #'refbox-embark-copy-references
                   embark-multitarget-actions))
     (should (memq #'embark--ignore-target
-                  (alist-get 'refbox-embark-insert-edit
+                  (alist-get 'refbox-insert-edit
                              embark-target-injection-hooks)))
     (refbox-embark-mode -1)
     (should-not (memq #'refbox-embark-target-reference-candidate
@@ -475,7 +467,7 @@
     (should-not (assq 'refbox-reference embark-keymap-alist))
     (should-not (memq #'refbox-embark-copy-references
                       embark-multitarget-actions))
-    (should-not (assq 'refbox-embark-insert-edit
+    (should-not (assq 'refbox-insert-edit
                       embark-target-injection-hooks))))
 
 (ert-deftest refbox-embark-test-selected_candidate_collector_uses_group_metadata ()

@@ -2478,10 +2478,10 @@ whose cdr is passed as additional arguments."
                  (mapcar (lambda (candidate)
                            (refbox-capf--candidate candidate seen))
                          (refbox-search-references
-                          input
+                          (refbox--completion-search-input input)
                           (plist-get state :limit)
                           (plist-get state :source-paths)
-                          t
+                          (not (refbox--completion-ranked-input-p input))
                           refbox-capf--field-names
                           t
                           refbox-completion-search-fields
@@ -2489,6 +2489,40 @@ whose cdr is passed as additional arguments."
                           nil
                           (plist-get state :include-configured-sources))))))))
   (plist-get state :candidates)))
+
+(defun refbox-capf--candidate-search-text (candidate)
+  "Return searchable text for CAPF CANDIDATE."
+  (string-join
+   (delq nil
+         (list (substring-no-properties candidate)
+               (get-text-property 0 'refbox-annotation candidate)))
+   " "))
+
+(defun refbox-capf--input-components (input)
+  "Return non-empty literal CAPF match components from INPUT."
+  (let* ((query (refbox--completion-search-input input))
+         (parsed (plist-get (refbox-search--parse-query query) :query)))
+    (delete-dups
+     (cl-remove-if
+      #'refbox--blank-string-p
+      (split-string-and-unquote (downcase parsed))))))
+
+(defun refbox-capf--candidate-matches-input-p (candidate input)
+  "Return non-nil when CANDIDATE should be shown for INPUT."
+  (let ((components (refbox-capf--input-components input)))
+    (or (null components)
+        (let ((search-text (downcase (refbox-capf--candidate-search-text candidate))))
+          (cl-every
+           (lambda (component)
+             (string-search component search-text))
+           components)))))
+
+(defun refbox-capf--input-filter (candidates input)
+  "Return CANDIDATES that match typed CAPF INPUT."
+  (cl-remove-if-not
+   (lambda (candidate)
+     (refbox-capf--candidate-matches-input-p candidate input))
+   candidates))
 
 (defun refbox-capf--metadata ()
   "Return metadata for citation key completion."
@@ -2507,7 +2541,9 @@ whose cdr is passed as additional arguments."
       (refbox-capf--metadata))
      (t
       (let ((candidates (refbox--completion-filter
-                         (refbox-capf--state-candidates state string)
+                         (refbox-capf--input-filter
+                          (refbox-capf--state-candidates state string)
+                          string)
                          predicate)))
         (cond
          ((eq action t) candidates)
@@ -4034,18 +4070,17 @@ EMPTY-MESSAGE, when non-nil, is displayed when CHOICES is empty."
   "Return a reference-shaped completion label for a create-note choice."
   (let* ((key (refbox--reference-choice-key reference))
          (candidate
-          (or (and (listp reference)
-                   (plist-member reference :key)
-                   reference)
-              (and (stringp reference)
-                   (ignore-errors
-                     (refbox--get-entry-candidate reference)))
+          (or (ignore-errors
+                (refbox--get-entry-candidate reference))
               (and key
                    (list :key key
                          :fields nil
                          :resources nil))))
          (width (max 0 (- (frame-width) 2)))
          (main (and candidate
+                    (refbox-reference-has-any-field-p
+                     candidate
+                     '("author" "editor" "title" "date" "year"))
                     (refbox-reference-format-main candidate width t)))
          (label
           (if (and main (not (string-empty-p (string-trim main))))
@@ -4132,6 +4167,11 @@ When INCLUDE-CREATE is non-nil, include note creation choices."
       for reference in references
       for key = (refbox--reference-key reference)
       for notes = (and key (refbox-note-source-items reference))
+      for create-reference = (and include-create
+                                  key
+                                  (or (ignore-errors
+                                        (refbox--get-entry-candidate reference))
+                                      reference))
       append
       (append
        (mapcar (lambda (note)
@@ -4148,10 +4188,10 @@ When INCLUDE-CREATE is non-nil, include note creation choices."
                   (or (null notes)
                       (refbox--command-should-always-create-notes-p)))
          (list (list :type 'create-note
-                     :reference reference
+                     :reference create-reference
                      :target key
                      :label (refbox--resource-choice-label
-                             'create-note reference key)))))))))
+                             'create-note create-reference key)))))))))
 
 (defun refbox--all-note-choices ()
   "Return note choices from the active note source."
@@ -4274,7 +4314,9 @@ non-nil, is a bibliography entry alist used as candidate metadata."
   (interactive (list (refbox-select-reference)))
   (refbox-note-source-create
    (cond
-    ((and (listp key) (plist-member key :key)) key)
+    ((and (listp key) (plist-member key :key))
+     (or (ignore-errors (refbox--get-entry-candidate key))
+         key))
     ((stringp key)
      (or (and entry (refbox--entry-candidate key entry))
          (let ((contextual (refbox--contextual-reference key)))

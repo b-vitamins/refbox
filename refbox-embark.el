@@ -63,72 +63,45 @@
   :type 'natnum
   :group 'refbox-embark)
 
-(defconst refbox-embark--open-resource-action
-  (lambda (target)
-    "open resource"
-    (refbox--open-resource-choice (refbox-embark-resource-choice target)))
-  "Embark action that opens a propertized Refbox resource target.")
-
-(defun refbox-embark--define-action (map key label command)
-  "Bind KEY in MAP to COMMAND with Embark display LABEL."
-  (define-key map (kbd key) `(menu-item ,label ,command)))
+(defun refbox-open-resource (target)
+  "Open a propertized Refbox resource TARGET."
+  (interactive "sResource: ")
+  (refbox--open-resource-choice (refbox-embark-resource-choice target)))
 
 (defvar refbox-embark-map
   (let ((map (make-sparse-keymap)))
-    (refbox-embark--define-action
-     map "a" "add file to library" #'refbox-embark-add-file)
-    (refbox-embark--define-action
-     map "b" "insert bibtex entry" #'refbox-embark-insert-bibtex)
-    (refbox-embark--define-action
-     map "c" "insert citation" #'refbox-embark-insert-citation)
-    (refbox-embark--define-action
-     map "e" "open bibtex entry" #'refbox-embark-open-entry)
-    (refbox-embark--define-action
-     map "f" "open library files" #'refbox-embark-open-files)
-    (refbox-embark--define-action
-     map "k" "insert keys" #'refbox-embark-insert-keys)
-    (refbox-embark--define-action
-     map "l" "open source URL or DOI" #'refbox-embark-open-links)
-    (refbox-embark--define-action
-     map "n" "open notes" #'refbox-embark-open-notes)
-    (refbox-embark--define-action
-     map "o" "open resources" #'refbox-embark-open)
-    (refbox-embark--define-action
-     map "r" "copy reference" #'refbox-embark-copy-reference)
-    (refbox-embark--define-action
-     map "R" "insert reference" #'refbox-embark-insert-reference)
-    (refbox-embark--define-action
-     map "RET" "run default action" #'refbox-run-default-action)
+    (define-key map (kbd "a") #'refbox-add-file-to-library)
+    (define-key map (kbd "b") #'refbox-insert-bibtex)
+    (define-key map (kbd "c") #'refbox-insert-citation)
+    (define-key map (kbd "e") #'refbox-open-entry)
+    (define-key map (kbd "f") #'refbox-open-files)
+    (define-key map (kbd "k") #'refbox-insert-keys)
+    (define-key map (kbd "l") #'refbox-open-links)
+    (define-key map (kbd "n") #'refbox-open-notes)
+    (define-key map (kbd "o") #'refbox-open)
+    (define-key map (kbd "r") #'refbox-copy-reference)
+    (define-key map (kbd "R") #'refbox-insert-reference)
+    (define-key map (kbd "RET") #'refbox-run-default-action)
     map)
   "Embark actions for refbox reference targets.")
 
 (defvar refbox-embark-citation-map
   (let ((map (make-sparse-keymap)))
-    (refbox-embark--define-action
-     map "i" "insert or edit" #'refbox-embark-insert-edit)
-    (refbox-embark--define-action
-     map "e" "open bibtex entry" #'refbox-embark-open-entry)
-    (refbox-embark--define-action
-     map "f" "open library files" #'refbox-embark-open-files)
-    (refbox-embark--define-action
-     map "l" "open source URL or DOI" #'refbox-embark-open-links)
-    (refbox-embark--define-action
-     map "n" "open notes" #'refbox-embark-open-notes)
-    (refbox-embark--define-action
-     map "o" "open resources" #'refbox-embark-open)
-    (refbox-embark--define-action
-     map "r" "copy reference" #'refbox-embark-copy-reference)
-    (refbox-embark--define-action
-     map "RET" "run default action" #'refbox-run-default-action)
+    (define-key map (kbd "i") #'refbox-insert-edit)
+    (define-key map (kbd "e") #'refbox-open-entry)
+    (define-key map (kbd "f") #'refbox-open-files)
+    (define-key map (kbd "l") #'refbox-open-links)
+    (define-key map (kbd "n") #'refbox-open-notes)
+    (define-key map (kbd "o") #'refbox-open)
+    (define-key map (kbd "r") #'refbox-copy-reference)
+    (define-key map (kbd "RET") #'refbox-run-default-action)
     map)
   "Embark actions for refbox citation targets.")
 
 (defvar refbox-embark-resource-map
   (let ((map (make-sparse-keymap)))
-    (refbox-embark--define-action
-     map "RET" "open resource" refbox-embark--open-resource-action)
-    (refbox-embark--define-action
-     map "o" "open resource" refbox-embark--open-resource-action)
+    (define-key map (kbd "RET") #'refbox-open-resource)
+    (define-key map (kbd "o") #'refbox-open-resource)
     map)
   "Embark actions for refbox resource targets.")
 
@@ -156,22 +129,22 @@
   "Embark keymap entries installed by `refbox-embark-mode'.")
 
 (defvar refbox-embark--multitarget-actions
-  '(refbox-embark-open
-    refbox-embark-open-files
-    refbox-embark-attach-file
-    refbox-embark-open-links
-    refbox-embark-insert-bibtex
-    refbox-embark-insert-citation
-    refbox-embark-insert-reference
-    refbox-embark-insert-keys
+  '(refbox-open
+    refbox-open-files
+    refbox-attach-files
+    refbox-open-links
+    refbox-insert-bibtex
+    refbox-insert-citation
+    refbox-insert-reference
+    refbox-insert-keys
     refbox-run-default-action
-    refbox-embark-open-notes
-    refbox-embark-copy-reference
+    refbox-open-notes
+    refbox-copy-reference
     refbox-embark-copy-references)
   "Embark multi-target actions installed by `refbox-embark-mode'.")
 
 (defvar refbox-embark--target-injection-hooks
-  '((refbox-embark-insert-edit embark--ignore-target))
+  '((refbox-insert-edit embark--ignore-target))
   "Embark target injection hooks installed by `refbox-embark-mode'.")
 
 (defconst refbox-embark--absent-default-action-override
@@ -185,7 +158,7 @@
   `((refbox-reference . refbox-run-default-action)
     (refbox-key . refbox-run-default-action)
     (refbox-citation . refbox-run-default-action)
-    (refbox-resource . ,refbox-embark--open-resource-action))
+    (refbox-resource . refbox-open-resource))
   "Embark default actions installed by `refbox-embark-mode'.")
 
 (defun refbox-embark--target-string (reference)
