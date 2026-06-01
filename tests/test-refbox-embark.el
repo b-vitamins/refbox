@@ -14,10 +14,13 @@
 (require 'refbox-markdown)
 
 (declare-function embark--ignore-target "embark" (&rest _args))
+(declare-function embark--targets "embark" ())
 
 (defvar embark-general-map)
 (defvar embark-keymap-alist)
+(defvar embark-target-finders)
 (defvar embark-target-injection-hooks)
+(defvar embark-transformer-alist)
 
 (defun refbox-embark-test--registered-keymap (category)
   "Return the composed Embark keymap registered for CATEGORY."
@@ -227,6 +230,36 @@
     (should (eq (car embark-target) 'refbox-resource))
     (should (equal (refbox-embark-resource-choice (cdr embark-target))
                    create-choice))))
+
+(ert-deftest refbox-embark-test-resource_targets_transform_before_keymap_lookup ()
+  "Resource targets should become Embark categories with action maps."
+  (skip-unless (require 'embark nil t))
+  (let ((embark-target-finders '(refbox-embark-target-resource-choice))
+        (embark-transformer-alist
+         '((refbox-resource . refbox-embark-resource-transformer))))
+    (dolist (case '(((:type file
+                     :target "/tmp/paper.pdf"
+                     :label "/tmp/paper.pdf")
+                    . file)
+                   ((:type link
+                     :target "https://example.test"
+                     :label "https://example.test")
+                    . url)
+                   ((:type create-note
+                     :target "alpha"
+                     :reference (:key "alpha")
+                     :label "create alpha")
+                    . refbox-resource)))
+      (pcase-let* ((`(,choice . ,expected-type) case)
+                   (candidate
+                    (propertize (plist-get choice :label)
+                                'refbox-resource-choice choice)))
+        (with-temp-buffer
+          (insert candidate)
+          (goto-char (point-min))
+          (let ((target (car (embark--targets))))
+            (should (eq (plist-get target :orig-type) 'refbox-resource))
+            (should (eq (plist-get target :type) expected-type))))))))
 
 (ert-deftest refbox-embark-test-resource_choice_target_at_point ()
   "Resource choice targets should be discoverable in completion buffers."
