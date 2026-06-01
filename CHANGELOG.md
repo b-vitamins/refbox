@@ -17,6 +17,10 @@ The format follows Keep a Changelog, and this project follows SemVer.
   reference-management actions out of citation menus.
 - Match Citar's visible minibuffer reference Embark action map, keeping
   Refbox-only maintenance commands out of the default reference action menu.
+- Preserve resource choice text properties when running Refbox resource
+  Embark actions, matching Citar's non-interactive resource opener behavior.
+- Use the core `refbox-run-default-action` for Embark default actions, so RET
+  displays a Citar-style default action name instead of an Embark wrapper.
 
 ## [0.7.2] - 2026-06-02
 

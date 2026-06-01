@@ -286,7 +286,7 @@
    refbox-embark-map "n" "open notes" #'refbox-embark-open-notes)
   (refbox-embark-test--assert-menu-action
    refbox-embark-map "RET" "run default action"
-   #'refbox-embark-run-default-action)
+   #'refbox-run-default-action)
   (dolist (key '("A" "B" "s" "C"))
     (should-not (lookup-key refbox-embark-map (kbd key))))
   (refbox-embark-test--assert-menu-action
@@ -302,7 +302,28 @@
     (should-not (lookup-key refbox-embark-citation-map (kbd key))))
   (refbox-embark-test--assert-menu-action
    refbox-embark-resource-map "RET" "open resource"
-   #'refbox-embark-open-resource))
+   refbox-embark--open-resource-action))
+
+(ert-deftest refbox-embark-test-resource_action_is_noninteractive ()
+  "Resource actions should keep Embark's propertized target intact."
+  (let* ((choice '(:type create-note
+                   :target "alpha"
+                   :reference (:key "alpha")
+                   :label "create alpha"))
+         (target (refbox-embark--resource-target-string choice))
+         opened)
+    (should-not (commandp refbox-embark--open-resource-action))
+    (cl-letf (((symbol-function 'refbox--open-resource-choice)
+               (lambda (choice)
+                 (setq opened choice)
+                 :opened)))
+      (should (eq (funcall refbox-embark--open-resource-action target)
+                  :opened))
+      (should (equal opened choice))
+      (should-error
+       (funcall refbox-embark--open-resource-action
+                (substring-no-properties target))
+       :type 'user-error))))
 
 (ert-deftest refbox-embark-test-setup-registers-finders-and-keymaps ()
   "Setup should register target finders and keymaps only when requested."
@@ -346,7 +367,7 @@
     (should (eq (lookup-key (refbox-embark-test--registered-keymap
                              'refbox-reference)
                             (kbd "RET"))
-                #'refbox-embark-run-default-action))
+                #'refbox-run-default-action))
     (should (eq (lookup-key (refbox-embark-test--registered-keymap
                              'refbox-reference)
                             (kbd "c"))
@@ -366,7 +387,7 @@
     (should (eq (lookup-key (refbox-embark-test--registered-keymap
                              'refbox-resource)
                             (kbd "RET"))
-                #'refbox-embark-open-resource))
+                refbox-embark--open-resource-action))
     (should (eq (lookup-key (refbox-embark-test--registered-keymap
                              'refbox-reference)
                             (kbd "g"))
@@ -391,7 +412,7 @@
     (should (eq (lookup-key (refbox-embark-test--registered-keymap
                              'refbox-key)
                             (kbd "RET"))
-                #'refbox-embark-run-default-action))
+                #'refbox-run-default-action))
     (should (eq (lookup-key (refbox-embark-test--registered-keymap
                              'refbox-citation)
                             (kbd "i"))
@@ -411,7 +432,7 @@
     (should-not (lookup-key refbox-embark-citation-map (kbd "z")))
     (should (memq #'refbox-embark-insert-citation
                   embark-multitarget-actions))
-    (should (memq #'refbox-embark-run-default-action
+    (should (memq #'refbox-run-default-action
                   embark-multitarget-actions))
     (should (memq #'refbox-embark-copy-reference
                   embark-multitarget-actions))
@@ -514,36 +535,38 @@
               ((symbol-function 'refbox-insert-reference)
                (lambda (references)
                  (push (list :formatted references) calls)
-                 :formatted))
-              ((symbol-function 'refbox-run-default-action)
-               (lambda (references)
-                 (push (list :default references) calls)
-                 :defaulted)))
-      (should (eq (refbox-embark-open-entry target) :opened))
-      (should (eq (refbox-embark-insert-bibtex target) :inserted))
-      (should (eq (refbox-embark-insert-citation target) :cited))
-      (should (eq (refbox-embark-insert-keys target) :keyed))
-      (should (eq (refbox-embark-insert-reference target) :formatted))
-      (should (eq (refbox-embark-run-default-action target) :defaulted))
-      (should (equal (nreverse calls)
-                     (list
-                      (list :open (list :key "alpha"
-                                        :source_path "/tmp/refs.bib"))
-                      (list :insert
-                            (list (list :key "alpha"
-                                        :source_path "/tmp/refs.bib")))
-                      (list :cite
-                            (list (list :key "alpha"
-                                        :source_path "/tmp/refs.bib")))
-                      (list :keys
-                            (list (list :key "alpha"
-                                        :source_path "/tmp/refs.bib")))
-                      (list :formatted
-                            (list (list :key "alpha"
-                                        :source_path "/tmp/refs.bib")))
-                      (list :default
-                            (list (list :key "alpha"
-                                        :source_path "/tmp/refs.bib")))))))))
+                 :formatted)))
+      (let ((refbox-default-action
+             (lambda (references)
+               (push (list :default references) calls)
+               :defaulted)))
+        (should (eq (refbox-embark-open-entry target) :opened))
+        (should (eq (refbox-embark-insert-bibtex target) :inserted))
+        (should (eq (refbox-embark-insert-citation target) :cited))
+        (should (eq (refbox-embark-insert-keys target) :keyed))
+        (should (eq (refbox-embark-insert-reference target) :formatted))
+        (should (eq (refbox-run-default-action target) :defaulted))
+        (should
+         (equal
+          (nreverse calls)
+          (list
+           (list :open (list :key "alpha"
+                             :source_path "/tmp/refs.bib"))
+           (list :insert
+                 (list (list :key "alpha"
+                             :source_path "/tmp/refs.bib")))
+           (list :cite
+                 (list (list :key "alpha"
+                             :source_path "/tmp/refs.bib")))
+           (list :keys
+                 (list (list :key "alpha"
+                             :source_path "/tmp/refs.bib")))
+           (list :formatted
+                 (list (list :key "alpha"
+                             :source_path "/tmp/refs.bib")))
+           (list :default
+                 (list (list :key "alpha"
+                             :source_path "/tmp/refs.bib"))))))))))
 
 (ert-deftest refbox-embark-test-multitarget-actions_decode_target_lists ()
   "Embark multi-target actions should decode every stable target."

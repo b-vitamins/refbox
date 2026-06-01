@@ -63,6 +63,12 @@
   :type 'natnum
   :group 'refbox-embark)
 
+(defconst refbox-embark--open-resource-action
+  (lambda (target)
+    "open resource"
+    (refbox--open-resource-choice (refbox-embark-resource-choice target)))
+  "Embark action that opens a propertized Refbox resource target.")
+
 (defun refbox-embark--define-action (map key label command)
   "Bind KEY in MAP to COMMAND with Embark display LABEL."
   (define-key map (kbd key) `(menu-item ,label ,command)))
@@ -92,7 +98,7 @@
     (refbox-embark--define-action
      map "R" "insert reference" #'refbox-embark-insert-reference)
     (refbox-embark--define-action
-     map "RET" "run default action" #'refbox-embark-run-default-action)
+     map "RET" "run default action" #'refbox-run-default-action)
     map)
   "Embark actions for refbox reference targets.")
 
@@ -113,16 +119,16 @@
     (refbox-embark--define-action
      map "r" "copy reference" #'refbox-embark-copy-reference)
     (refbox-embark--define-action
-     map "RET" "run default action" #'refbox-embark-run-default-action)
+     map "RET" "run default action" #'refbox-run-default-action)
     map)
   "Embark actions for refbox citation targets.")
 
 (defvar refbox-embark-resource-map
   (let ((map (make-sparse-keymap)))
     (refbox-embark--define-action
-     map "RET" "open resource" #'refbox-embark-open-resource)
+     map "RET" "open resource" refbox-embark--open-resource-action)
     (refbox-embark--define-action
-     map "o" "open resource" #'refbox-embark-open-resource)
+     map "o" "open resource" refbox-embark--open-resource-action)
     map)
   "Embark actions for refbox resource targets.")
 
@@ -158,7 +164,7 @@
     refbox-embark-insert-citation
     refbox-embark-insert-reference
     refbox-embark-insert-keys
-    refbox-embark-run-default-action
+    refbox-run-default-action
     refbox-embark-open-notes
     refbox-embark-copy-reference
     refbox-embark-copy-references)
@@ -176,10 +182,10 @@
   "Embark default-action overrides replaced by `refbox-embark-mode'.")
 
 (defvar refbox-embark--default-action-overrides
-  '((refbox-reference . refbox-embark-run-default-action)
-    (refbox-key . refbox-embark-run-default-action)
-    (refbox-citation . refbox-embark-run-default-action)
-    (refbox-resource . refbox-embark-open-resource))
+  `((refbox-reference . refbox-run-default-action)
+    (refbox-key . refbox-run-default-action)
+    (refbox-citation . refbox-run-default-action)
+    (refbox-resource . ,refbox-embark--open-resource-action))
   "Embark default actions installed by `refbox-embark-mode'.")
 
 (defun refbox-embark--target-string (reference)
@@ -479,16 +485,6 @@ keymaps, or lists of such symbols."
   "Attach a file resource for TARGET."
   (interactive "sReference: ")
   (refbox-attach-files (refbox-embark-reference target)))
-
-(defun refbox-embark-run-default-action (target)
-  "Run the configured default action for TARGET."
-  (interactive "sReference: ")
-  (refbox-run-default-action (refbox-embark-references target)))
-
-(defun refbox-embark-open-resource (target)
-  "Open resource TARGET."
-  (interactive "sResource: ")
-  (refbox--open-resource-choice (refbox-embark-resource-choice target)))
 
 (defun refbox-embark--install-default-action-overrides ()
   "Install Refbox Embark default-action overrides.

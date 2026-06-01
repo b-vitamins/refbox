@@ -4607,13 +4607,23 @@ report if the effective limit is invalid."
 
 (defun refbox--reference-list (references)
   "Return REFERENCES as a list of references."
-  (cond
-   ((null references)
-    (refbox-read-references "References: "))
-   ((and (listp references) (plist-member references :key))
-    (list references))
-   ((listp references) references)
-   (t (list references))))
+  (cl-labels
+      ((one (reference)
+         (cond
+          ((null reference) nil)
+          ((and (stringp reference)
+                (get-text-property 0 'refbox-references reference)))
+          ((and (stringp reference)
+                (get-text-property 0 'refbox-reference reference))
+           (list (get-text-property 0 'refbox-reference reference)))
+          ((and (listp reference) (plist-member reference :key))
+           (list reference))
+          ((listp reference)
+           (cl-mapcan #'one reference))
+          (t (list reference)))))
+    (if (null references)
+        (refbox-read-references "References: ")
+      (one references))))
 
 (defun refbox--candidate-source-path-rank (candidate source-paths)
   "Return CANDIDATE's rank in SOURCE-PATHS, or nil."
@@ -4945,7 +4955,9 @@ passed to the adapter command."
 ;;;###autoload
 (defun refbox-run-default-action (references)
   "Run `refbox-default-action' on REFERENCES."
-  (funcall refbox-default-action references))
+  (funcall refbox-default-action
+           (and references
+                (refbox--reference-list references))))
 
 ;;;###autoload
 (defun refbox-dwim ()

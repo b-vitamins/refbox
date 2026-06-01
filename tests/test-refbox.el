@@ -562,14 +562,34 @@
 
 (ert-deftest refbox-test-run-default-action_matches_citar_contract ()
   "Default action dispatch should pass REFERENCES through unchanged."
-  (let (calls)
+  (let ((target (copy-sequence "alpha"))
+        (multi-target (copy-sequence "alpha & beta"))
+        calls)
+    (put-text-property
+     0 (length target)
+     'refbox-reference
+     (list :key "alpha" :source_path "/tmp/a.bib")
+     target)
+    (put-text-property
+     0 (length multi-target)
+     'refbox-references
+     (list (list :key "alpha" :source_path "/tmp/a.bib")
+           (list :key "beta" :source_path "/tmp/b.bib"))
+     multi-target)
     (let ((refbox-default-action
            (lambda (references)
              (push references calls))))
       (refbox-run-default-action nil)
       (should (equal calls '(nil)))
       (refbox-run-default-action '("alpha"))
-      (should (equal calls '(("alpha") nil))))))
+      (should (equal calls '(("alpha") nil)))
+      (refbox-run-default-action target)
+      (should (equal (car calls)
+                     '((:key "alpha" :source_path "/tmp/a.bib"))))
+      (refbox-run-default-action multi-target)
+      (should (equal (car calls)
+                     '((:key "alpha" :source_path "/tmp/a.bib")
+                       (:key "beta" :source_path "/tmp/b.bib")))))))
 
 (defconst refbox-test-reference-candidate
   '(:key "smith2020"
