@@ -6,6 +6,8 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-06-02
+
 ### Fixed
 - Automatically run a full sync before the next request when the live daemon
   is restarted after bibliography corpus configuration changes, so updated
