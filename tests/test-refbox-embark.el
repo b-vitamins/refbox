@@ -287,6 +287,8 @@
   (refbox-embark-test--assert-menu-action
    refbox-embark-map "RET" "run default action"
    #'refbox-embark-run-default-action)
+  (dolist (key '("A" "B" "s" "C"))
+    (should-not (lookup-key refbox-embark-map (kbd key))))
   (refbox-embark-test--assert-menu-action
    refbox-embark-citation-map "i" "insert or edit"
    #'refbox-embark-insert-edit)
@@ -399,16 +401,12 @@
         (should-not (lookup-key (refbox-embark-test--registered-keymap
                                  category)
                                 (kbd key)))))
-    (should (eq (lookup-key refbox-embark-map (kbd "s"))
-                #'refbox-embark-open-source))
     (should (eq (lookup-key refbox-embark-map (kbd "e"))
                 #'refbox-embark-open-entry))
     (should (eq (lookup-key refbox-embark-map (kbd "b"))
                 #'refbox-embark-insert-bibtex))
-    (should (eq (lookup-key refbox-embark-map (kbd "B"))
-                #'refbox-embark-insert-raw-entry))
-    (should (eq (lookup-key refbox-embark-map (kbd "C"))
-                #'refbox-embark-copy-references))
+    (dolist (key '("A" "B" "s" "C"))
+      (should-not (lookup-key refbox-embark-map (kbd key))))
     (should-not (lookup-key refbox-embark-map (kbd "z")))
     (should-not (lookup-key refbox-embark-citation-map (kbd "z")))
     (should (memq #'refbox-embark-insert-citation

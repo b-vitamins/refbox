@@ -72,11 +72,7 @@
     (refbox-embark--define-action
      map "a" "add file to library" #'refbox-embark-add-file)
     (refbox-embark--define-action
-     map "A" "attach library files" #'refbox-embark-attach-file)
-    (refbox-embark--define-action
      map "b" "insert bibtex entry" #'refbox-embark-insert-bibtex)
-    (refbox-embark--define-action
-     map "B" "insert raw bibtex entry" #'refbox-embark-insert-raw-entry)
     (refbox-embark--define-action
      map "c" "insert citation" #'refbox-embark-insert-citation)
     (refbox-embark--define-action
@@ -95,10 +91,6 @@
      map "r" "copy reference" #'refbox-embark-copy-reference)
     (refbox-embark--define-action
      map "R" "insert reference" #'refbox-embark-insert-reference)
-    (refbox-embark--define-action
-     map "s" "open bibliography source" #'refbox-embark-open-source)
-    (refbox-embark--define-action
-     map "C" "copy references" #'refbox-embark-copy-references)
     (refbox-embark--define-action
      map "RET" "run default action" #'refbox-embark-run-default-action)
     map)

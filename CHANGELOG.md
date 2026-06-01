@@ -15,6 +15,8 @@ The format follows Keep a Changelog, and this project follows SemVer.
   action instead of treating them like ordinary reference candidates.
 - Match Citar's smaller at-point Embark citation/key action map, keeping
   reference-management actions out of citation menus.
+- Match Citar's visible minibuffer reference Embark action map, keeping
+  Refbox-only maintenance commands out of the default reference action menu.
 
 ## [0.7.2] - 2026-06-02
 
