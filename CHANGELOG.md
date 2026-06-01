@@ -6,6 +6,19 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-06-02
+
+### Fixed
+- Bind Refbox Embark action maps directly to the core action commands, matching
+  Citar's visible action menu shape and avoiding leaked `menu-item` forms in
+  the Embark actions buffer.
+- Narrow Org/Markdown/LaTeX citation CAPF rows against the typed key text after
+  backend search, so unrelated first-page bibliography rows do not stay visible
+  while completing citations.
+- Hydrate key-only note creation targets before formatting resource labels or
+  invoking note sources, preventing punctuation-only note titles from stale
+  Embark targets.
+
 ## [0.8.0] - 2026-06-02
 
 ### Fixed
