@@ -1049,6 +1049,7 @@ computed property such as indicators, or an indexed bibliography field."
     (list :key key
           :id (refbox--normalize-entry-id
                (cdr (assoc-string "entry_id" entry t)))
+          :source_path (cdr (assoc-string "source_path" entry t))
           :entry_type (or (cdr (assoc-string "=type=" entry t))
                           (cdr (assoc-string "entry_type" entry t))
                           (cdr (assoc-string "entry-type" entry t))
@@ -2505,7 +2506,7 @@ whose cdr is passed as additional arguments."
     (delete-dups
      (cl-remove-if
       #'refbox--blank-string-p
-      (split-string-and-unquote (downcase parsed))))))
+      (refbox--completion-input-components (downcase parsed))))))
 
 (defun refbox-capf--candidate-matches-input-p (candidate input)
   "Return non-nil when CANDIDATE should be shown for INPUT."
@@ -4357,6 +4358,11 @@ non-nil, is a bibliography entry alist used as candidate metadata."
 (defun refbox--reference-key (reference)
   "Return the key represented by REFERENCE."
   (cond
+   ((and (stringp reference)
+         (> (length reference) 0)
+         (let ((metadata (get-text-property 0 'refbox-reference reference)))
+           (and metadata
+                (plist-get metadata :key)))))
    ((stringp reference) reference)
    ((and (listp reference) (plist-member reference :key))
     (plist-get reference :key))
@@ -4364,11 +4370,17 @@ non-nil, is a bibliography entry alist used as candidate metadata."
 
 (defun refbox--reference-source-path (reference)
   "Return REFERENCE's source path, when available."
-  (when (listp reference)
+  (cond
+   ((and (stringp reference)
+         (> (length reference) 0)
+         (get-text-property 0 'refbox-reference reference))
+    (refbox--reference-source-path
+     (get-text-property 0 'refbox-reference reference)))
+   ((listp reference)
     (or (and (plist-member reference :source_path)
              (plist-get reference :source_path))
         (and (plist-member reference :source-path)
-             (plist-get reference :source-path)))))
+             (plist-get reference :source-path))))))
 
 (defun refbox--normalize-entry-id (value)
   "Return VALUE as a numeric daemon entry id when possible."
@@ -4380,14 +4392,20 @@ non-nil, is a bibliography entry alist used as candidate metadata."
 
 (defun refbox--reference-entry-id (reference)
   "Return REFERENCE's daemon entry id, when available."
-  (when (listp reference)
+  (cond
+   ((and (stringp reference)
+         (> (length reference) 0)
+         (get-text-property 0 'refbox-reference reference))
+    (refbox--reference-entry-id
+     (get-text-property 0 'refbox-reference reference)))
+   ((listp reference)
     (refbox--normalize-entry-id
      (or (and (plist-member reference :id)
               (plist-get reference :id))
          (and (plist-member reference :entry_id)
               (plist-get reference :entry_id))
          (and (plist-member reference :entry-id)
-              (plist-get reference :entry-id))))))
+              (plist-get reference :entry-id)))))))
 
 (defun refbox--reference-rpc-params (reference)
   "Return key-shaped RPC params for REFERENCE."
@@ -5532,6 +5550,14 @@ asks before replacing an existing file."
   "Return the display width available for a completion candidate after PREFIX."
   (max 20 (- (frame-width) (string-width (or prefix "")) 2)))
 
+(defun refbox--completion-input-components (input)
+  "Return completion INPUT components without signaling on draft quoting."
+  (let ((input (substring-no-properties (or input ""))))
+    (condition-case nil
+        (split-string-and-unquote input)
+      (error
+       (split-string input "[[:space:]\n\r\t]+" t)))))
+
 (defun refbox--completion-search-input (input)
   "Return the daemon search text derived from completion INPUT."
   (string-join
@@ -5541,7 +5567,7 @@ asks before replacing an existing file."
      (lambda (component)
        (unless (string-prefix-p "!" component)
          component))
-     (split-string-and-unquote (substring-no-properties input))))
+     (refbox--completion-input-components input)))
    " "))
 
 (defun refbox--completion-ranked-input-p (input)
@@ -5555,8 +5581,7 @@ asks before replacing an existing file."
 
 (defun refbox--completion-negative-components (input)
   "Return negated completion components from INPUT."
-  (cl-loop for component in (split-string-and-unquote
-                             (substring-no-properties input))
+  (cl-loop for component in (refbox--completion-input-components input)
            when (and (string-prefix-p "!" component)
                      (> (length component) 1))
            collect (substring component 1)))
@@ -5618,7 +5643,7 @@ asks before replacing an existing file."
     (delete-dups
      (cl-remove-if
       #'refbox--blank-string-p
-      (split-string-and-unquote query)))))
+      (refbox--completion-input-components query)))))
 
 (defun refbox--completion-apply-match-highlights (display visible-end input)
   "Apply refbox match highlighting to DISPLAY before VISIBLE-END."

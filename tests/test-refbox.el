@@ -5284,6 +5284,61 @@
                      (list refbox-rpc-method-search-entries)))
       (should-not refbox--connection-needs-corpus-sync))))
 
+(ert-deftest refbox-test-entry_candidate_preserves_source_identity ()
+  "Entry alist reconstruction should preserve duplicate-key source identity."
+  (let ((candidate
+         (refbox--entry-candidate
+          "dup2020"
+          '(("title" . "Duplicate")
+            ("entry_id" . "42")
+            ("source_path" . "/tmp/a.bib")))))
+    (should (equal (plist-get candidate :source_path) "/tmp/a.bib"))
+    (should (= (plist-get candidate :id) 42))
+    (should (equal (refbox-reference-field candidate "source_path")
+                   "/tmp/a.bib"))))
+
+(ert-deftest refbox-test-reference_helpers_decode_propertized_targets ()
+  "Core reference helpers should not discard Embark target identity."
+  (let ((target (copy-sequence "dup2020")))
+    (put-text-property
+     0
+     (length target)
+     'refbox-reference
+     '(:key "dup2020" :id 42 :source_path "/tmp/a.bib")
+     target)
+    (should (equal (refbox--reference-key target) "dup2020"))
+    (should (= (refbox--reference-entry-id target) 42))
+    (should (equal (refbox--reference-source-path target) "/tmp/a.bib"))
+    (should
+     (equal (refbox--reference-rpc-params target)
+            '(:key "dup2020" :id 42 :source_path "/tmp/a.bib")))))
+
+(ert-deftest refbox-test-reference_helpers_fallback_for_partial_properties ()
+  "A partial text property should not erase the visible citation key."
+  (let ((target (copy-sequence "visible2024")))
+    (put-text-property
+     0
+     (length target)
+     'refbox-reference
+     '(:id 17)
+     target)
+    (should (equal (refbox--reference-key target) "visible2024"))
+    (should (= (refbox--reference-entry-id target) 17))
+    (should
+     (equal (refbox--reference-rpc-params target)
+            '(:key "visible2024" :id 17)))))
+
+(ert-deftest refbox-test-completion_tokenizing_tolerates_unmatched_quotes ()
+  "Completion filters should not signal while the user is typing quotes."
+  (should (equal (refbox--completion-search-input "\"alpha !draft")
+                 "\"alpha"))
+  (should (equal (refbox--completion-negative-components "\"alpha !draft")
+                 '("draft")))
+  (should (equal (refbox--completion-match-components "\"alpha !draft")
+                 '("\"alpha")))
+  (should (equal (refbox-capf--input-components "\"alpha")
+                 '("\"alpha"))))
+
 (let ((org-tests (expand-file-name
                   "test-refbox-org.el"
                   (file-name-directory (or load-file-name buffer-file-name)))))
