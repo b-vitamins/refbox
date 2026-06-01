@@ -6,6 +6,14 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+### Fixed
+- Display human-readable Embark action labels for Refbox reference, citation,
+  and resource targets, matching the Citar-style action menu instead of
+  exposing internal wrapper command names.
+- Keep create-note resource rows on the Refbox resource target type under
+  multi-category completion, so Embark exposes the note-creation resource
+  action instead of treating them like ordinary reference candidates.
+
 ## [0.7.2] - 2026-06-02
 
 ### Fixed

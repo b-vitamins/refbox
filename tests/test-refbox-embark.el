@@ -24,6 +24,25 @@
   (let ((entry (cdr (assq category embark-keymap-alist))))
     (make-composed-keymap (mapcar #'symbol-value (ensure-list entry)))))
 
+(defun refbox-embark-test--raw-binding (map key)
+  "Return MAP's raw binding for KEY."
+  (let ((description (key-description (kbd key))))
+    (catch 'binding
+      (map-keymap
+       (lambda (event binding)
+         (when (equal (key-description (vector event)) description)
+           (throw 'binding binding)))
+       map)
+      nil)))
+
+(defun refbox-embark-test--assert-menu-action (map key label command)
+  "Assert MAP binds KEY to COMMAND with Embark display LABEL."
+  (let ((binding (refbox-embark-test--raw-binding map key)))
+    (should (eq (car-safe binding) 'menu-item))
+    (should (equal (cadr binding) label))
+    (should (eq (nth 2 binding) command))
+    (should (eq (lookup-key map (kbd key)) command))))
+
 (defun refbox-embark-test-candidate (key source-path)
   "Return a search candidate for KEY from SOURCE-PATH."
   (list :key key
@@ -182,6 +201,33 @@
     (should (equal (refbox-embark-resource-choice (cdr target))
                    choice))))
 
+(ert-deftest refbox-embark-test-create_note_multi_category_stays_resource ()
+  "Create-note rows should not turn into ordinary reference Embark targets."
+  (let* ((file-choice '(:type file
+                        :target "/tmp/paper.pdf"
+                        :label "/tmp/paper.pdf"))
+         (create-choice '(:type create-note
+                          :target "alpha"
+                          :reference (:key "alpha")
+                          :label "create alpha"))
+         (labels (mapcar (lambda (choice)
+                           (propertize (plist-get choice :label)
+                                       'refbox-resource-choice choice))
+                         (list file-choice create-choice)))
+         (table (refbox--resource-choice-completion-table labels))
+         (candidate (cl-find "create alpha"
+                             (all-completions "" table)
+                             :key #'substring-no-properties
+                             :test #'equal))
+         (multi-target (get-text-property 0 'multi-category candidate))
+         (embark-target (refbox-embark-resource-transformer
+                         (car multi-target)
+                         (cdr multi-target))))
+    (should (eq (car multi-target) 'refbox-resource))
+    (should (eq (car embark-target) 'refbox-resource))
+    (should (equal (refbox-embark-resource-choice (cdr embark-target))
+                   create-choice))))
+
 (ert-deftest refbox-embark-test-resource_choice_target_at_point ()
   "Resource choice targets should be discoverable in completion buffers."
   (let* ((choice '(:type file
@@ -198,6 +244,25 @@
         (should (equal (refbox-embark-resource-choice encoded) choice))
         (should (= (nth 2 target) (point-min)))
         (should (= (cdddr target) (point-max)))))))
+
+(ert-deftest refbox-embark-test-action_keymaps_use_human_labels ()
+  "Action keymaps should expose Citar-style labels to Embark."
+  (refbox-embark-test--assert-menu-action
+   refbox-embark-map "c" "insert citation" #'refbox-embark-insert-citation)
+  (refbox-embark-test--assert-menu-action
+   refbox-embark-map "n" "open notes" #'refbox-embark-open-notes)
+  (refbox-embark-test--assert-menu-action
+   refbox-embark-map "RET" "run default action"
+   #'refbox-embark-run-default-action)
+  (refbox-embark-test--assert-menu-action
+   refbox-embark-citation-map "i" "insert or edit"
+   #'refbox-embark-insert-edit)
+  (refbox-embark-test--assert-menu-action
+   refbox-embark-citation-map "f" "open library files"
+   #'refbox-embark-open-files)
+  (refbox-embark-test--assert-menu-action
+   refbox-embark-resource-map "RET" "open resource"
+   #'refbox-embark-open-resource))
 
 (ert-deftest refbox-embark-test-setup-registers-finders-and-keymaps ()
   "Setup should register target finders and keymaps only when requested."

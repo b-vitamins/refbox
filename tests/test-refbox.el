@@ -3260,7 +3260,7 @@
       (should (eq (metadata-category (list file-choice)) 'file))
       (should (eq (metadata-category (list link-choice)) 'url))
       (should (eq (metadata-category (list note-choice)) 'file))
-      (should (eq (metadata-category (list create-choice)) 'refbox-reference))
+      (should (eq (metadata-category (list create-choice)) 'refbox-resource))
       (let* ((labels (mapcar #'label
                              (list file-choice link-choice note-choice
                                    create-choice)))
@@ -3284,7 +3284,7 @@
         (should (eq (car file-target) 'file))
         (should (eq (car link-target) 'url))
         (should (eq (car note-target) 'file))
-        (should (eq (car create-target) 'refbox-reference))
+        (should (eq (car create-target) 'refbox-resource))
         (should (eq (plist-get
                      (get-text-property
                       0 'refbox-resource-choice (cdr create-target))

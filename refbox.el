@@ -3797,7 +3797,7 @@ EMPTY-MESSAGE, when non-nil, is displayed when CHOICES is empty."
     ('file 'file)
     ('link 'url)
     ('note (plist-get choice :category))
-    ('create-note 'refbox-reference)
+    ('create-note 'refbox-resource)
     (_ 'refbox-resource)))
 
 (defun refbox--resource-choice-completion-category (labels)
