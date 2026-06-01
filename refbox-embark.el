@@ -258,17 +258,13 @@
                    (refbox-embark--resource-target-string choice)
                  target))))))
 
-(defun refbox-embark--with-general-map (map)
-  "Return MAP composed with `embark-general-map' when available."
-  (if (and (boundp 'embark-general-map)
-           (keymapp embark-general-map))
-      (make-composed-keymap map embark-general-map)
-    map))
+(defun refbox-embark--category-keymaps (category map)
+  "Return Embark keymap variable symbols for CATEGORY and MAP.
 
-(defun refbox-embark--category-keymap (category map)
-  "Return Embark keymap MAP for CATEGORY."
+Embark expects `embark-keymap-alist' values to be symbols whose values are
+keymaps, or lists of such symbols."
   (if (eq category 'refbox-reference)
-      (refbox-embark--with-general-map map)
+      (list map 'embark-general-map)
     map))
 
 (defun refbox-embark--property-position (property)
@@ -537,7 +533,7 @@ user's new value alone."
       (setf (alist-get category embark-transformer-alist) transformer)))
   (pcase-dolist (`(,category . ,map) refbox-embark--keymap-alist)
     (setf (alist-get category embark-keymap-alist)
-          (refbox-embark--category-keymap category (symbol-value map))))
+          (refbox-embark--category-keymaps category map)))
   (refbox-embark--install-default-action-overrides)
   (when (boundp 'embark-multitarget-actions)
     (dolist (action refbox-embark--multitarget-actions)

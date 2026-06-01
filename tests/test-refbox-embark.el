@@ -16,7 +16,13 @@
 (declare-function embark--ignore-target "embark" (&rest _args))
 
 (defvar embark-general-map)
+(defvar embark-keymap-alist)
 (defvar embark-target-injection-hooks)
+
+(defun refbox-embark-test--registered-keymap (category)
+  "Return the composed Embark keymap registered for CATEGORY."
+  (let ((entry (cdr (assq category embark-keymap-alist))))
+    (make-composed-keymap (mapcar #'symbol-value (ensure-list entry)))))
 
 (defun refbox-embark-test-candidate (key source-path)
   "Return a search candidate for KEY from SOURCE-PATH."
@@ -220,46 +226,69 @@
                 'refbox-embark-candidate-transformer))
     (should (eq (cdr (assq 'refbox-resource embark-transformer-alist))
                 'refbox-embark-resource-transformer))
-    (should (eq (lookup-key (cdr (assq 'refbox-reference embark-keymap-alist))
+    (should (equal (cdr (assq 'refbox-reference embark-keymap-alist))
+                   '(refbox-embark-map embark-general-map)))
+    (should (eq (cdr (assq 'refbox-resource embark-keymap-alist))
+                'refbox-embark-resource-map))
+    (should (eq (cdr (assq 'refbox-key embark-keymap-alist))
+                'refbox-embark-citation-map))
+    (should (eq (cdr (assq 'refbox-citation embark-keymap-alist))
+                'refbox-embark-citation-map))
+    (should (eq (lookup-key (refbox-embark-test--registered-keymap
+                             'refbox-reference)
                             (kbd "o"))
                 #'refbox-embark-open))
-    (should (eq (lookup-key (cdr (assq 'refbox-reference embark-keymap-alist))
+    (should (eq (lookup-key (refbox-embark-test--registered-keymap
+                             'refbox-reference)
                             (kbd "RET"))
                 #'refbox-embark-run-default-action))
-    (should (eq (lookup-key (cdr (assq 'refbox-reference embark-keymap-alist))
+    (should (eq (lookup-key (refbox-embark-test--registered-keymap
+                             'refbox-reference)
                             (kbd "c"))
                 #'refbox-embark-insert-citation))
-    (should (eq (lookup-key (cdr (assq 'refbox-reference embark-keymap-alist))
+    (should (eq (lookup-key (refbox-embark-test--registered-keymap
+                             'refbox-reference)
                             (kbd "k"))
                 #'refbox-embark-insert-keys))
-    (should (eq (lookup-key (cdr (assq 'refbox-reference embark-keymap-alist))
+    (should (eq (lookup-key (refbox-embark-test--registered-keymap
+                             'refbox-reference)
                             (kbd "r"))
                 #'refbox-embark-copy-reference))
-    (should (eq (lookup-key (cdr (assq 'refbox-reference embark-keymap-alist))
+    (should (eq (lookup-key (refbox-embark-test--registered-keymap
+                             'refbox-reference)
                             (kbd "R"))
                 #'refbox-embark-insert-reference))
-    (should (eq (lookup-key (cdr (assq 'refbox-resource embark-keymap-alist))
+    (should (eq (lookup-key (refbox-embark-test--registered-keymap
+                             'refbox-resource)
                             (kbd "RET"))
                 #'refbox-embark-open-resource))
-    (should (eq (lookup-key (cdr (assq 'refbox-reference embark-keymap-alist))
+    (should (eq (lookup-key (refbox-embark-test--registered-keymap
+                             'refbox-reference)
                             (kbd "g"))
                 #'ignore))
-    (should-not (lookup-key (cdr (assq 'refbox-resource embark-keymap-alist))
+    (should-not (lookup-key (refbox-embark-test--registered-keymap
+                             'refbox-resource)
                             (kbd "g")))
-    (should-not (lookup-key (cdr (assq 'refbox-key embark-keymap-alist))
+    (should-not (lookup-key (refbox-embark-test--registered-keymap
+                             'refbox-key)
                             (kbd "g")))
-    (should-not (lookup-key (cdr (assq 'refbox-citation embark-keymap-alist))
+    (should-not (lookup-key (refbox-embark-test--registered-keymap
+                             'refbox-citation)
                             (kbd "g")))
-    (should (eq (lookup-key (cdr (assq 'refbox-key embark-keymap-alist))
+    (should (eq (lookup-key (refbox-embark-test--registered-keymap
+                             'refbox-key)
                             (kbd "i"))
                 #'refbox-embark-insert-edit))
-    (should (eq (lookup-key (cdr (assq 'refbox-key embark-keymap-alist))
+    (should (eq (lookup-key (refbox-embark-test--registered-keymap
+                             'refbox-key)
                             (kbd "r"))
                 #'refbox-embark-copy-reference))
-    (should (eq (lookup-key (cdr (assq 'refbox-key embark-keymap-alist))
+    (should (eq (lookup-key (refbox-embark-test--registered-keymap
+                             'refbox-key)
                             (kbd "RET"))
                 #'refbox-embark-run-default-action))
-    (should (eq (lookup-key (cdr (assq 'refbox-citation embark-keymap-alist))
+    (should (eq (lookup-key (refbox-embark-test--registered-keymap
+                             'refbox-citation)
                             (kbd "i"))
                 #'refbox-embark-insert-edit))
     (should (eq (lookup-key refbox-embark-map (kbd "s"))
