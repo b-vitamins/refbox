@@ -46,6 +46,8 @@ Minimal daemon configuration:
 (setq refbox-bibliography-roots '("~/bibliography"))
 ;; Optional explicit files outside the discovery roots.
 ;; (setq refbox-bibliography '("~/work/project/references.bib"))
+;; Optional file or directory paths to ignore even when they sit under roots.
+;; (setq refbox-bibliography-exclude-paths '("~/bibliography/_archive"))
 (setq refbox-database-file
       (expand-file-name "refbox.sqlite" user-emacs-directory))
 
@@ -53,9 +55,10 @@ Minimal daemon configuration:
 ```
 
 The daemon indexes every directory in `refbox-bibliography-roots` plus every
-file in `refbox-bibliography`.  The SQLite database is derived state. If it is
-deleted while the daemon is not running, `M-x refbox-sync` can rebuild it from
-the configured bibliography corpus.
+file in `refbox-bibliography`, minus paths configured in
+`refbox-bibliography-exclude-paths`.  The SQLite database is derived state. If
+it is deleted while the daemon is not running, `M-x refbox-sync` can rebuild it
+from the configured bibliography corpus.
 `refbox-autosync-mode` performs that sync when it is enabled, then keeps files
 edited through Emacs current with targeted file updates.
 

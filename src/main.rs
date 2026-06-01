@@ -56,6 +56,9 @@ enum Command {
         /// Glob pattern excluded during root discovery.
         #[arg(long = "exclude-glob", action = ArgAction::Append)]
         exclude_globs: Vec<String>,
+        /// File or directory path excluded from the bibliography corpus.
+        #[arg(long = "exclude-path", action = ArgAction::Append)]
+        exclude_paths: Vec<PathBuf>,
         /// Include hidden files and directories during root discovery.
         #[arg(long, default_value_t = false)]
         include_hidden: bool,
@@ -72,36 +75,24 @@ fn main() -> Result<()> {
             extensions,
             include_globs,
             exclude_globs,
+            exclude_paths,
             include_hidden,
-        } => serve(
-            db,
-            root,
-            files,
-            extensions,
-            include_globs,
-            exclude_globs,
-            include_hidden,
-        ),
+        } => {
+            let policy = daemon_policy(
+                root,
+                files,
+                extensions,
+                include_globs,
+                exclude_globs,
+                exclude_paths,
+                include_hidden,
+            )?;
+            serve(db, policy)
+        }
     }
 }
 
-fn serve(
-    db: PathBuf,
-    roots: Vec<PathBuf>,
-    files: Vec<PathBuf>,
-    extensions: Vec<String>,
-    include_globs: Vec<String>,
-    exclude_globs: Vec<String>,
-    include_hidden: bool,
-) -> Result<()> {
-    let policy = daemon_policy(
-        roots,
-        files,
-        extensions,
-        include_globs,
-        exclude_globs,
-        include_hidden,
-    )?;
+fn serve(db: PathBuf, policy: DiscoveryPolicy) -> Result<()> {
     let mut daemon = Daemon::new(policy, db)?;
     let stdin = io::stdin();
     let stdout = io::stdout();
@@ -134,6 +125,7 @@ fn daemon_policy(
     extensions: Vec<String>,
     include_globs: Vec<String>,
     exclude_globs: Vec<String>,
+    exclude_paths: Vec<PathBuf>,
     include_hidden: bool,
 ) -> Result<DiscoveryPolicy> {
     if roots.is_empty() && files.is_empty() {
@@ -147,6 +139,10 @@ fn daemon_policy(
     let files = files
         .into_iter()
         .map(normalize_explicit_file_path)
+        .collect::<Result<Vec<_>>>()?;
+    let exclude_paths = exclude_paths
+        .into_iter()
+        .map(normalize_exclude_path)
         .collect::<Result<Vec<_>>>()?;
     let mut policy = DiscoveryPolicy::new(roots, files);
 
@@ -168,6 +164,7 @@ fn daemon_policy(
 
     policy.include_globs = include_globs;
     policy.exclude_globs = exclude_globs;
+    policy.exclude_paths = exclude_paths;
     policy.include_hidden = include_hidden;
     Ok(policy)
 }
@@ -188,6 +185,13 @@ fn normalize_explicit_file_path(path: PathBuf) -> Result<PathBuf> {
         bail!("bibliography file is a directory: {}", path.display());
     }
     Ok(path)
+}
+
+fn normalize_exclude_path(path: PathBuf) -> Result<PathBuf> {
+    if path.as_os_str().is_empty() {
+        bail!("exclude path must not be empty");
+    }
+    absolute_path(path)
 }
 
 fn absolute_path(path: PathBuf) -> Result<PathBuf> {
@@ -423,7 +427,7 @@ impl Daemon {
                 let explicit = request.explicit.unwrap_or(false);
                 let path = self.resolve_request_path(&request.path, explicit)?;
                 let managed = self.policy.is_managed_file(&path).map_err(sync_error)?;
-                let status = if explicit && !managed {
+                let status = if explicit && !managed && !self.policy.is_excluded_path(&path) {
                     self.sync
                         .sync_explicit_file(&mut self.store, path)
                         .map_err(sync_error)?
@@ -1427,6 +1431,32 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["global2020", "local2020"]
         );
+    }
+
+    #[test]
+    fn daemon_explicit_sync_respects_excluded_paths() {
+        let project = TestProject::new("daemon-exclude-paths");
+        let archived = project.write(
+            "refs/_archive/old.bib",
+            "@article{old2020, title = {Old Archive}}\n",
+        );
+        let mut policy = DiscoveryPolicy::new(vec![project.path("refs")], Vec::new());
+        policy.exclude_paths.push(project.path("refs/_archive"));
+        let mut daemon =
+            Daemon::new(policy, project.path("index.sqlite")).expect("daemon should start");
+
+        let sync = result(daemon.handle_request(request(
+            METHOD_SYNC_FILE,
+            json!({ "path": archived.to_string_lossy(), "explicit": true }),
+        )));
+        assert_eq!(sync["changed_file_count"], 0);
+        assert_eq!(sync["indexed_entry_count"], 0);
+
+        let search = result(daemon.handle_request(request(
+            METHOD_SEARCH_ENTRIES,
+            json!({ "query": "old archive", "limit": 10 }),
+        )));
+        assert_eq!(search["entries"].as_array().expect("entries").len(), 0);
     }
 
     #[test]

@@ -295,6 +295,63 @@ fn discovery_policy_applies_include_and_exclude_globs() {
 }
 
 #[test]
+fn discovery_policy_excludes_configured_paths() {
+    let project = TestProject::new("discovery-exclude-paths");
+    project.write("refs/keep.bib", "@article{keep, title = {Keep}}\n");
+    let archived = project.write("refs/_archive/old.bib", "@article{old, title = {Old}}\n");
+    let explicit = project.write(
+        "refs/_archive/manual.bib",
+        "@article{manual, title = {Manual}}\n",
+    );
+
+    let mut policy = DiscoveryPolicy::new(vec![project.path("refs")], vec![explicit.clone()]);
+    policy.exclude_paths.push(project.path("refs/_archive"));
+
+    assert!(
+        !policy
+            .is_managed_file::<Infallible>(&archived)
+            .expect("path check should work")
+    );
+    assert!(
+        !policy
+            .is_managed_file::<Infallible>(&explicit)
+            .expect("path check should work")
+    );
+
+    let files = policy.discover_files().expect("discovery should work");
+    assert_eq!(files, vec![project.path("refs/keep.bib")]);
+
+    let mut store = MemoryStore::default();
+    SyncEngine::new(DiscoveryPolicy::new(vec![project.path("refs")], Vec::new()))
+        .sync_full(&mut store)
+        .expect("initial full sync should work");
+    assert!(store.path_ending("refs/_archive/old.bib").is_some());
+    assert!(store.path_ending("refs/_archive/manual.bib").is_some());
+
+    let status = SyncEngine::new(policy.clone())
+        .sync_full(&mut store)
+        .expect("excluded full sync should work");
+    assert_eq!(status.discovered_file_count, 1);
+    assert_eq!(status.removed_file_count, 2);
+    assert_eq!(status.indexed_file_count, 1);
+    assert!(store.path_ending("refs/keep.bib").is_some());
+    assert!(store.path_ending("refs/_archive/old.bib").is_none());
+    assert!(store.path_ending("refs/_archive/manual.bib").is_none());
+
+    let mut store = MemoryStore::default();
+    SyncEngine::new(DiscoveryPolicy::new(vec![project.path("refs")], Vec::new()))
+        .sync_file(&mut store, &archived)
+        .expect("initial targeted sync should work");
+    assert!(store.path_ending("refs/_archive/old.bib").is_some());
+
+    let status = SyncEngine::new(policy)
+        .sync_file(&mut store, &archived)
+        .expect("excluded targeted sync should remove stale state");
+    assert_eq!(status.removed_file_count, 1);
+    assert!(store.path_ending("refs/_archive/old.bib").is_none());
+}
+
+#[test]
 fn sync_status_reports_counts_and_freshness_metadata() {
     let project = TestProject::new("sync-status");
     project.write(

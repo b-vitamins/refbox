@@ -95,6 +95,7 @@
               (refbox-bibliography-extensions "bib")
               (refbox-bibliography-include-globs "**/*.bib")
               (refbox-bibliography-exclude-globs "**/.#*")
+              (refbox-bibliography-exclude-paths (expand-file-name "refs/_archive" root))
               (refbox-database-file db))
           (should (equal (refbox-rpc--command)
                          (list program
@@ -104,7 +105,8 @@
                                "--file" file
                                "--extension" "bib"
                                "--include-glob" "**/*.bib"
-                               "--exclude-glob" "**/.#*"))))
+                               "--exclude-glob" "**/.#*"
+                               "--exclude-path" (expand-file-name "refs/_archive" root)))))
       (delete-directory root t))))
 
 (ert-deftest refbox-test-rpc-configuration-tracks_server_executable_identity ()
@@ -313,6 +315,27 @@
     (should (equal (nreverse calls)
                    (list (list refbox-rpc-method-sync-file
                                (list :path file)))))))
+
+(ert-deftest refbox-test-syncable-file-respects-exclude_paths ()
+  "Path exclusions should keep root and explicit files out of targeted sync."
+  (let* ((root (make-temp-file "refbox-root-" t))
+         (keep (expand-file-name "refs/keep.bib" root))
+         (archive (expand-file-name "refs/_archive" root))
+         (archived (expand-file-name "old.bib" archive))
+         (refbox-bibliography-roots (list root))
+         (refbox-bibliography (list archived))
+         (refbox-bibliography-extensions '("bib"))
+         (refbox-bibliography-exclude-paths (list archive)))
+    (unwind-protect
+        (progn
+          (make-directory archive t)
+          (with-temp-file keep
+            (insert "@article{keep, title = {Keep}}\n"))
+          (with-temp-file archived
+            (insert "@article{old, title = {Old}}\n"))
+          (should (refbox--syncable-file-p keep))
+          (should-not (refbox--syncable-file-p archived)))
+      (delete-directory root t))))
 
 (ert-deftest refbox-test-autosync-mode-syncs-renames-and-deletes ()
   "Renaming or deleting a tracked bibliography file should update the index."
@@ -5055,6 +5078,7 @@
                 :extensions '("bib" "bibtex")
                 :include-globs nil
                 :exclude-globs nil
+                :exclude-paths nil
                 :include-hidden nil))
          restarted)
     (unwind-protect

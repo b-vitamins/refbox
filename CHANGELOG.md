@@ -6,6 +6,11 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+### Added
+- Added explicit bibliography exclude paths for files and directories, so
+  discovery and targeted sync can ignore configured archive trees without
+  relying on glob patterns.
+
 ## [0.6.5] - 2026-05-19
 
 ### Fixed

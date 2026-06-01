@@ -71,6 +71,11 @@ index through the same discovery path."
   :type '(repeat string)
   :group 'refbox)
 
+(defcustom refbox-bibliography-exclude-paths nil
+  "File and directory paths excluded from the bibliography corpus."
+  :type '(repeat (choice file directory))
+  :group 'refbox)
+
 (defcustom refbox-bibliography-include-hidden nil
   "When non-nil, include hidden files and directories during discovery."
   :type 'boolean
@@ -180,6 +185,21 @@ Nil means an empty list.  A single string is treated as one path-like item."
               files)))
     (delete-dups (nreverse files))))
 
+(defun refbox-rpc--bibliography-exclude-paths ()
+  "Return paths excluded from the daemon bibliography corpus."
+  (let (paths)
+    (dolist (path (refbox--string-list
+                   refbox-bibliography-exclude-paths
+                   "refbox-bibliography-exclude-paths"))
+      (when (string-empty-p path)
+        (user-error "`refbox-bibliography-exclude-paths' must not contain empty paths"))
+      (let ((path (directory-file-name (expand-file-name path))))
+        (push (if (file-exists-p path)
+                  (directory-file-name (file-truename path))
+                path)
+              paths)))
+    (delete-dups (nreverse paths))))
+
 (defun refbox-rpc--bibliography-extensions (&optional required)
   "Return normalized bibliography extensions for root discovery.
 
@@ -262,6 +282,7 @@ configured."
           :exclude-globs (refbox--string-list
                           refbox-bibliography-exclude-globs
                           "refbox-bibliography-exclude-globs")
+          :exclude-paths (refbox-rpc--bibliography-exclude-paths)
           :include-hidden (and refbox-bibliography-include-hidden t))))
 
 (defun refbox-rpc--command (&optional configuration)
@@ -282,6 +303,8 @@ When CONFIGURATION is nil, validate and use the current user options."
         (setq command (append command (list "--include-glob" glob))))
       (dolist (glob (plist-get configuration :exclude-globs))
         (setq command (append command (list "--exclude-glob" glob))))
+      (dolist (path (plist-get configuration :exclude-paths))
+        (setq command (append command (list "--exclude-path" path))))
       (when (plist-get configuration :include-hidden)
         (setq command (append command (list "--include-hidden"))))
       command)))

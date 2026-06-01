@@ -51,6 +51,7 @@ pub struct DiscoveryPolicy {
     pub extensions: BTreeSet<String>,
     pub include_globs: Vec<String>,
     pub exclude_globs: Vec<String>,
+    pub exclude_paths: Vec<PathBuf>,
     pub include_hidden: bool,
     pub ignored_directories: BTreeSet<String>,
 }
@@ -73,6 +74,10 @@ impl DiscoveryPolicy {
         let include_globs = build_glob_set::<E>(&self.include_globs)?;
         let exclude_globs = build_glob_set::<E>(&self.exclude_globs)?;
 
+        if self.is_excluded_path(path) {
+            return Ok(false);
+        }
+
         if self.files.iter().any(|file| file == path) {
             return Ok(true);
         }
@@ -89,6 +94,13 @@ impl DiscoveryPolicy {
             || self.roots.iter().any(|root| path.starts_with(root))
     }
 
+    #[must_use]
+    pub fn is_excluded_path(&self, path: &Path) -> bool {
+        self.exclude_paths
+            .iter()
+            .any(|excluded| path == excluded || path.starts_with(excluded))
+    }
+
     fn discover_files_inner<E>(&self) -> std::result::Result<Vec<PathBuf>, SyncError<E>> {
         let include_globs = build_glob_set::<E>(&self.include_globs)?;
         let exclude_globs = build_glob_set::<E>(&self.exclude_globs)?;
@@ -99,6 +111,9 @@ impl DiscoveryPolicy {
         }
 
         for file in &self.files {
+            if self.is_excluded_path(file) {
+                continue;
+            }
             match fs::metadata(file) {
                 Ok(metadata) if metadata.is_file() => files.push(file.to_path_buf()),
                 Ok(_) => {}
@@ -120,6 +135,10 @@ impl DiscoveryPolicy {
         exclude_globs: &Option<GlobSet>,
         files: &mut Vec<PathBuf>,
     ) -> std::result::Result<(), SyncError<E>> {
+        if self.is_excluded_path(path) {
+            return Ok(());
+        }
+
         let metadata = fs::metadata(path).map_err(SyncError::Io)?;
         if metadata.is_file() {
             if self.is_eligible_file(root, path, include_globs, exclude_globs) {
@@ -163,6 +182,10 @@ impl DiscoveryPolicy {
         include_globs: &Option<GlobSet>,
         exclude_globs: &Option<GlobSet>,
     ) -> bool {
+        if self.is_excluded_path(path) {
+            return false;
+        }
+
         let relative = path.strip_prefix(root).unwrap_or(path);
         if !self.include_hidden && path_components_include_hidden(relative) {
             return false;
@@ -197,6 +220,7 @@ impl Default for DiscoveryPolicy {
             extensions: ["bib", "bibtex"].into_iter().map(str::to_string).collect(),
             include_globs: Vec::new(),
             exclude_globs: Vec::new(),
+            exclude_paths: Vec::new(),
             include_hidden: false,
             ignored_directories: ["target", ".git", ".hg", ".svn", "node_modules"]
                 .into_iter()

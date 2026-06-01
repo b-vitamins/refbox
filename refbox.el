@@ -5983,11 +5983,21 @@ raw citation key string."
   "Return non-nil when FILE is an explicit bibliography source."
   (member (expand-file-name file) (refbox--explicit-bibliography-files)))
 
+(defun refbox--bibliography-excluded-file-p (file)
+  "Return non-nil when FILE is under `refbox-bibliography-exclude-paths'."
+  (let ((file (expand-file-name file)))
+    (cl-some (lambda (path)
+               (let ((path (directory-file-name (expand-file-name path))))
+                 (or (string-equal file path)
+                     (file-in-directory-p file (file-name-as-directory path)))))
+             (refbox-rpc--bibliography-exclude-paths))))
+
 (defun refbox--syncable-file-p (file)
   "Return non-nil when FILE is eligible for targeted autosync."
   (and file
        (not (auto-save-file-name-p file))
        (not (backup-file-name-p file))
+       (not (refbox--bibliography-excluded-file-p file))
        (or (refbox--explicit-bibliography-file-p file)
            (and (refbox--bibliography-extension-p file)
                 (refbox--file-in-bibliography-roots-p file)))))
