@@ -6,6 +6,18 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-06-02
+
+### Fixed
+- Preserve source paths and daemon entry ids when reconstructing completion
+  candidates from entry alists, keeping duplicate-key reference identity stable
+  through action and note-source paths.
+- Decode Refbox reference metadata from propertized string targets while
+  falling back to the visible key for partial metadata, preventing Embark and
+  resource actions from losing the selected reference.
+- Tolerate unmatched quotes in completion and CAPF input tokenization, so
+  filtering and highlighting continue while draft queries are being typed.
+
 ## [0.8.1] - 2026-06-02
 
 ### Fixed
