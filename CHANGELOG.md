@@ -6,6 +6,12 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+### Fixed
+- Automatically run a full sync before the next request when the live daemon
+  is restarted after bibliography corpus configuration changes, so updated
+  roots, globs, and exclude paths are reflected in the derived index without a
+  manual sync.
+
 ## [0.7.0] - 2026-06-01
 
 ### Added

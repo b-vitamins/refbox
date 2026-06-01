@@ -118,6 +118,9 @@ so this timeout must allow legitimate one-time setup to finish."
 (defvar refbox--connection-configuration nil
   "Configuration plist used to start `refbox--connection'.")
 
+(defvar refbox--connection-needs-corpus-sync nil
+  "Non-nil when a restarted daemon needs a full corpus sync.")
+
 (defconst refbox-rpc-method-ping "refbox/ping")
 (defconst refbox-rpc-method-status "refbox/status")
 (defconst refbox-rpc-method-sync-full "refbox/syncFull")
@@ -309,19 +312,43 @@ When CONFIGURATION is nil, validate and use the current user options."
         (setq command (append command (list "--include-hidden"))))
       command)))
 
+(defun refbox-rpc--corpus-configuration (configuration)
+  "Return the index-shaping parts of daemon CONFIGURATION."
+  (list :db (plist-get configuration :db)
+        :roots (plist-get configuration :roots)
+        :files (plist-get configuration :files)
+        :extensions (plist-get configuration :extensions)
+        :include-globs (plist-get configuration :include-globs)
+        :exclude-globs (plist-get configuration :exclude-globs)
+        :exclude-paths (plist-get configuration :exclude-paths)
+        :include-hidden (plist-get configuration :include-hidden)))
+
+(defun refbox-rpc--corpus-configuration-changed-p (old new)
+  "Return non-nil when OLD and NEW require a full index refresh."
+  (not (equal (refbox-rpc--corpus-configuration old)
+              (refbox-rpc--corpus-configuration new))))
+
 (defun refbox-rpc-shutdown ()
   "Stop the live refbox JSON-RPC connection, if any."
   (when refbox--connection
     (ignore-errors
       (jsonrpc-shutdown refbox--connection)))
   (setq refbox--connection nil
-        refbox--connection-configuration nil))
+        refbox--connection-configuration nil
+        refbox--connection-needs-corpus-sync nil))
 
 (defun refbox-rpc-ensure ()
   "Start and return the refbox JSON-RPC connection."
-  (let ((configuration (refbox-rpc--configuration)))
-    (when (and (refbox-rpc-live-p)
-               (not (equal configuration refbox--connection-configuration)))
+  (let* ((configuration (refbox-rpc--configuration))
+         (previous-configuration refbox--connection-configuration)
+         (configuration-changed
+          (and (refbox-rpc-live-p)
+               (not (equal configuration previous-configuration))))
+         (corpus-configuration-changed
+          (and configuration-changed
+               (refbox-rpc--corpus-configuration-changed-p
+                previous-configuration configuration))))
+    (when configuration-changed
       (refbox-rpc-shutdown))
     (unless (refbox-rpc-live-p)
       (setq refbox--connection-configuration configuration
@@ -342,16 +369,35 @@ When CONFIGURATION is nil, validate and use the current user options."
              :request-dispatcher #'ignore
              :on-shutdown (lambda (_conn)
                             (setq refbox--connection nil
-                                  refbox--connection-configuration nil))))))
+                                  refbox--connection-configuration nil
+                                  refbox--connection-needs-corpus-sync nil)))))
+    (when corpus-configuration-changed
+      (setq refbox--connection-needs-corpus-sync t)))
   refbox--connection)
+
+(defun refbox-rpc--sync-corpus-if-needed (connection method)
+  "Synchronize CONNECTION before METHOD when corpus configuration changed."
+  (when (and refbox--connection-needs-corpus-sync
+             (not (equal method refbox-rpc-method-sync-full)))
+    (jsonrpc-request
+     connection
+     refbox-rpc-method-sync-full
+     nil
+     :timeout refbox-rpc-request-timeout)
+    (setq refbox--connection-needs-corpus-sync nil)))
 
 (defun refbox-rpc-request (method &optional params)
   "Send METHOD with PARAMS to the local refbox daemon."
-  (jsonrpc-request
-   (refbox-rpc-ensure)
-   method
-   params
-   :timeout refbox-rpc-request-timeout))
+  (let ((connection (refbox-rpc-ensure)))
+    (refbox-rpc--sync-corpus-if-needed connection method)
+    (prog1
+        (jsonrpc-request
+         connection
+         method
+         params
+         :timeout refbox-rpc-request-timeout)
+      (when (equal method refbox-rpc-method-sync-full)
+        (setq refbox--connection-needs-corpus-sync nil)))))
 
 (provide 'refbox-rpc)
 

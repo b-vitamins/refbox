@@ -5080,6 +5080,7 @@
                 :exclude-globs nil
                 :exclude-paths nil
                 :include-hidden nil))
+         (refbox--connection-needs-corpus-sync nil)
          restarted)
     (unwind-protect
         (cl-letf (((symbol-function 'jsonrpc-running-p)
@@ -5095,8 +5096,98 @@
                      'new-connection)))
           (should (eq (refbox-rpc-ensure) 'new-connection))
           (should restarted)
-          (should (equal refbox--connection 'new-connection)))
+          (should (equal refbox--connection 'new-connection))
+          (should refbox--connection-needs-corpus-sync))
       (delete-directory root t))))
+
+(ert-deftest refbox-test-rpc-request-syncs-after-corpus_configuration_change ()
+  "Corpus configuration changes should refresh the derived index before queries."
+  (let* ((old-configuration
+          (list :program "/bin/refbox"
+                :program-signature '(:path "/bin/refbox" :inode 1)
+                :db "/tmp/refbox.sqlite"
+                :roots '("/tmp/refs")
+                :files nil
+                :extensions '("bib" "bibtex")
+                :include-globs nil
+                :exclude-globs nil
+                :exclude-paths nil
+                :include-hidden nil))
+         (new-configuration
+          (plist-put (copy-sequence old-configuration)
+                     :exclude-paths '("/tmp/refs/_archive")))
+         (refbox--connection 'old-connection)
+         (refbox--connection-configuration old-configuration)
+         (refbox--connection-needs-corpus-sync nil)
+         calls
+         restarted)
+    (cl-letf (((symbol-function 'refbox-rpc--configuration)
+               (lambda () new-configuration))
+              ((symbol-function 'jsonrpc-running-p)
+               (lambda (connection)
+                 (eq connection 'old-connection)))
+              ((symbol-function 'jsonrpc-shutdown)
+               (lambda (_connection)
+                 (setq restarted t)))
+              ((symbol-function 'make-instance)
+               (lambda (&rest _args)
+                 'new-connection))
+              ((symbol-function 'jsonrpc-request)
+               (lambda (connection method params &rest _args)
+                 (push (list connection method params) calls)
+                 (list :method method))))
+      (should (equal (refbox-rpc-request refbox-rpc-method-search-entries
+                                         (list :query "alpha"))
+                     (list :method refbox-rpc-method-search-entries)))
+      (should restarted)
+      (should (equal (mapcar #'cadr (nreverse calls))
+                     (list refbox-rpc-method-sync-full
+                           refbox-rpc-method-search-entries)))
+      (should-not refbox--connection-needs-corpus-sync))))
+
+(ert-deftest refbox-test-rpc-request-does-not-sync-after_server_only_change ()
+  "Daemon executable rebuilds should reconnect without forcing a full sync."
+  (let* ((old-configuration
+          (list :program "/bin/refbox"
+                :program-signature '(:path "/bin/refbox" :inode 1)
+                :db "/tmp/refbox.sqlite"
+                :roots '("/tmp/refs")
+                :files nil
+                :extensions '("bib" "bibtex")
+                :include-globs nil
+                :exclude-globs nil
+                :exclude-paths nil
+                :include-hidden nil))
+         (new-configuration
+          (plist-put (copy-sequence old-configuration)
+                     :program-signature '(:path "/bin/refbox" :inode 2)))
+         (refbox--connection 'old-connection)
+         (refbox--connection-configuration old-configuration)
+         (refbox--connection-needs-corpus-sync nil)
+         calls
+         restarted)
+    (cl-letf (((symbol-function 'refbox-rpc--configuration)
+               (lambda () new-configuration))
+              ((symbol-function 'jsonrpc-running-p)
+               (lambda (connection)
+                 (eq connection 'old-connection)))
+              ((symbol-function 'jsonrpc-shutdown)
+               (lambda (_connection)
+                 (setq restarted t)))
+              ((symbol-function 'make-instance)
+               (lambda (&rest _args)
+                 'new-connection))
+              ((symbol-function 'jsonrpc-request)
+               (lambda (connection method params &rest _args)
+                 (push (list connection method params) calls)
+                 (list :method method))))
+      (should (equal (refbox-rpc-request refbox-rpc-method-search-entries
+                                         (list :query "alpha"))
+                     (list :method refbox-rpc-method-search-entries)))
+      (should restarted)
+      (should (equal (mapcar #'cadr (nreverse calls))
+                     (list refbox-rpc-method-search-entries)))
+      (should-not refbox--connection-needs-corpus-sync))))
 
 (let ((org-tests (expand-file-name
                   "test-refbox-org.el"
