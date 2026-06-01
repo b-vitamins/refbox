@@ -13,6 +13,8 @@ The format follows Keep a Changelog, and this project follows SemVer.
 - Keep create-note resource rows on the Refbox resource target type under
   multi-category completion, so Embark exposes the note-creation resource
   action instead of treating them like ordinary reference candidates.
+- Match Citar's smaller at-point Embark citation/key action map, keeping
+  reference-management actions out of citation menus.
 
 ## [0.7.2] - 2026-06-02
 

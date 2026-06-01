@@ -261,6 +261,11 @@
    refbox-embark-citation-map "f" "open library files"
    #'refbox-embark-open-files)
   (refbox-embark-test--assert-menu-action
+   refbox-embark-citation-map "r" "copy reference"
+   #'refbox-embark-copy-reference)
+  (dolist (key '("a" "A" "b" "B" "s" "C"))
+    (should-not (lookup-key refbox-embark-citation-map (kbd key))))
+  (refbox-embark-test--assert-menu-action
    refbox-embark-resource-map "RET" "open resource"
    #'refbox-embark-open-resource))
 
@@ -356,6 +361,11 @@
                              'refbox-citation)
                             (kbd "i"))
                 #'refbox-embark-insert-edit))
+    (dolist (category '(refbox-key refbox-citation))
+      (dolist (key '("a" "A" "b" "B" "s" "C"))
+        (should-not (lookup-key (refbox-embark-test--registered-keymap
+                                 category)
+                                (kbd key)))))
     (should (eq (lookup-key refbox-embark-map (kbd "s"))
                 #'refbox-embark-open-source))
     (should (eq (lookup-key refbox-embark-map (kbd "e"))
