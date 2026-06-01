@@ -6,6 +6,8 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-06-02
+
 ### Fixed
 - Display human-readable Embark action labels for Refbox reference, citation,
   and resource targets, matching the Citar-style action menu instead of
