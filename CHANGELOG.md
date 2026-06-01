@@ -6,6 +6,8 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-06-02
+
 ### Fixed
 - Registered Refbox Embark action maps using keymap variable symbols instead
   of raw keymap objects, preventing `embark-act` and Org-cite follow actions
