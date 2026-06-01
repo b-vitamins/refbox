@@ -38,6 +38,16 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                   (:lookup_name "title" :value "Alpha Title"))
         :resources nil))
 
+(defun refbox-org-test-face-includes-p (face-property face)
+  "Return non-nil when FACE-PROPERTY includes FACE."
+  (cond
+   ((eq face-property face) t)
+   ((listp face-property)
+    (seq-some (lambda (item)
+                (or (eq item face)
+                    (and (listp item) (memq face item))))
+              face-property))))
+
 (ert-deftest refbox-org-test-inserts-new-citation ()
   "Org insertion should create a citation from selected references."
   (refbox-org-test-with-buffer "Alpha |omega"
@@ -431,6 +441,47 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                            refbox-completion-limit))
             (should (eq (plist-get params :include_configured_sources)
                         t))))))))
+
+(ert-deftest refbox-org-test-basic_activation_styles_whole_citation ()
+  "Basic activation should color the full Org citation object."
+  (refbox-org-test-with-buffer "[cite/text:@alpha; @missing]"
+    (let ((refbox-templates
+           '((preview . "%{author}: %{title}"))))
+      (cl-letf (((symbol-function 'refbox-search-references)
+                 (lambda (_query &rest _args)
+                   (list (refbox-org-test-search-candidate "alpha" nil))))
+                ((symbol-function 'refbox-rpc-request)
+                 (lambda (_method _params)
+                   '(:keys nil))))
+        (let ((citation (refbox-org--citation-at-point)))
+          (refbox-org-cite-basic-activate citation)
+          (pcase-let ((`(,begin . ,end) (org-cite-boundaries citation)))
+            (dolist (needle '("[" "cite/text:" ";" "]"))
+              (goto-char begin)
+              (search-forward needle end)
+              (should
+               (refbox-org-test-face-includes-p
+                (get-text-property (1- (point)) 'face)
+                'org-cite))))
+          (goto-char (point-min))
+          (search-forward "@alpha")
+          (should
+           (refbox-org-test-face-includes-p
+            (get-text-property (match-beginning 0) 'face)
+            'org-cite-key))
+          (should
+           (refbox-org-test-face-includes-p
+            (get-text-property (match-beginning 0) 'face)
+            'org-cite))
+          (search-forward "@missing")
+          (should
+           (refbox-org-test-face-includes-p
+            (get-text-property (match-beginning 0) 'face)
+            'error))
+          (should
+           (refbox-org-test-face-includes-p
+            (get-text-property (match-beginning 0) 'face)
+            'org-cite)))))))
 
 (ert-deftest refbox-org-test-basic_activation_prefers_local_duplicate_keys ()
   "Activation previews should prefer current-buffer local bibliography entries."
