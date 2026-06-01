@@ -483,6 +483,47 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
             (get-text-property (match-beginning 0) 'face)
             'org-cite)))))))
 
+(ert-deftest refbox-org-test-font_lock_styles_whole_citation ()
+  "Org font-lock should color the full citation through the Refbox processor."
+  (refbox-org-test-with-buffer "[cite/text:@alpha; @missing]"
+    (let ((org-cite-activate-processor 'refbox)
+          (refbox-templates
+           '((preview . "%{author}: %{title}"))))
+      (refbox-org-register-processor)
+      (cl-letf (((symbol-function 'refbox-search-references)
+                 (lambda (_query &rest _args)
+                   (list (refbox-org-test-search-candidate "alpha" nil))))
+                ((symbol-function 'refbox-rpc-request)
+                 (lambda (_method _params)
+                   '(:keys nil))))
+        (font-lock-ensure)
+        (dolist (needle '("[" "cite/text:" ";" "]"))
+          (goto-char (point-min))
+          (search-forward needle)
+          (should
+           (refbox-org-test-face-includes-p
+            (get-text-property (match-beginning 0) 'face)
+            'org-cite)))
+        (goto-char (point-min))
+        (search-forward "@alpha")
+        (should
+         (refbox-org-test-face-includes-p
+          (get-text-property (match-beginning 0) 'face)
+          'org-cite))
+        (should
+         (refbox-org-test-face-includes-p
+          (get-text-property (match-beginning 0) 'face)
+          'org-cite-key))
+        (search-forward "@missing")
+        (should
+         (refbox-org-test-face-includes-p
+          (get-text-property (match-beginning 0) 'face)
+          'org-cite))
+        (should
+         (refbox-org-test-face-includes-p
+          (get-text-property (match-beginning 0) 'face)
+          'error))))))
+
 (ert-deftest refbox-org-test-basic_activation_prefers_local_duplicate_keys ()
   "Activation previews should prefer current-buffer local bibliography entries."
   (let* ((root (make-temp-file "refbox-org-activate-local-" t))
