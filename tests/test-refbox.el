@@ -1368,6 +1368,20 @@
       (funcall (plist-get properties :exit-function) "smith2020" 'finished)
       (should (equal (buffer-string) "key")))))
 
+(ert-deftest refbox-test-capf_setup_installs_native_completion_category ()
+  "Enabling CAPF should install refbox's native completion category policy."
+  (let ((completion-category-defaults '((other-category (styles orderless)))))
+    (with-temp-buffer
+      (setq-local completion-at-point-functions nil)
+      (refbox-capf-setup)
+      (should (local-variable-p 'completion-at-point-functions))
+      (should (memq #'refbox-capf completion-at-point-functions))
+      (should (equal (cdr (assq 'refbox-reference
+                                completion-category-defaults))
+                     '((styles basic))))
+      (should (equal (cdr (assq 'other-category completion-category-defaults))
+                     '((styles orderless)))))))
+
 (ert-deftest refbox-test-capf_hydrates_only_annotation_fields ()
   "CAPF search should not hydrate minibuffer display fields."
   (let ((calls nil))
@@ -1447,6 +1461,47 @@
                                  (plist-get (cadr call) :query))
                                (nreverse calls))
                        '("lecun")))))))
+
+(defun refbox-test--completion-all-strings (raw)
+  "Return candidate strings from completion-all-completions result RAW."
+  (let (strings)
+    (while (consp raw)
+      (push (substring-no-properties (car raw)) strings)
+      (setq raw (cdr raw)))
+    (nreverse strings)))
+
+(ert-deftest refbox-test-capf_native_category_blocks_orderless_empty_query ()
+  "CAPF should not let Orderless turn typed input into an empty backend query."
+  (skip-unless (require 'orderless nil t))
+  (let* ((unrelated
+          (list (list :key "a1997when")
+                (list :key "a2003absence")))
+         (matched
+          (list
+           (list :key "lecun2022path"
+                 :fields
+                 '((:raw_name "author" :lookup_name "author"
+                    :value "{LeCun, Yann}")
+                   (:raw_name "title" :lookup_name "title"
+                    :value "{A Path Towards Autonomous Machine Intelligence}")))))
+         (completion-styles '(orderless))
+         (completion-category-overrides nil)
+         (completion-category-defaults nil)
+         (calls nil))
+    (refbox--install-completion-category-defaults)
+    (cl-letf (((symbol-function 'refbox-rpc-request)
+               (lambda (method params)
+                 (let ((query (plist-get params :query)))
+                   (push query calls)
+                   (should (equal method refbox-rpc-method-search-entries))
+                   (list :entries
+                         (if (string-empty-p query) unrelated matched))))))
+      (let* ((table (refbox-capf--completion-table (refbox-capf--state 12)))
+             (candidates
+              (refbox-test--completion-all-strings
+               (completion-all-completions "lecun2" table nil 6))))
+        (should (equal candidates '("lecun2022path")))
+        (should (equal (nreverse calls) '("lecun2")))))))
 
 (ert-deftest refbox-test-reference_indicators_reserve_absent_slots ()
   "Indicator prefixes should stay width-stable when indicators are absent."

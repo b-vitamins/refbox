@@ -2640,6 +2640,7 @@ whose cdr is passed as additional arguments."
 (defun refbox-capf-setup ()
   "Enable refbox completion at point in the current buffer."
   (interactive)
+  (refbox--install-completion-category-defaults)
   (add-hook 'completion-at-point-functions
             #'refbox-capf
             nil

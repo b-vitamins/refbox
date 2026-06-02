@@ -473,12 +473,16 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
 
 (ert-deftest refbox-latex-test-capf-setup-is-buffer-local ()
   "LaTeX CAPF setup should install a buffer-local completion function."
-  (refbox-latex-test-with-buffer "|"
-    (setq-local completion-at-point-functions nil)
-    (refbox-latex-setup-capf)
-    (should (memq #'refbox-latex-completion-at-point
-                  completion-at-point-functions))
-    (should (local-variable-p 'completion-at-point-functions))))
+  (let ((completion-category-defaults nil))
+    (refbox-latex-test-with-buffer "|"
+      (setq-local completion-at-point-functions nil)
+      (refbox-latex-setup-capf)
+      (should (memq #'refbox-latex-completion-at-point
+                    completion-at-point-functions))
+      (should (local-variable-p 'completion-at-point-functions))
+      (should (equal (cdr (assq 'refbox-reference
+                                completion-category-defaults))
+                     '((styles basic)))))))
 
 (provide 'test-refbox-latex)
 

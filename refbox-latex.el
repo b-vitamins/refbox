@@ -330,6 +330,7 @@ when the configured key argument is absent."
 (defun refbox-latex-setup-capf ()
   "Enable refbox completion at point in the current LaTeX buffer."
   (interactive)
+  (refbox--install-completion-category-defaults)
   (add-hook 'completion-at-point-functions
             #'refbox-latex-completion-at-point
             nil

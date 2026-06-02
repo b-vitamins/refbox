@@ -566,6 +566,7 @@ every reference in that citation."
 (defun refbox-org-setup-capf ()
   "Enable refbox completion at point in the current Org buffer."
   (interactive)
+  (refbox--install-completion-category-defaults)
   (add-hook 'completion-at-point-functions
             #'refbox-org-completion-at-point
             nil

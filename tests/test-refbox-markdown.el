@@ -271,12 +271,16 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
 
 (ert-deftest refbox-markdown-test-capf-setup-is-buffer-local ()
   "Markdown CAPF setup should install a buffer-local completion function."
-  (refbox-markdown-test-with-buffer "|"
-    (setq-local completion-at-point-functions nil)
-    (refbox-markdown-setup-capf)
-    (should (memq #'refbox-markdown-completion-at-point
-                  completion-at-point-functions))
-    (should (local-variable-p 'completion-at-point-functions))))
+  (let ((completion-category-defaults nil))
+    (refbox-markdown-test-with-buffer "|"
+      (setq-local completion-at-point-functions nil)
+      (refbox-markdown-setup-capf)
+      (should (memq #'refbox-markdown-completion-at-point
+                    completion-at-point-functions))
+      (should (local-variable-p 'completion-at-point-functions))
+      (should (equal (cdr (assq 'refbox-reference
+                                completion-category-defaults))
+                     '((styles basic)))))))
 
 (provide 'test-refbox-markdown)
 

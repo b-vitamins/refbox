@@ -230,6 +230,7 @@ Captures the actual key in group 1.")
 (defun refbox-markdown-setup-capf ()
   "Enable refbox completion at point in the current Markdown buffer."
   (interactive)
+  (refbox--install-completion-category-defaults)
   (add-hook 'completion-at-point-functions
             #'refbox-markdown-completion-at-point
             nil
