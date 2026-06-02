@@ -637,6 +637,48 @@ A single `|' in CONTENTS marks point and is removed before BODY runs."
                                  :json-false)))))))
       (delete-directory root t))))
 
+(ert-deftest refbox-org-test-capf-filters-completion-protocol-results ()
+  "Org CAPF should not show unrelated rows after completion boundary probes."
+  (refbox-org-test-with-buffer "[cite:@lecun|]"
+    (let ((entries
+           (list
+            (list :key "a1997when"
+                  :entry_type "article"
+                  :fields
+                  '((:lookup_name "author" :value "Porr'a")
+                    (:lookup_name "title"
+                     :value "When coherent stochastic resonance appears")))
+            (list :key "lecun2022path"
+                  :entry_type "techreport"
+                  :fields
+                  '((:lookup_name "author" :value "LeCun, Yann")
+                    (:lookup_name "title"
+                     :value "A Path Towards Autonomous Machine Intelligence")))))
+          calls)
+      (cl-letf (((symbol-function 'refbox-rpc-request)
+                 (lambda (method params)
+                   (push (list method params) calls)
+                   (should (equal method refbox-rpc-method-search-entries))
+                   (list :entries entries))))
+        (let* ((capf (refbox-org-completion-at-point))
+               (start (nth 0 capf))
+               (end (nth 1 capf))
+               (table (nth 2 capf))
+               (input (buffer-substring-no-properties start end))
+               (raw (completion-all-completions input table nil (- (point) start)))
+               candidates)
+          (while (consp raw)
+            (push (car raw) candidates)
+            (setq raw (cdr raw)))
+          (setq candidates (nreverse candidates))
+          (should (equal input "lecun"))
+          (should (equal (mapcar #'substring-no-properties candidates)
+                         '("lecun2022path")))
+          (should (equal (mapcar (lambda (call)
+                                   (plist-get (cadr call) :query))
+                                 (nreverse calls))
+                         '("lecun"))))))))
+
 (ert-deftest refbox-org-test-capf-setup-is-buffer-local ()
   "Org CAPF setup should install a buffer-local completion function."
   (refbox-org-test-with-buffer "|"

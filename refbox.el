@@ -2534,31 +2534,45 @@ whose cdr is passed as additional arguments."
     (display-sort-function . identity)
     (cycle-sort-function . identity)))
 
+(defun refbox-capf--completion-boundaries (suffix)
+  "Return trivial completion boundaries for CAPF SUFFIX."
+  (cons 0 (length suffix)))
+
+(defun refbox-capf--completion-result (string candidates action)
+  "Return completion ACTION result for STRING over CANDIDATES."
+  (cond
+   ((eq action t)
+    candidates)
+   ((eq action 'lambda)
+    (cl-some (lambda (candidate)
+               (string= string (substring-no-properties candidate)))
+             candidates))
+   ((cl-some (lambda (candidate)
+               (string= string (substring-no-properties candidate)))
+             candidates)
+    t)
+   ((null candidates)
+    nil)
+   ((null (cdr candidates))
+    (car candidates))
+   (t
+    string)))
+
 (defun refbox-capf--completion-table (state)
   "Return a CAPF completion table backed by bounded daemon search STATE."
   (lambda (string predicate action)
     (cond
      ((eq action 'metadata)
       (refbox-capf--metadata))
+     ((and (consp action) (eq (car action) 'boundaries))
+      (refbox-capf--completion-boundaries (cdr action)))
      (t
       (let ((candidates (refbox--completion-filter
                          (refbox-capf--input-filter
                           (refbox-capf--state-candidates state string)
                           string)
                          predicate)))
-        (cond
-         ((eq action t) candidates)
-         ((eq action 'lambda)
-          (cl-some (lambda (candidate)
-                     (string= string (substring-no-properties candidate)))
-                   candidates))
-         ((cl-some (lambda (candidate)
-                     (string= string (substring-no-properties candidate)))
-                   candidates)
-          t)
-         ((null candidates) nil)
-         ((null (cdr candidates)) (car candidates))
-         (t string)))))))
+        (refbox-capf--completion-result string candidates action))))))
 
 (defun refbox-capf--candidate-annotation (candidate)
   "Return concise CAPF annotation text for CANDIDATE."

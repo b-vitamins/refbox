@@ -1414,6 +1414,40 @@
                        '("lecun2022path")))
         (should (equal (plist-get params :query) "lecun"))))))
 
+(ert-deftest refbox-test-capf_completion_protocol_preserves_typed_query ()
+  "CAPF should preserve typed input through Emacs completion protocol probes."
+  (let* ((unrelated
+          (plist-put (copy-tree refbox-test-reference-candidate)
+                     :key "a1997when"))
+         (matched
+          (plist-put
+           (plist-put (copy-tree refbox-test-reference-candidate)
+                      :key "lecun2022path")
+           :fields
+           '((:raw_name "author" :lookup_name "author" :value "{LeCun, Yann}")
+             (:raw_name "title" :lookup_name "title"
+              :value "{A Path Towards Autonomous Machine Intelligence}"))))
+         calls)
+    (cl-letf (((symbol-function 'refbox-rpc-request)
+               (lambda (method params)
+                 (push (list method params) calls)
+                 (should (equal method refbox-rpc-method-search-entries))
+                 (list :entries (list unrelated matched)))))
+      (let* ((table (refbox-capf--completion-table (refbox-capf--state 12)))
+             (all-raw (completion-all-completions "lecun" table nil 5))
+             (all nil)
+             (tail all-raw))
+        (while (consp tail)
+          (push (car tail) all)
+          (setq tail (cdr tail)))
+        (setq all (nreverse all))
+        (should (equal (mapcar #'substring-no-properties all)
+                       '("lecun2022path")))
+        (should (equal (mapcar (lambda (call)
+                                 (plist-get (cadr call) :query))
+                               (nreverse calls))
+                       '("lecun")))))))
+
 (ert-deftest refbox-test-reference_indicators_reserve_absent_slots ()
   "Indicator prefixes should stay width-stable when indicators are absent."
   (let* ((refbox-indicators
