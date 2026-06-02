@@ -6,6 +6,16 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-06-02
+
+### Fixed
+- Report trivial CAPF completion boundaries for citation key completion, so
+  completion frontends keep the typed key text as the active query instead of
+  falling back to an empty first-page candidate list.
+- Preserve Refbox-side CAPF filtering through Emacs completion protocol probes,
+  preventing unrelated backend rows from reappearing while completing Org
+  citations such as `[cite:@lecun]`.
+
 ## [0.8.2] - 2026-06-02
 
 ### Fixed
