@@ -6,6 +6,8 @@ The format follows Keep a Changelog, and this project follows SemVer.
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-06-02
+
 ### Fixed
 - Install Refbox's native completion category policy from CAPF setup commands,
   preventing Orderless from driving bounded citation completion with an empty
